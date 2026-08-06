@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  演示流程：报销主流程（subflow_main）—— M5.1 子流程 callActivity + M5.2 组织路由
+  拓扑：
+    start ─► 部门经理审批(userTask) ─► 【财务复核·子流程 逻辑key=fin_review】 ─► 出纳打款(userTask) ─► end
+  M5.1 + M5.2 要素：
+    - callActivity 用逻辑 key（cmx:calledKey=fin_review），不写死具体子流程
+    - 运行期 SubflowRouter 按发起时选的组织解析：总部→总部三级复核，分公司→分公司单签
+    - 主令牌 WAITING_SUBFLOW 挂起等子实例，子跑完回主
+    - 输入变量 amount→reviewAmount；输出 finResult→finResult
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:flowable="http://flowable.org/bpmn"
+                  xmlns:cmx="http://cmx/flow"
+                  targetNamespace="http://cmx/flow/demo">
+  <bpmn:process id="subflow_main" name="报销主流程(含子流程)" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="提交报销"/>
+    <bpmn:sequenceFlow id="f0" sourceRef="start" targetRef="mgr"/>
+
+    <bpmn:userTask id="mgr" name="部门经理审批" flowable:assignee="部门经理"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="mgr" targetRef="call_fin"/>
+
+    <bpmn:callActivity id="call_fin" name="财务复核(按组织路由)" cmx:calledKey="fin_review">
+      <bpmn:extensionElements>
+        <flowable:in source="amount" target="reviewAmount"/>
+        <flowable:out source="finResult" target="finResult"/>
+      </bpmn:extensionElements>
+    </bpmn:callActivity>
+    <bpmn:sequenceFlow id="f2" sourceRef="call_fin" targetRef="cashier"/>
+
+    <bpmn:userTask id="cashier" name="出纳打款" flowable:assignee="出纳"/>
+    <bpmn:sequenceFlow id="f3" sourceRef="cashier" targetRef="done"/>
+
+    <bpmn:endEvent id="done" name="报销完成"/>
+
+  </bpmn:process>
+</bpmn:definitions>

@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cmx-flow × 表单系统 集成方案 · 表单绑定 / 数据双向 / 待办打开表单</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --ink:#e6edf3; --muted:#9198a1;
+    --line:#30363d; --brand:#4c8dff; --brand-d:#1f6feb; --ok:#3fb950; --warn:#d29922;
+    --new:#db6d28; --purple:#a371f7; --pink:#f778ba; --cyan:#39c5cf;
+    --code-bg:#0b0f16;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 28px 120px}
+  h1{font-size:30px;font-weight:800;letter-spacing:-.5px;margin:0 0 6px;
+    background:linear-gradient(100deg,#4c8dff,#a371f7 55%,#39c5cf);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .sub{color:var(--muted);font-size:15px;margin:0 0 8px}
+  .tag{display:inline-block;font-size:12px;font-weight:700;padding:2px 9px;border-radius:20px;border:1px solid var(--line);color:var(--muted);margin-right:6px}
+  .tag.n{color:var(--new);border-color:#5a3418}
+  .tag.k{color:var(--ok);border-color:#1f512b}
+  .tag.p{color:var(--purple);border-color:#3d2a63}
+  h2{font-size:22px;font-weight:800;margin:52px 0 14px;padding-top:18px;border-top:1px solid var(--line)}
+  h2 .n{font-size:13px;color:var(--muted);font-weight:600;margin-left:8px}
+  h3{font-size:17px;font-weight:700;margin:30px 0 10px;color:#cdd9e5}
+  h4{font-size:15px;font-weight:700;margin:20px 0 8px;color:var(--cyan)}
+  p{margin:10px 0}
+  code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:13px;
+    background:var(--code-bg);border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#a5d6ff}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:16px 18px;overflow:auto;margin:14px 0}
+  pre code{background:none;border:0;padding:0;color:#c9d1d9;font-size:12.5px;line-height:1.7;display:block}
+  .kw{color:#ff7b72} .st{color:#a5d6ff} .cm{color:#8b949e;font-style:italic} .fn{color:#d2a8ff} .nm{color:#79c0ff} .pu{color:#ffa657}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:16px 0}
+  .card.ok{border-color:#1f512b;background:linear-gradient(180deg,#12241a,var(--panel))}
+  .card.warn{border-color:#5a4518;background:linear-gradient(180deg,#241f12,var(--panel))}
+  .card.brand{border-color:#1f3d6f;background:linear-gradient(180deg,#111d33,var(--panel))}
+  .grid{display:grid;gap:14px}
+  .grid.c2{grid-template-columns:1fr 1fr}
+  .grid.c3{grid-template-columns:1fr 1fr 1fr}
+  @media(max-width:820px){.grid.c2,.grid.c3{grid-template-columns:1fr}}
+  ul,ol{margin:10px 0;padding-left:22px} li{margin:5px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-weight:700;color:#cdd9e5}
+  td code{font-size:12px}
+  .badge{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:5px}
+  .badge.have{background:#12261a;color:var(--ok);border:1px solid #1f512b}
+  .badge.gap{background:#2a1d12;color:var(--new);border:1px solid #5a3418}
+  .badge.thin{background:#221a2e;color:var(--purple);border:1px solid #3d2a63}
+  .flow-diagram{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:22px;margin:16px 0;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.9;color:#c9d1d9;overflow:auto;white-space:pre}
+  .step{display:flex;gap:14px;margin:14px 0;align-items:flex-start}
+  .step-n{flex:0 0 30px;height:30px;border-radius:50%;background:var(--brand-d);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px}
+  .step-b{flex:1}
+  .step-b b{color:#cdd9e5}
+  .lead{font-size:16px;color:#cdd9e5;border-left:3px solid var(--brand);padding-left:14px;margin:16px 0}
+  .kv{color:var(--muted);font-size:13px}
+  .hl{color:var(--brand);font-weight:600}
+  .hl2{color:var(--purple);font-weight:600}
+  em{color:var(--warn);font-style:normal;font-weight:600}
+  .toc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 22px;margin:22px 0;columns:2;column-gap:30px}
+  @media(max-width:820px){.toc{columns:1}}
+  .toc a{color:#a5d6ff;text-decoration:none;font-size:14px;display:block;padding:3px 0}
+  .toc a:hover{color:#fff}
+  .pill{font-size:11px;padding:1px 6px;border-radius:4px;background:#1f2733;color:var(--muted);border:1px solid var(--line);margin-left:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>cmx-flow × 表单系统 集成方案</h1>
+<p class="sub">表单如何接进流程 · 表单数据如何进出流程 · 待办任务如何打开对应表单</p>
+<p><span class="tag p">设计方案</span><span class="tag">不动代码</span><span class="tag k">对齐现有契约</span><span class="tag n">窄腰不变</span></p>
+
+<div class="card brand">
+<b>一句话结论：</b>三个问题都能在<span class="hl">不改引擎窄腰</span>的前提下解决。流程引擎的 <code>Variables</code>（JSON KV，落 jsonb）天然就是表单数据的载体；表单系统已有<span class="hl2">按 <code>ctx.props</code> 参数打开页面</span>的成熟先例（报表设计器就是这么开的）；待办打开表单 = 用同一套 <code>openTab(workNode)</code> 机制，把 <code>{formKey, taskId, bizRef}</code> 作为 props 传给表单页。整套集成的新增面很薄：一个「表单绑定」约定 + 一个「单据↔实例」关联表 + 一个「我的待办」跨实例查询端点。</div>
+
+<div class="toc">
+<a href="#p1">1 · 定位：谁负责什么，窄腰在哪</a>
+<a href="#p2">2 · 现状盘点：两侧各有什么、缺什么</a>
+<a href="#p3">3 · 核心模型：单据 · 变量 · 表单三者关系</a>
+<a href="#p4">4 · 问题一：表单如何绑定到流程节点</a>
+<a href="#p5">5 · 问题二：表单数据如何进出流程</a>
+<a href="#p6">6 · 问题三：待办任务如何打开表单</a>
+<a href="#p7">7 · 端到端时序：一张请款单走完全程</a>
+<a href="#p8">8 · 契约清单：新增端点与字段</a>
+<a href="#p9">9 · 分阶段交付</a>
+<a href="#p10">10 · 风险与对策</a>
+</div>
+
+<!-- ===================== 1 ===================== -->
+<h2 id="p1">1 · 定位：谁负责什么，窄腰在哪 <span class="n">先划清边界</span></h2>
+
+<p class="lead">流程引擎管「谁在什么时候该干什么」，表单系统管「干这件事时填/看什么数据」。两者通过一个<span class="hl">极窄的契约</span>耦合，各自独立演进。</p>
+
+<div class="grid c2">
+<div class="card">
+<h4>流程引擎（cmx-flow）负责</h4>
+<ul>
+<li>流转编排：节点、网关、会签、子流程、定时器</li>
+<li>任务生命周期：产生待办 → 办理 → 令牌推进</li>
+<li>办理人解析：角色/岗位/组织 → 真实用户</li>
+<li>流程变量 <code>Variables</code>：实例作用域的动态 KV</li>
+</ul>
+</div>
+<div class="card">
+<h4>表单系统（native/html-pages）负责</h4>
+<ul>
+<li>字段渲染：主从表、明细、下拉、校验</li>
+<li>业务数据读写：<code>/api/&lt;域&gt;/&lt;表&gt;/search</code> 载入、<code>POST</code> 保存</li>
+<li>数据模型：<code>CmxMasterSlave</code> 协调器（多级主从 + 汇总）</li>
+<li>页面契约：<code>initPage / getState / isDirty / validate</code></li>
+</ul>
+</div>
+</div>
+
+<div class="card ok">
+<b>窄腰契约（只有这些跨界）：</b>
+<ol style="margin:8px 0">
+<li><span class="hl">节点 → 表单</span>：userTask 上一个 <code>formKey</code>（哪张表单）+ 可选 <code>formMode</code>（只读/可编辑/仅审批）。</li>
+<li><span class="hl">数据 ↔ 流程</span>：表单产出/消费一份 JSON，进出流程时映射到 <code>Variables</code>；重数据留在业务表，流程只存<em>引用 + 关键决策字段</em>。</li>
+<li><span class="hl">待办 → 表单页</span>：一个 <code>props = {formKey, taskId, instanceId, bizTable, bizId, mode}</code>，经现有 <code>openTab</code> 机制传入表单页。</li>
+</ol>
+这三条之外，引擎不认识表单、表单不认识 BPMN——可各自替换。</div>
+
+<!-- ===================== 2 ===================== -->
+<h2 id="p2">2 · 现状盘点：两侧各有什么、缺什么 <span class="n">代码核实</span></h2>
+
+<h3>流程引擎侧</h3>
+<table>
+<tr><th>能力</th><th>状态</th><th>位置 / 说明</th></tr>
+<tr><td>启动带变量</td><td><span class="badge have">已有</span></td><td><code>start_process_org(def_key, vars, biz_key, org_id)</code> 接受任意 <code>Variables</code></td></tr>
+<tr><td>办结带变量</td><td><span class="badge have">已有</span></td><td><code>complete_task(instance_id, task_id, vars)</code> 把提交变量 <code>merge</code> 进实例</td></tr>
+<tr><td>变量容器</td><td><span class="badge have">已有</span></td><td><code>Variables</code> = JSON KV，落 jsonb，条件表达式/serviceTask 读写</td></tr>
+<tr><td>业务键</td><td><span class="badge have">已有</span></td><td>实例快照 + 摘要都有 <code>business_key: Option&lt;String&gt;</code></td></tr>
+<tr><td>userTask 属性解析</td><td><span class="badge have">已有</span></td><td>编译器 <code>local_attr(node, "…")</code> 前缀无关取属性（assignee/candidateGroups/calledElement…）</td></tr>
+<tr><td>userTask 带 <code>formKey</code></td><td><span class="badge gap">缺</span></td><td>IR <code>UserTask</code> 无 form 字段；<code>TaskView</code> / 任务 JSON 不带表单信息</td></tr>
+<tr><td>单据 ↔ 实例 关联</td><td><span class="badge gap">缺</span></td><td>doc/dct 无 <code>process_instance_id</code>；无双向查询</td></tr>
+<tr><td>「我的待办」跨实例查询</td><td><span class="badge gap">缺</span></td><td>任务只能按实例逐个取，无按办理人跨实例聚合端点</td></tr>
+<tr><td>启动/办结的<em>通用</em>变量入参</td><td><span class="badge thin">薄</span></td><td><code>StartReq</code>/<code>CompleteReq</code> 目前是 demo 硬编码字段（applicant/amount/decision），需加通用 <code>variables</code> 对象</td></tr>
+</table>
+
+<h3>表单系统侧</h3>
+<table>
+<tr><th>能力</th><th>状态</th><th>位置 / 说明</th></tr>
+<tr><td>按 props 打开页面</td><td><span class="badge have">已有</span></td><td>报表设计器：<code>openTab(workNode)</code>，<code>workspace.params/props</code> → 页内 <code>propsOf(ctx)</code> 读 <code>ctx.props ?? ctx.host.__props</code></td></tr>
+<tr><td>数据载入</td><td><span class="badge have">已有</span></td><td><code>CmxMasterSlave.setFlatData({head,items,details})</code>；REST <code>/api/&lt;域&gt;/&lt;表&gt;/search</code></td></tr>
+<tr><td>数据导出为 KV</td><td><span class="badge have">已有</span></td><td><code>ms.exportKeyValue()</code> / <code>exportMsJson()</code> 把表单产出成 JSON</td></tr>
+<tr><td>页面标准契约</td><td><span class="badge have">已有</span></td><td><code>initPage / getState / isDirty / validate / onActivate</code>（<code>__designer_meta__.pageInterfaces</code>）</td></tr>
+<tr><td>四区工作台 + 动态开页</td><td><span class="badge have">已有</span></td><td><code>native-pages/index.json</code> 注册 + 菜单 <code>workspace{explorer,content,property}</code></td></tr>
+<tr><td>表单「提交即触发流程」钩子</td><td><span class="badge gap">缺</span></td><td>表单保存后无「发起流程」的标准动作（需约定一个提交按钮语义）</td></tr>
+<tr><td>「审批态」表单外观</td><td><span class="badge thin">薄</span></td><td>表单可 <code>validate/isDirty</code>，但无「只读审阅 + 审批意见栏」的统一皮肤（可用 <code>formMode</code> 分流）</td></tr>
+</table>
+
+<div class="card ok"><b>盘点结论：</b>大头都在。引擎的变量/业务键/属性解析、表单的 props 开页/数据读写/页面契约——<span class="hl">四大支柱全部现成</span>。缺的是把它们<span class="hl2">串起来的三根线</span>（formKey 绑定、单据↔实例关联、我的待办查询），以及两处「薄」需要补厚（通用变量入参、审批态表单皮肤）。没有一处需要动窄腰 <code>compile(xml)→ProcessDefinition</code>。</div>
+
+<!-- ===================== 3 ===================== -->
+<h2 id="p3">3 · 核心模型：单据 · 变量 · 表单三者关系 <span class="n">最关键的一节</span></h2>
+
+<p class="lead">先厘清一个容易含糊的问题：<em>表单数据到底存在哪</em>——存流程变量里，还是存业务表里？答案是<span class="hl">分层</span>，这决定了后面所有设计。</p>
+
+<div class="grid c3">
+<div class="card">
+<h4>① 业务单据（重数据）</h4>
+<p class="kv">存在业务表：<code>cf_*</code>(dct) / doc 表</p>
+<p>请款单的全部明细行、附件、几十个字段。<b>数据的家在这里</b>，流程只持有它的<em>引用</em>（表名 + 主键）。</p>
+</div>
+<div class="card">
+<h4>② 流程变量（决策数据）</h4>
+<p class="kv">存在实例 <code>Variables</code>(jsonb)</p>
+<p>驱动流转的少量关键字段：<code>amount</code>（走哪条网关）、<code>applicant</code>、<code>lastDecision</code>、会签 <code>approvers[]</code>。<b>只放条件/路由要用的</b>。</p>
+</div>
+<div class="card">
+<h4>③ 表单（视图）</h4>
+<p class="kv">native/html-page，运行期渲染</p>
+<p>把①的业务数据渲染出来给人看/填；把人的输入写回①，把关键字段同步给②。<b>表单是①②的读写窗口</b>，自身不持久化。</p>
+</div>
+</div>
+
+<div class="card warn">
+<b>设计红线：不要把整张单据塞进流程变量。</b>流程变量是「作用域动态 KV」，用来算网关、驱动会签；单据是「行列强类型存储」，用 <code>CmxMasterSlave</code> 管主从汇总。两者关注点不同（引擎注释里已明确 <code>Variables</code> 不复用 <code>DataValue</code>）。把明细塞进变量会让 jsonb 膨胀、条件表达式失焦、审计困难。<span class="hl">正确做法：单据留业务表，变量只存「引用 + 决策字段」。</span></div>
+
+<h3>三者的绑定关系</h3>
+<div class="flow-diagram">
+  ┌─────────────────────────────────────────────────────────────┐
+  │  流程实例 Instance                                            │
+  │  ├─ business_key = "PAY-2026-0042"      ← 人读的单号          │
+  │  ├─ variables (jsonb)                    ← 决策数据           │
+  │  │    { amount: 85000, applicant: "u_1001",                   │
+  │  │      bizTable: "cf_pay_request",       ← 单据引用(表)      │
+  │  │      bizId:    "PR8842",               ← 单据引用(主键)    │
+  │  │      lastDecision: "approve" }                             │
+  │  └─ tasks[] ─ 每个 userTask 带 formKey ─┐                     │
+  └────────────────────────────────────────┼─────────────────────┘
+                                            │ formKey="pay.review"
+                                            ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │  表单页 (native-page: portal.form.runner)                    │
+  │  props = { formKey, taskId, instanceId, bizTable, bizId,     │
+  │            mode:"task" }                                      │
+  │  ├─ 载入: GET /api/&lt;域&gt;/cf_pay_request/search?id=PR8842      │
+  │  │        → ms.setFlatData(...)          ← 从业务表读①        │
+  │  ├─ 渲染: 只读审阅 + 审批意见栏 (mode=task)                    │
+  │  └─ 办结: POST /api/flow/tasks/{taskId}/complete             │
+  │           { instanceId, variables:{ lastDecision, comment }} │
+  └─────────────────────────────────────────────────────────────┘
+</div>
+
+<!-- ===================== 4 ===================== -->
+<h2 id="p4">4 · 问题一：表单如何绑定到流程节点 <span class="n">formKey 约定</span></h2>
+
+<p>业界（Flowable/Camunda）的标准做法是 userTask 上一个 <code>formKey</code> 属性。我们沿用，且<span class="hl">复用现有编译器的前缀无关取属性能力</span>——零新解析框架。</p>
+
+<h3>4.1 BPMN 侧：userTask 加 formKey</h3>
+<pre><code><span class="cm">&lt;!-- 设计器在节点属性面板配置，编译时被 local_attr 读取 --&gt;</span>
+<span class="kw">&lt;userTask</span> <span class="nm">id</span>=<span class="st">"review"</span> <span class="nm">name</span>=<span class="st">"财务复核"</span>
+          <span class="nm">flowable:assignee</span>=<span class="st">"role(finance)"</span>
+          <span class="pu">cmx:formKey</span>=<span class="st">"pay.review"</span>          <span class="cm">&lt;!-- 哪张表单 --&gt;</span>
+          <span class="pu">cmx:formMode</span>=<span class="st">"approve"</span>        <span class="cm">&lt;!-- edit|readonly|approve --&gt;</span>
+          <span class="pu">cmx:formFields</span>=<span class="st">"amount,comment"</span> <span class="cm">&lt;!-- 该环节可写字段(可选白名单) --&gt;</span><span class="kw">/&gt;</span></code></pre>
+
+<div class="card">
+<b>编译改动（薄）：</b>在 <code>cmx-flow-model</code> 的 <code>UserTask</code> IR 加三个可选字段 <code>form_key / form_mode / form_fields</code>；在 <code>cmx-flow-bpmn/compiler.rs</code> 的 userTask 解析里加三行 <code>local_attr(node, "formKey")</code> 等。<span class="kv">——与现有 assignee/candidateGroups 解析完全同构，无新机制。</span></div>
+
+<h3>4.2 起点表单（发起态） vs 环节表单（办理态）</h3>
+<table>
+<tr><th></th><th>发起表单 startForm</th><th>环节表单 taskForm</th></tr>
+<tr><td>配在哪</td><td>process 级 <code>cmx:startFormKey</code>，或流程定义元数据</td><td>userTask 级 <code>cmx:formKey</code></td></tr>
+<tr><td>什么时候开</td><td>用户「新建请款单」时</td><td>办理人点开待办时</td></tr>
+<tr><td>典型 mode</td><td><code>edit</code>（填单）</td><td><code>approve</code>（审阅+意见）或 <code>edit</code>（补充信息）</td></tr>
+<tr><td>产出</td><td>建业务单据 + 起流程实例</td><td>写审批意见 + 办结任务</td></tr>
+</table>
+
+<h3>4.3 formKey → 具体表单页的解析</h3>
+<p><code>formKey</code> 是<span class="hl">逻辑名</span>，不直接等于某个 native-page id——这样同一流程在不同部署可换皮肤。解析走一张小注册表（或复用菜单/DAM 元数据）：</p>
+<pre><code><span class="cm">// 表单注册表（新增一张轻表 cmx_flow_form_binding，或用 JSON 配置）</span>
+{
+  <span class="st">"pay.review"</span>: {
+    <span class="nm">nativePage</span>: <span class="st">"portal.form.runner"</span>,   <span class="cm">// 通用表单宿主页(见 §6)</span>
+    <span class="nm">bizTable</span>:   <span class="st">"cf_pay_request"</span>,      <span class="cm">// 绑定的业务表</span>
+    <span class="nm">domain</span>: <span class="st">"fi"</span>, <span class="nm">app</span>: <span class="st">"cmxfico"</span>, <span class="nm">module</span>: <span class="st">"gl"</span>,
+    <span class="nm">title</span>: <span class="st">"请款单复核"</span>
+  }
+}</code></pre>
+<p class="kv">解析发生在「打开待办」时（§6），把 formKey 换成 <code>{nativePage, bizTable, …}</code> 再拼 props。</p>
+
+<!-- ===================== 5 ===================== -->
+<h2 id="p5">5 · 问题二：表单数据如何进出流程 <span class="n">双向映射</span></h2>
+
+<p class="lead">数据流有四个关口：<b>发起时进</b>、<b>办理时读</b>、<b>办结时进</b>、<b>流转时用</b>。每个关口都落在既有能力上。</p>
+
+<h3>5.1 发起：表单 → 建单据 → 起流程（数据入口）</h3>
+<div class="step"><div class="step-n">1</div><div class="step-b">
+<b>用户在发起表单填单、点「提交」。</b>表单调 <code>ms.exportKeyValue()</code> 得到整张单据 JSON。</div></div>
+<div class="step"><div class="step-n">2</div><div class="step-b">
+<b>先存业务单据</b>：<code>POST /api/&lt;域&gt;/&lt;表&gt;/save</code>（现有 dct/doc 写端点），拿回单据主键 <code>bizId</code>。</div></div>
+<div class="step"><div class="step-n">3</div><div class="step-b">
+<b>再起流程</b>：<code>POST /api/flow/instances</code>，body 带<span class="hl">通用 variables</span>：
+<pre><code>{
+  <span class="nm">definitionKey</span>: <span class="st">"pay_approval"</span>,
+  <span class="nm">businessKey</span>:   <span class="st">"PAY-2026-0042"</span>,
+  <span class="nm">orgId</span>:         <span class="st">"d_fin_sh"</span>,
+  <span class="nm">variables</span>: {                    <span class="cm">// ← 只放决策/引用字段</span>
+    <span class="nm">amount</span>: 85000, <span class="nm">applicant</span>: <span class="st">"u_1001"</span>,
+    <span class="nm">bizTable</span>: <span class="st">"cf_pay_request"</span>, <span class="nm">bizId</span>: <span class="st">"PR8842"</span>
+  }
+}</code></pre></div></div>
+<div class="step"><div class="step-n">4</div><div class="step-b">
+<b>回写关联</b>：把 <code>instanceId</code> 写回业务单据的 <code>process_instance_id</code> 列（单据↔实例双向可查）。</div></div>
+
+<div class="card"><b>需要补厚的点：</b><code>StartReq</code> 目前是 demo 硬编码 <code>applicant/amount</code>。改为通用形态：<code>{definitionKey, businessKey, orgId, variables: Value}</code>，handler 里 <code>Variables::from_json(req.variables)</code> 直接喂引擎（引擎早已接受任意 Variables，只是 API 层入参没开放）。<span class="kv">纯 API 层改动，引擎零改。</span></div>
+
+<h3>5.2 办理：读实例变量 + 读业务单据（数据出口）</h3>
+<p>办理人打开待办时，表单页需要两份数据：</p>
+<ul>
+<li><b>业务单据</b>（看什么）：用 props 里的 <code>bizTable/bizId</code> 调 <code>/search</code> 载入 → <code>ms.setFlatData()</code>。</li>
+<li><b>流程上下文</b>（谁提的、走到哪、前面怎么批的）：调 <code>GET /api/flow/instances/{id}</code> 拿变量 + 任务链 + 历史意见。</li>
+</ul>
+
+<h3>5.3 办结：意见/决策 → 流程变量（数据入口）</h3>
+<pre><code><span class="cm">// 办理人点「同意/驳回」，表单收集意见，办结任务</span>
+<span class="fn">POST</span> /api/flow/tasks/{taskId}/complete
+{
+  <span class="nm">instanceId</span>: <span class="st">"inst_77"</span>,
+  <span class="nm">variables</span>: {                    <span class="cm">// ← merge 进实例变量</span>
+    <span class="nm">lastDecision</span>: <span class="st">"approve"</span>,      <span class="cm">// 驱动后续网关</span>
+    <span class="nm">comment</span>: <span class="st">"金额属实，同意付款"</span>   <span class="cm">// 留痕</span>
+  }
+}</code></pre>
+<p class="kv">引擎的 <code>complete_task(instance_id, task_id, vars)</code> 已经 <code>merge</code> 变量——只需把 <code>CompleteReq</code> 从 <code>decision: Option&lt;String&gt;</code> 扩为通用 <code>variables: Value</code>。若该环节也改了单据（如补充字段），表单先 <code>POST /save</code> 更新业务表，再办结。</p>
+
+<h3>5.4 流转：网关/会签读变量（数据消费）</h3>
+<p>无需任何改动——这是引擎既有能力：<code>${amount &gt; 50000}</code> 走总监审批、<code>approvers[]</code> 驱动会签、<code>${lastDecision == 'reject'}</code> 打回。表单办结时写进变量的值，流转时自动被读。</p>
+
+<div class="card ok"><b>数据流小结：</b>四个关口，两个入口（发起 §5.1、办结 §5.3）走 <code>variables</code> 进引擎，两个出口（办理 §5.2、流转 §5.4）从实例/业务表读。<span class="hl">引擎侧唯一改动是把两个 Req 的入参从硬编码字段改成通用 <code>variables</code> 对象</span>——引擎内核完全不动。</div>
+
+<!-- ===================== 6 ===================== -->
+<h2 id="p6">6 · 问题三：待办任务如何打开表单 <span class="n">复用 openTab 先例</span></h2>
+
+<p class="lead">这是三个问题里最「有现成答案」的——报表设计器打开一张「特定 org+period 的报表」用的就是这套机制，我们照搬。</p>
+
+<h3>6.1 待办中心（新页）</h3>
+<p>一个 native-page <code>portal.flow.todo-center</code>，四区工作台：</p>
+<ul>
+<li><b>explorer</b>：待办分类（我的待办 / 我发起的 / 抄送我的 / 已办），按流程/组织过滤。</li>
+<li><b>content</b>：待办列表（单号、流程名、当前环节、发起人、到达时间、紧急度）。</li>
+<li><b>property</b>：选中待办的流程轨迹缩略（走到哪、前面谁批的）。</li>
+</ul>
+<p>数据来自<span class="hl">新增的「我的待办」端点</span>（现在只能按实例逐个查，缺跨实例聚合）：</p>
+<pre><code><span class="fn">GET</span> /api/flow/tasks/my?assignee=u_1001&amp;kind=todo
+<span class="cm">// 返回该用户所有未办结任务（跨实例），每条带 formKey + bizRef</span>
+{ tasks: [ {
+    taskId, instanceId, businessKey, definitionName,
+    nodeName: <span class="st">"财务复核"</span>,
+    <span class="nm">formKey</span>: <span class="st">"pay.review"</span>,        <span class="cm">// ← 从定义带出</span>
+    <span class="nm">bizTable</span>: <span class="st">"cf_pay_request"</span>,   <span class="cm">// ← 从实例变量带出</span>
+    <span class="nm">bizId</span>: <span class="st">"PR8842"</span>,
+    applicant, amount, arrivedAt, urgent
+} ] }</code></pre>
+
+<h3>6.2 点开待办 → 开表单页（照搬报表设计器）</h3>
+<div class="step"><div class="step-n">1</div><div class="step-b">
+<b>用户点一条待办。</b>前端拿这条待办的 <code>formKey</code>，查表单注册表(§4.3)解析出 <code>{nativePage, bizTable, …}</code>。</div></div>
+<div class="step"><div class="step-n">2</div><div class="step-b">
+<b>拼 workNode + props</b>（与 <code>openReportDesigner</code> 逐字同构）：
+<pre><code><span class="kw">const</span> props = {
+  <span class="nm">formKey</span>: <span class="st">"pay.review"</span>, <span class="nm">mode</span>: <span class="st">"task"</span>,
+  <span class="nm">taskId</span>, <span class="nm">instanceId</span>, <span class="nm">bizTable</span>, <span class="nm">bizId</span>
+};
+<span class="kw">const</span> workNode = {
+  id: <span class="st">`flow-task-${taskId}`</span>, type: <span class="st">"workspace-node"</span>,
+  caption: <span class="st">`${businessKey} · ${nodeName}`</span>,
+  workspace: {
+    params: props,
+    content:  { views:[ formView(<span class="st">"content"</span>,  props) ] },
+    property: { views:[ formView(<span class="st">"property"</span>, props) ] }  <span class="cm">// 流程轨迹+意见</span>
+  }
+};
+<span class="fn">openTab</span>(workNode);   <span class="cm">// ← 现有全局机制(window/parent/top 探测)</span></code></pre></div></div>
+<div class="step"><div class="step-n">3</div><div class="step-b">
+<b>表单页在 mount 读 props</b>（<code>propsOf(ctx)</code> = <code>ctx.props ?? ctx.host.__props</code>），按 <code>mode="task"</code> 分流：载入业务单据 + 拉流程上下文 + 渲染审批意见栏。</div></div>
+
+<h3>6.3 通用表单宿主 vs 专用表单页</h3>
+<div class="grid c2">
+<div class="card">
+<h4>方案 A：通用宿主 <code>portal.form.runner</code></h4>
+<p>一个页，按 <code>props.formKey</code> 动态载对应字段定义（复用 dct/doc 的字段元数据）渲染。<b>一页托管所有表单</b>。</p>
+<p class="kv">优点：接一张新表单零前端开发（配 formKey + 字段元数据即可）。适合标准主从表单据。</p>
+</div>
+<div class="card">
+<h4>方案 B：专用表单页</h4>
+<p>复杂表单（如带 FlexibleCombination、特殊交互）仍写独立 native/html-page，注册表把 formKey 指向它。</p>
+<p class="kv">优点：表达力不受限。缺点：每张表单一份页。<b>两方案共存</b>——标准的走 A，特殊的走 B。</p>
+</div>
+</div>
+
+<div class="card brand"><b>关键洞察：</b>「打开待办表单」不需要发明任何新机制。<code>openTab(workNode)</code> + <code>workspace.params/props</code> + 页内 <code>propsOf(ctx)</code> 这条链<span class="hl">已被报表设计器验证过</span>（一个报表按 code+version 开独立设计器 tab）。待办开表单只是把 props 从 <code>{reportCode, version}</code> 换成 <code>{formKey, taskId, bizId, mode}</code>。</div>
+
+<!-- ===================== 7 ===================== -->
+<h2 id="p7">7 · 端到端时序：一张请款单走完全程 <span class="n">把三问串起来</span></h2>
+
+<div class="flow-diagram">
+ 发起人 u_1001                财务 role(finance)           总监 role(cfo)
+    │                              │                            │
+    │ ① 新建请款单(startForm,edit) │                            │
+    │   填单 → ms.exportKeyValue() │                            │
+    │                              │                            │
+    │ POST /api/fi/cf_pay_request/save   → bizId=PR8842         │
+    │ POST /api/flow/instances                                  │
+    │   {defKey, bizKey, variables:{amount:85000,bizId,bizTable}}│
+    │   → instanceId=inst_77                                    │
+    │ (回写 cf_pay_request.process_instance_id = inst_77)       │
+    │                              │                            │
+    │            引擎: 令牌到 review(userTask, formKey=pay.review)│
+    │            → 产生 Task, assignee 解析 role(finance)=财务   │
+    │                              │                            │
+    │                     ② 待办中心出现一条待办                 │
+    │                        GET /api/flow/tasks/my?assignee=财务│
+    │                        点开 → openTab(props{formKey,taskId,│
+    │                                bizId,mode:task})           │
+    │                        载入 PR8842 + 流程上下文, 只读审阅  │
+    │                              │                            │
+    │                     ③ 点「同意」                          │
+    │              POST /tasks/{t}/complete                     │
+    │                {instanceId, variables:{lastDecision:approve│
+    │                                        ,comment:"属实"}}   │
+    │                              │                            │
+    │            引擎: merge 变量 → 网关 ${amount>50000}         │
+    │            → 令牌到 director(userTask, formKey=pay.review) │
+    │                              │              → 产生 Task    │
+    │                              │         ④ 总监待办, 同样开表单│
+    │                              │            点「同意」办结    │
+    │                              │                            │
+    │            引擎: 令牌到 endEvent → 实例 COMPLETED          │
+    │            (serviceTask 可回写 cf_pay_request.status=已批准)│
+    ▼                              ▼                            ▼
+</div>
+
+<p class="kv">全程：<span class="hl">重数据(单据明细)始终在 <code>cf_pay_request</code></span>，流程变量只随身带 <code>amount/bizId/lastDecision</code> 等决策字段；<span class="hl2">每个 userTask 靠 formKey 开同一张表单的不同 mode</span>；待办列表靠新端点跨实例聚合。</p>
+
+<!-- ===================== 8 ===================== -->
+<h2 id="p8">8 · 契约清单：新增端点与字段 <span class="n">改动面全景</span></h2>
+
+<h3>后端新增/改动</h3>
+<table>
+<tr><th>层</th><th>改动</th><th>性质</th></tr>
+<tr><td>cmx-flow-model</td><td><code>UserTask</code> 加 <code>form_key/form_mode/form_fields</code>；<code>ProcessDefinition</code> 或元数据加 <code>start_form_key</code></td><td><span class="badge thin">加字段</span></td></tr>
+<tr><td>cmx-flow-bpmn</td><td>compiler userTask 解析加 <code>local_attr(node,"formKey")</code> 等 3 行</td><td><span class="badge thin">同构扩展</span></td></tr>
+<tr><td>cmx-flow-api</td><td><code>StartReq</code>/<code>CompleteReq</code> 改通用 <code>variables: Value</code>；新增 <code>GET /flow/tasks/my</code>；任务 JSON 带 <code>formKey/bizRef</code></td><td><span class="badge gap">API 新面</span></td></tr>
+<tr><td>关联存储</td><td>业务表加 <code>process_instance_id</code> 列（或建 <code>cmx_flow_biz_link</code> 关联表）；新增 <code>cmx_flow_form_binding</code> 表单注册表（或 JSON 配置）</td><td><span class="badge gap">新表/列</span></td></tr>
+<tr><td>引擎内核</td><td><b>零改动</b>（Variables/complete_task/start_process_org 全部现成）</td><td><span class="badge have">不动</span></td></tr>
+</table>
+
+<h3>前端新增</h3>
+<table>
+<tr><th>页</th><th>职责</th></tr>
+<tr><td><code>portal.flow.todo-center</code></td><td>待办中心四区（我的待办/我发起的/抄送我的/已办 + 列表 + 轨迹）</td></tr>
+<tr><td><code>portal.form.runner</code>（方案A）</td><td>通用表单宿主：按 formKey 动态渲染 + task/edit/approve 三态 + 审批意见栏</td></tr>
+<tr><td>发起入口</td><td>「新建单据→提交起流程」的标准动作（保存单据 + 起实例 + 回写关联）</td></tr>
+<tr><td>流程设计器扩展</td><td>属性面板 userTask 加「绑定表单」选择器（写 formKey/formMode）——挂在已落地的 [设计工作台] 上</td></tr>
+</table>
+
+<!-- ===================== 9 ===================== -->
+<h2 id="p9">9 · 分阶段交付 <span class="n">每阶段独立可验</span></h2>
+
+<div class="grid c2">
+<div class="card">
+<h4><span class="pill">F1</span> 数据管道打通（后端）</h4>
+<ul>
+<li><code>StartReq/CompleteReq</code> 改通用 variables</li>
+<li>业务表加 <code>process_instance_id</code> + 回写</li>
+<li>curl 验证：起流程带任意变量 → 办结带任意变量 → 网关正确分流</li>
+</ul>
+<p class="kv">价值：不碰表单也能证明「表单数据能进出流程」。</p>
+</div>
+<div class="card">
+<h4><span class="pill">F2</span> formKey 绑定 + 我的待办端点</h4>
+<ul>
+<li>UserTask IR + 编译器加 formKey 解析</li>
+<li><code>GET /flow/tasks/my</code> 跨实例聚合，任务 JSON 带 formKey/bizRef</li>
+<li>设计器属性面板加「绑定表单」选择器</li>
+</ul>
+<p class="kv">价值：流程「知道」每个环节该开哪张表单。</p>
+</div>
+<div class="card">
+<h4><span class="pill">F3</span> 待办中心 + 打开表单</h4>
+<ul>
+<li><code>portal.flow.todo-center</code> 四区</li>
+<li>点待办 → <code>openTab(props)</code> → 表单页（先接一张真实表单，如请款单）</li>
+<li>办理态：只读审阅 + 意见栏 + 办结</li>
+</ul>
+<p class="kv">价值：端到端跑通一条真实审批链。</p>
+</div>
+<div class="card">
+<h4><span class="pill">F4</span> 通用表单宿主 + 发起态</h4>
+<ul>
+<li><code>portal.form.runner</code> 按 formKey 动态渲染</li>
+<li>发起表单「提交起流程」标准动作</li>
+<li>表单注册表 + DAM 归属打通</li>
+</ul>
+<p class="kv">价值：接新表单从「写页」降为「配 formKey」。</p>
+</div>
+</div>
+
+<div class="card ok"><b>推进建议：</b>严格按 F1→F4。F1 纯后端、curl 即可验，是地基；F2 让定义带上表单绑定；F3 打通「待办→表单→办结」这条最核心的人机回路（先用一张手写表单）；F4 才做通用化。<span class="hl">每阶段都不动引擎窄腰，且都能独立演示。</span></div>
+
+<!-- ===================== 10 ===================== -->
+<h2 id="p10">10 · 风险与对策 <span class="n">专业·精致·稳定·健壮</span></h2>
+
+<table>
+<tr><th>风险</th><th>对策</th></tr>
+<tr><td><b>数据双写不一致</b>：单据存了、流程没起（或反之）</td><td>发起动作用「先存单据(拿 bizId) → 起流程 → 回写关联」三步，失败可补偿；关联表用单据主键幂等。F1 阶段就把这条路径测透。</td></tr>
+<tr><td><b>变量与单据字段漂移</b>：变量里的 amount 和单据里的 amount 不一致</td><td>约定<em>单一事实源</em>：金额等决策字段以单据为准，起流程/办结时从单据快照取值写入变量（而非人再填一遍）；变量是单据的<span class="hl">投影</span>，不是副本。</td></tr>
+<tr><td><b>表单不知道自己在「办理态」</b></td><td><code>props.mode</code> 三态分流（edit/readonly/approve）；通用宿主按 mode 切皮肤，专用页自行判断。formMode 来自节点配置，设计时确定。</td></tr>
+<tr><td><b>formKey 指向的表单被删/改名</b></td><td>表单注册表解析失败时降级：给一个「通用只读 JSON 查看器」兜底展示实例变量 + 单据，保证待办永远能打开、能办结（不因表单缺失卡死流程）。</td></tr>
+<tr><td><b>待办查询性能</b>（跨实例聚合）</td><td><code>/flow/tasks/my</code> 走任务表的 assignee 索引 + 未办结过滤，不 load 完整快照（对齐现有 <code>InstanceSummary</code> 避免 N 次聚合的思路）。</td></tr>
+<tr><td><b>权限：谁能开这张待办表单</b></td><td>打开时校验 <code>taskId</code> 的 assignee/候选人是否为当前用户（复用 M4 候选人/认领语义）；表单页不自行判权，由 <code>/tasks/my</code> 和 complete 端点把关。</td></tr>
+<tr><td><b>历史意见留痕</b></td><td>每次 complete 的 comment 进变量或专门的审批意见表；表单办理态展示完整审批历史（从实例任务链 + cc 记录读）。</td></tr>
+</table>
+
+<div class="card brand" style="margin-top:40px">
+<b>总纲：</b>这套集成的精髓是<span class="hl">「不重造、只连接」</span>。引擎的变量系统、业务表的数据服务、表单的 props 开页机制——三根成熟支柱早已各就各位，缺的只是把它们对齐的三根细线（formKey、单据↔实例关联、我的待办查询）和两处补厚（通用变量入参、审批态表单）。<span class="hl2">窄腰 <code>compile(xml)→ProcessDefinition</code> 一行不动</span>，80+ 引擎测试零回归，表单系统按既有契约扩展。业务用户看到的是「填单→提交→审批→办结」，底下跑的是标准 BPMN。</div>
+
+</div>
+</body>
+</html>

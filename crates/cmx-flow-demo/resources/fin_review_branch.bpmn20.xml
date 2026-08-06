@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  演示子流程：分公司财务复核（fin_review_branch）—— M5.2 组织路由目标之二
+  分公司简化为单签：财务经理直接审。绑定 fin_review@分公司 → 本流程。
+  与总部三级形成对比：同一份主流程，不同组织跑不同子流程。
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:flowable="http://flowable.org/bpmn"
+                  targetNamespace="http://cmx/flow/demo">
+  <bpmn:process id="fin_review_branch" name="分公司财务复核" isExecutable="true">
+    <bpmn:startEvent id="start" name="进入复核"/>
+    <bpmn:sequenceFlow id="f0" sourceRef="start" targetRef="fin"/>
+    <bpmn:userTask id="fin" name="分公司财务经理单签" flowable:assignee="分公司财务经理"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="fin" targetRef="done"/>
+    <bpmn:endEvent id="done" name="复核完成"/>
+  </bpmn:process>
+</bpmn:definitions>

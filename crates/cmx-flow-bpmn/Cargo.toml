@@ -1,0 +1,20 @@
+[package]
+name = "cmx-flow-bpmn"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# BPMN 2.0 XML 编译器：把标准 BPMN XML（可含 flowable:/camunda: 扩展属性）编译成
+# cmx-flow-model 的 ProcessDefinition IR。BPMN 仅作为「交换格式」——业务用标准建模器
+# 画图、导出 XML，引擎内部跑干净 IR，不被 XML 结构绑架。M1 覆盖顺序审批流子集。
+
+[dependencies]
+# 内部依赖 - 流程引擎 IR 与运行态模型
+cmx-flow-model = { workspace = true }
+
+# BPMN XML 只读解析（DOM 式，零拷贝 borrow）
+roxmltree = { workspace = true }
+# 错误处理
+thiserror = { workspace = true }
+# 日志追踪
+tracing = { workspace = true }

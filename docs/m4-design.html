@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cmx-flow M4 设计方案 · 抄送 / 转签 / 角色 · 岗位</title>
+<style>
+  :root {
+    --bg: #f6f8fa; --panel: #ffffff; --ink: #1f2328; --muted: #656d76;
+    --line: #d0d7de; --line-soft: #eaeef2;
+    --brand: #0969da; --brand-soft: #ddf4ff; --brand-d: #0a4d8c;
+    --pk: #8250df; --pk-soft: #fbefff; --idx: #1a7f37; --idx-soft: #e6f6eb;
+    --null: #9a6700; --notnull: #cf222e;
+    --new: #bc4c00; --new-soft: #fff1e7; --reuse: #1a7f37; --reuse-soft: #e6f6eb;
+    --amber: #9a6700; --amber-soft: #fff8e6;
+    --code-bg: #f6f8fa; --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    line-height: 1.65; font-size: 15px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px 80px; }
+
+  /* Header */
+  header.hero {
+    background: linear-gradient(135deg, #6639ba 0%, #0a4d8c 100%);
+    color: #fff; border-radius: 14px; padding: 34px 36px; margin-bottom: 26px;
+    box-shadow: 0 8px 24px rgba(102,57,186,.20);
+  }
+  header.hero .tagline { font-size: 12.5px; letter-spacing: 2px; text-transform: uppercase; opacity: .8; margin-bottom: 8px; }
+  header.hero h1 { margin: 0 0 10px; font-size: 26px; letter-spacing: .3px; }
+  header.hero p { margin: 0; opacity: .92; font-size: 14.5px; }
+  .hero-meta { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .hero-meta span {
+    background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.25);
+    border-radius: 999px; padding: 4px 13px; font-size: 12.5px; font-family: var(--mono);
+  }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 22px 26px; margin-bottom: 22px;
+  }
+  .panel h2 { margin: 2px 0 14px; font-size: 19px; display: flex; align-items: center; gap: 9px; }
+  .panel h2 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--brand); display: inline-block; }
+  .panel h3 { font-size: 15.5px; margin: 20px 0 8px; }
+  .lead { color: var(--muted); font-size: 14.5px; }
+  ul.tight { margin: 10px 0 0; padding-left: 20px; }
+  ul.tight li { margin: 6px 0; }
+  p.note { color: var(--muted); font-size: 13.5px; }
+
+  /* 能力卡片网格 */
+  .cap-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 6px; }
+  @media (max-width: 760px) { .cap-grid { grid-template-columns: 1fr; } }
+  .cap {
+    border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; background: #fcfdff;
+  }
+  .cap .ic { font-size: 22px; }
+  .cap h4 { margin: 6px 0 6px; font-size: 15px; }
+  .cap p { margin: 0; font-size: 13px; color: var(--muted); }
+
+  /* 徽章 */
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 8px;
+    border-radius: 999px; margin-left: 6px; font-family: var(--mono); vertical-align: middle;
+  }
+  .b-new { background: var(--new-soft); color: var(--new); border: 1px solid #ffcfa8; }
+  .b-reuse { background: var(--reuse-soft); color: var(--reuse); border: 1px solid #b7e0c1; }
+  .b-alter { background: var(--amber-soft); color: var(--amber); border: 1px solid #f0dfa8; }
+  .b-pk { background: var(--pk-soft); color: var(--pk); border: 1px solid #e5c8ff; }
+  .b-idx { background: var(--idx-soft); color: var(--idx); border: 1px solid #b7e0c1; }
+  .b-notnull { color: var(--notnull); font-weight: 700; font-family: var(--mono); font-size: 12px; }
+  .b-null { color: var(--null); font-family: var(--mono); font-size: 12px; }
+
+  /* 流程/时序图 */
+  .diagram {
+    font-family: var(--mono); font-size: 12.8px; background: var(--code-bg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; overflow-x: auto;
+    color: var(--ink); line-height: 1.55; white-space: pre; margin: 10px 0 4px;
+  }
+  .diagram .t { color: var(--brand); font-weight: 700; }
+  .diagram .n { color: var(--new); font-weight: 700; }
+  .diagram .g { color: var(--reuse); font-weight: 700; }
+  .diagram .note { color: var(--muted); }
+
+  /* 表卡片 */
+  .tbl-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 20px; overflow: hidden; }
+  .tbl-head { padding: 16px 22px 12px; border-bottom: 1px solid var(--line-soft); }
+  .tbl-head .name { font-family: var(--mono); font-size: 16.5px; font-weight: 700; color: var(--brand); }
+  .tbl-head .cn { color: var(--muted); font-size: 13.5px; margin-left: 10px; }
+  .tbl-head .desc { margin: 8px 0 0; color: var(--ink); font-size: 13.5px; }
+  .tbl-head .cnt { float: right; font-size: 12px; color: var(--muted); font-family: var(--mono); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.3px; }
+  thead th {
+    text-align: left; background: #f9fafb; color: var(--muted); font-weight: 600;
+    padding: 8px 14px; border-bottom: 1px solid var(--line); white-space: nowrap;
+    font-size: 12px; text-transform: uppercase; letter-spacing: .4px;
+  }
+  tbody td { padding: 8px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  .col-name { font-family: var(--mono); font-weight: 600; color: var(--ink); white-space: nowrap; }
+  .col-type { font-family: var(--mono); color: #0a4d8c; white-space: nowrap; }
+  .dash { color: var(--line); }
+  .mono-default { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+
+  code.inl { font-family: var(--mono); background: var(--code-bg); border: 1px solid var(--line-soft); border-radius: 5px; padding: 1px 6px; font-size: 12.6px; }
+
+  /* 步骤/时间线 */
+  .steps { counter-reset: step; margin: 8px 0 0; padding: 0; list-style: none; }
+  .steps li { position: relative; padding: 8px 0 8px 40px; border-left: 2px solid var(--line-soft); margin-left: 12px; }
+  .steps li::before {
+    counter-increment: step; content: counter(step);
+    position: absolute; left: -13px; top: 8px; width: 24px; height: 24px; border-radius: 50%;
+    background: var(--brand); color: #fff; font-size: 12px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; font-family: var(--mono);
+  }
+  .steps li b { color: var(--brand-d); }
+
+  /* 里程碑表 */
+  .ms-tag { font-family: var(--mono); font-weight: 700; font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--brand-soft); color: var(--brand-d); }
+
+  /* 提示块 */
+  .callout { border-radius: 10px; padding: 14px 18px; margin: 14px 0; font-size: 13.6px; }
+  .callout.reuse { background: var(--reuse-soft); border: 1px solid #b7e0c1; }
+  .callout.warn { background: var(--amber-soft); border: 1px solid #f0dfa8; }
+  .callout.new { background: var(--new-soft); border: 1px solid #ffcfa8; }
+  .callout b { color: var(--ink); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+  .legend span b { font-family: var(--mono); }
+
+  footer { margin-top: 30px; color: var(--muted); font-size: 12.5px; text-align: center; line-height: 1.8; }
+  h2.sec { font-size: 20px; margin: 34px 0 4px; padding-bottom: 6px; border-bottom: 2px solid var(--line); }
+  .kbd { font-family: var(--mono); font-size: 12px; background:#eef1f4; border:1px solid var(--line); border-radius:4px; padding:0 5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="tagline">Design Proposal · M4.1·M4.2·M4.3 全部已落地实测</div>
+    <h1>cmx-flow M4 设计方案 · 抄送 / 转签 + 角色 · 岗位</h1>
+    <p>在 M1~M3 + M2.5 已落地的流程语义之上，补齐「人与组织」维度：办理人不再是裸字符串，而是接入 IAM 的角色/岗位；并加入抄送（知会+已读）与转签家族（转办 / 加签 / 委派）。</p>
+    <div class="hero-meta">
+      <span>M4.1 候选人：✅ 已落地</span>
+      <span>M4.2 抄送：✅ 已落地</span>
+      <span>M4.3 转签：✅ 已落地</span>
+      <span>身份：复用 cmx-iam</span>
+      <span>不改：M1~M3 语义</span>
+    </div>
+  </header>
+
+  <!-- ============ 0. 概述 ============ -->
+  <section class="panel">
+    <h2><span class="dot"></span>要解决什么</h2>
+    <p class="lead">
+      前四个里程碑把 BPMN 的<b>流程语义</b>做透了（顺序、分支、并行、会签/或签、定时器、取消）。但办理人始终是 BPMN 里写死的字符串
+      （<code class="inl">flowable:assignee="经理"</code>）——引擎不认识「谁是经理」「财务部有哪些人」。M4 补上正交的<b>组织身份维度</b>，
+      并加入两类审批协作动作。四个诉求可归为两层：
+    </p>
+    <div class="cap-grid">
+      <div class="cap">
+        <div class="ic">🧑‍💼</div>
+        <h4>角色 / 岗位设置 <span class="badge b-reuse">地基</span></h4>
+        <p>候选人来源从「静态字符串」升级为「角色 / 岗位 / 部门」表达式，运行期解析成真实用户集合。角色复用现有 IAM，岗位与组织补齐。</p>
+      </div>
+      <div class="cap">
+        <div class="ic">📋</div>
+        <h4>抄送 CC <span class="badge b-new">知会+已读</span></h4>
+        <p>把流程进展知会给相关人，不阻塞、不产生待办，带已读/未读追踪。区别于「审批」的只读旁路。</p>
+      </div>
+      <div class="cap">
+        <div class="ic">🔁</div>
+        <h4>转签（转办家族）<span class="badge b-new">3 动作</span></h4>
+        <p>办理人把任务转出：<b>转办</b>（彻底换人）、<b>加签</b>（前/后插临时审批人）、<b>委派</b>（代办，所有权仍归己）。</p>
+      </div>
+      <div class="cap">
+        <div class="ic">🏢</div>
+        <h4>组织 / 部门 <span class="badge b-new">补齐</span></h4>
+        <p>现有 <code class="inl">cmx_user.org_id</code> 是悬空引用——没有组织表。补一棵部门树，让岗位/数据权限有所依附。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 1. 家底盘点 ============ -->
+  <h2 class="sec">一、家底盘点：已有什么，缺什么</h2>
+  <section class="panel">
+    <p class="lead">动手前先看清库存。项目<b>已有完整的 IAM 体系</b>，M4 的第一原则是<b>复用，不重造</b>。</p>
+
+    <h3>✅ 已有（直接复用）</h3>
+    <table>
+      <thead><tr><th>资产</th><th>形态</th><th>M4 怎么用</th></tr></thead>
+      <tbody>
+        <tr><td class="col-name">cmx_user</td><td>用户表，含 <code class="inl">org_id</code></td><td>办理人 / 抄送人 / 转签目标的唯一身份来源</td></tr>
+        <tr><td class="col-name">cmx_role</td><td>角色表（code/name/role_group_id）</td><td>候选人表达式 <code class="inl">role(code)</code> 的解析目标</td></tr>
+        <tr><td class="col-name">cmx_role_group</td><td>角色组（树形）</td><td>角色分类，管理台展示用</td></tr>
+        <tr><td class="col-name">cmx_user_role</td><td>用户—角色关联</td><td>由角色反查用户集合（会签展开的来源之一）</td></tr>
+        <tr><td class="col-name">cmx_role_permission</td><td>角色—权限关联</td><td>管理台的功能权限控制（谁能配流程）</td></tr>
+        <tr><td class="col-name">cmx-iam crate</td><td>user / role / permission 服务</td><td>flow 侧通过其查询接口取用户/角色，不直接读表</td></tr>
+      </tbody>
+    </table>
+
+    <h3>❌ 缺（M4 补齐）</h3>
+    <table>
+      <thead><tr><th>缺口</th><th>现状</th><th>补法</th></tr></thead>
+      <tbody>
+        <tr><td>组织 / 部门树</td><td><code class="inl">cmx_user.org_id</code> 有值但<b>无对应表</b>，悬空引用</td><td>新建 <code class="inl">cmx_org</code>（部门树），让 org_id 落地</td></tr>
+        <tr><td>岗位 Position</td><td>完全没有「岗位」概念（如"财务主管""分行行长"）</td><td>新建 <code class="inl">cmx_position</code> + <code class="inl">cmx_user_position</code></td></tr>
+        <tr><td>候选人解析</td><td>flow 的 <code class="inl">assignee</code>/<code class="inl">candidate_groups</code> 只是字符串，不接 IAM</td><td>引擎侧加 <b>AssigneeResolver</b>，把表达式解析成用户集</td></tr>
+        <tr><td>抄送</td><td>无</td><td>新建 <code class="inl">cmx_flow_cc</code>（知会记录 + 已读态）</td></tr>
+        <tr><td>转签痕迹</td><td>无（任务只有 assignee 一个字段）</td><td>新建 <code class="inl">cmx_flow_task_delegation</code>（转办/加签/委派台账）</td></tr>
+      </tbody>
+    </table>
+    <div class="callout reuse">
+      <b>复用原则：</b>M4 <u>绝不</u>新建流程专用的用户表 / 角色表。角色 100% 用 <code class="inl">cmx_role</code>；用户 100% 用 <code class="inl">cmx_user</code>。
+      flow 只新增「组织 / 岗位」这两块 IAM 尚缺的通用能力（放在通用前缀，供全局复用），以及「抄送 / 转签」这两块<b>流程专属</b>的运行态表（<code class="inl">cmx_flow_</code> 前缀）。
+    </div>
+  </section>
+
+  <!-- ============ 2. 身份维度分层 ============ -->
+  <h2 class="sec">二、身份维度：候选人表达式如何解析</h2>
+  <section class="panel">
+    <p class="lead">核心抽象：BPMN 里的办理人配置不再是「一个人名」，而是一个<b>候选人表达式</b>，引擎在令牌到达 userTask 时把它<b>解析</b>成真实用户集合。</p>
+    <div class="diagram">
+BPMN 定义（设计态，静态）                     解析器（运行态，接 IAM）              产出（真实用户）
+─────────────────────────────           ─────────────────────────           ──────────────
+<span class="t">flowable:assignee</span>  = "user(u_1001)"   ──┐
+<span class="t">flowable:candidateUsers</span> = "u_1001,u_1002" ─┤     <span class="n">AssigneeResolver</span>
+<span class="t">flowable:candidateGroups</span>= "role(finance)" ─┼──►  ├─ user(id)     → 该用户            ──►  [u_1001]
+自定义 <span class="t">cmx:position</span> = "pos(cfo)"     ─┤     ├─ role(code)    → cmx_user_role 反查   ──►  [u_1001,u_1077]
+自定义 <span class="t">cmx:org</span>      = "org(d_fin)"    ─┘     ├─ position(code)→ cmx_user_position   ──►  [u_1077]
+                                               └─ org(id)      → cmx_org 下的人      ──►  [u_1001,u_1077,…]
+                                                    （解析结果落 candidate，见下）
+    </div>
+    <div class="legend">
+      <span><b class="col-type">user()</b> 指定人</span>
+      <span><b class="col-type">role()</b> 按角色（复用 cmx_role）</span>
+      <span><b class="col-type">position()</b> 按岗位（新建）</span>
+      <span><b class="col-type">org()</b> 按部门（新建）</span>
+    </div>
+    <p class="note" style="margin-top:14px">
+      解析产出两种落法：<b>①单人</b> → 直接置 <code class="inl">task.assignee</code>（M1 老路，零改动）；
+      <b>②多人候选</b> → 落 <code class="inl">cmx_flow_task_candidate</code>（任务候选池），谁认领谁办（对齐 Flowable 的 claim 语义）。
+      候选池也天然是会签（M3）的展开来源——<code class="inl">role(finance)</code> 展开成 N 个会签子任务。
+    </p>
+    <div class="callout warn">
+      <b>解析时机与快照：</b>候选人在<b>令牌到达时解析一次并落库</b>（快照式），不在每次查询时实时算。理由：① 与引擎「等待态即提交点」的聚合快照一致；
+      ② 避免"审批中途某人被调离角色"导致待办凭空消失——已生成的待办按当时快照走，可审计、可复现。
+    </div>
+  </section>
+
+  <!-- ============ 3. 抄送 ============ -->
+  <h2 class="sec">三、抄送 CC：知会 + 已读</h2>
+  <section class="panel">
+    <p class="lead">抄送 = 在某节点把「进展」只读地知会给一组人。<b>不阻塞流程、不产生待办、不影响令牌推进</b>——它是流程的旁路投影，与审批任务正交。</p>
+    <h3>触发方式（两种，可并存）</h3>
+    <ul class="tight">
+      <li><b>节点配置抄送</b>：BPMN 的 userTask 上配 <code class="inl">cmx:cc="role(dept_head), user(u_boss)"</code>，令牌离开该节点时自动抄送。</li>
+      <li><b>办理时手动抄送</b>：办理人在完成任务时附带一个抄送名单（前端「抄送给」多选），即时生成。</li>
+    </ul>
+    <h3>时序</h3>
+    <div class="diagram">
+令牌到达/离开 userTask
+      │
+      ├─► 正常审批流（产生 task，等待办理）        <span class="note">← 主干，不受抄送影响</span>
+      │
+      └─► <span class="n">生成抄送记录</span> cmx_flow_cc（每个被抄送人一条，unread）
+                │
+                ▼
+          被抄送人「我的抄送」列表可见 → 点开 → 标记 read（记 read_at）
+                │
+                ▼
+          <span class="note">流程完成/取消，抄送记录随实例归档，不阻塞任何环节</span>
+    </div>
+    <div class="callout new">
+      <b>与待办的区别：</b>抄送记录<u>不进</u> <code class="inl">cmx_flow_task</code>（那是「要办的」），单独进 <code class="inl">cmx_flow_cc</code>（「知会的」）。
+      前端「我的待办」与「抄送我的」是两个入口。已读状态是抄送独有的，任务没有「已读」只有「办结」。
+    </div>
+  </section>
+
+  <!-- ============ 4. 转签家族 ============ -->
+  <h2 class="sec">四、转签家族：转办 / 加签 / 委派</h2>
+  <section class="panel">
+    <p class="lead">三个动作都作用在<b>一个已存在的待办任务</b>上，区别在于「所有权是否转移」与「是否新增审批环节」。统一记入 <code class="inl">cmx_flow_task_delegation</code> 台账，可追溯完整流转链。</p>
+
+    <h3>① 转办（改派）<span class="badge b-new">换人</span></h3>
+    <div class="diagram">
+[任务 T · assignee=张三]  ──转办给→ 李四
+      │
+      ▼
+[任务 T · assignee=李四]   <span class="note">同一个任务，办理人从张三改成李四；张三退出，李四接手</span>
+      台账：{task, from:张三, to:李四, type:TRANSFER, reason}
+    </div>
+
+    <h3>② 加签（向前 / 向后）<span class="badge b-new">加环节</span></h3>
+    <div class="diagram">
+向前加签（先让王五审，再回我办）：
+[任务 T · 张三]  ──向前加签→ 王五
+      │
+      ▼
+[临时任务 · 王五] ──王五办结→ [任务 T · 张三 恢复待办]   <span class="note">王五审完，控制权回张三</span>
+
+向后加签（我先办，再交王五审）：
+[任务 T · 张三] ──向后加签→ 王五，张三办结
+      │
+      ▼
+[临时任务 · 王五] ──王五办结→ 继续原流程            <span class="note">张三办完不直接走，先经王五</span>
+    </div>
+    <p class="note">加签会<b>动态插入一个临时审批环节</b>——这是三者中最重的，需引擎支持「运行期动态子任务」，且加签可嵌套（王五还能再加签赵六）。</p>
+
+    <h3>③ 委派（代办）<span class="badge b-new">代办不换主</span></h3>
+    <div class="diagram">
+[任务 T · owner=张三, assignee=张三] ──委派给→ 李四
+      │
+      ▼
+[任务 T · owner=张三, assignee=李四]  <span class="note">李四代办，但 owner 仍是张三</span>
+      │
+      ▼
+李四办结 → 回到 owner 张三「确认」（可选）→ 才真正完成
+      台账：{task, owner:张三, delegate:李四, type:DELEGATE}
+    </div>
+    <div class="callout warn">
+      <b>转办 vs 委派的分野：</b>转办后张三与该任务再无关系；委派后张三仍是 <code class="inl">owner</code>，李四只是 <code class="inl">assignee</code>（代理人）。
+      是否需要「委派办结后回 owner 确认」是一个可配开关，建议 M4 先做<b>不回confirm 的简单委派</b>，回确认留后续。
+    </div>
+
+    <h3>对任务表的影响</h3>
+    <p class="note"><code class="inl">cmx_flow_task</code> 需从「单 assignee」升级为区分 <code class="inl">owner</code>（所有者）/ <code class="inl">assignee</code>（当前办理人）；加签需要 <code class="inl">parent_task_id</code>（临时任务挂在原任务下）。这几列是<b>加列（ALTER）</b>，不动既有语义——单实例任务 owner=assignee，行为与 M1 一致。</p>
+  </section>
+
+  <!-- ============ 5. 新增表设计 ============ -->
+  <h2 class="sec">五、数据模型：拟新增 / 改动</h2>
+  <section class="panel">
+    <p class="lead">遵循既有约束：<code class="inl">cmx_</code> 前缀、无外键（索引替代）、TIMESTAMPTZ、UUID 主键。下列为<b>方案</b>，评审通过后才落 DDL。</p>
+    <div class="legend" style="margin-bottom:8px">
+      <span><span class="badge b-new">新建</span> 全新表</span>
+      <span><span class="badge b-alter">改动</span> 既有表加列</span>
+      <span><span class="badge b-reuse">复用</span> 直接用现有 IAM 表</span>
+    </div>
+  </section>
+
+  <!-- 组织 -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">通用 · 非 flow 专属</span>
+      <div><span class="name">cmx_org</span><span class="cn">组织 / 部门表（树）</span><span class="badge b-new">新建</span></div>
+      <p class="desc">补齐 <code class="inl">cmx_user.org_id</code> 的悬空引用。自引用父子成树，供岗位归属、数据权限、<code class="inl">org()</code> 候选人解析。</p>
+    </div>
+    <table>
+      <thead><tr><th>列名</th><th>类型</th><th>可空</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>部门 id</td></tr>
+        <tr><td class="col-name">code</td><td class="col-type">varchar(100)</td><td><span class="b-notnull">NOT NULL</span></td><td>部门编码（唯一，解析用）</td></tr>
+        <tr><td class="col-name">name</td><td class="col-type">varchar(100)</td><td><span class="b-notnull">NOT NULL</span></td><td>部门名称</td></tr>
+        <tr><td class="col-name">parent_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-null">NULL</span></td><td>父部门（NULL=根）</td></tr>
+        <tr><td class="col-name">path</td><td class="col-type">varchar(500)</td><td><span class="b-null">NULL</span></td><td>物化路径（如 /d_root/d_fin，子树查询用）</td></tr>
+        <tr><td class="col-name">leader_user_id</td><td class="col-type">varchar(64)</td><td><span class="b-null">NULL</span></td><td>部门负责人（<code class="inl">org.leader</code> 解析用）</td></tr>
+        <tr><td class="col-name">sort_order</td><td class="col-type">int4</td><td><span class="b-null">NULL</span></td><td>排序</td></tr>
+        <tr><td class="col-name">status / archived</td><td class="col-type">int4</td><td><span class="b-null">NULL</span></td><td>状态 / 归档（对齐 cmx_role 风格）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 岗位 -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">通用 · 非 flow 专属</span>
+      <div><span class="name">cmx_position</span><span class="cn">岗位表</span><span class="badge b-new">新建</span></div>
+      <p class="desc">岗位是「组织内的职位」（如"财务主管"），与角色（权限集）正交。岗位可归属某部门。</p>
+    </div>
+    <table>
+      <thead><tr><th>列名</th><th>类型</th><th>可空</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>岗位 id</td></tr>
+        <tr><td class="col-name">code</td><td class="col-type">varchar(100)</td><td><span class="b-notnull">NOT NULL</span></td><td>岗位编码（唯一，解析用）</td></tr>
+        <tr><td class="col-name">name</td><td class="col-type">varchar(100)</td><td><span class="b-notnull">NOT NULL</span></td><td>岗位名称</td></tr>
+        <tr><td class="col-name">org_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-null">NULL</span></td><td>所属部门（可空=全局岗位）</td></tr>
+        <tr><td class="col-name">level</td><td class="col-type">int4</td><td><span class="b-null">NULL</span></td><td>职级（审批层级/自动升级用，可选）</td></tr>
+        <tr><td class="col-name">sort_order / status / archived</td><td class="col-type">int4</td><td><span class="b-null">NULL</span></td><td>排序 / 状态 / 归档</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 用户岗位 -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">通用 · 关联表</span>
+      <div><span class="name">cmx_user_position</span><span class="cn">用户—岗位关联</span><span class="badge b-new">新建</span></div>
+      <p class="desc">多对多（一人可兼多岗，一岗可多人）。镜像 <code class="inl">cmx_user_role</code> 的结构与风格。<code class="inl">position(code)</code> 反查用户集合的来源。</p>
+    </div>
+    <table>
+      <thead><tr><th>列名</th><th>类型</th><th>可空</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>主键</td></tr>
+        <tr><td class="col-name">user_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>用户 id</td></tr>
+        <tr><td class="col-name">position_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>岗位 id</td></tr>
+        <tr><td class="col-name">is_primary</td><td class="col-type">bool</td><td><span class="b-null">NULL</span></td><td>是否主岗</td></tr>
+        <tr><td class="col-name">archived / create_time …</td><td class="col-type">—</td><td><span class="b-null">NULL</span></td><td>审计列（对齐 cmx_user_role）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 任务候选 -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">flow 运行态 · RU</span>
+      <div><span class="name">cmx_flow_task_candidate</span><span class="cn">任务候选人池</span><span class="badge b-new">新建</span></div>
+      <p class="desc">候选人表达式解析出「多人候选」时，落这里。任一候选人可 claim（认领）→ 认领后写回 <code class="inl">task.assignee</code>。单人直派任务不产生候选记录。</p>
+    </div>
+    <table>
+      <thead><tr><th>列名</th><th>类型</th><th>可空</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>主键</td></tr>
+        <tr><td class="col-name">task_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>所属任务</td></tr>
+        <tr><td class="col-name">instance_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>所属实例</td></tr>
+        <tr><td class="col-name">candidate_type</td><td class="col-type">varchar(16)</td><td><span class="b-notnull">NOT NULL</span></td><td>USER / ROLE / POSITION / ORG（记来源）</td></tr>
+        <tr><td class="col-name">candidate_ref</td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>候选引用（user_id / role code…）</td></tr>
+        <tr><td class="col-name">resolved_user_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-null">NULL</span></td><td>解析出的具体用户（供"我的待办"查询）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 抄送 -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">flow 运行态 · RU</span>
+      <div><span class="name">cmx_flow_cc</span><span class="cn">抄送记录表</span><span class="badge b-new">新建</span></div>
+      <p class="desc">每个被抄送人一条。只读知会，带已读追踪。不进任务表、不阻塞流程。</p>
+    </div>
+    <table>
+      <thead><tr><th>列名</th><th>类型</th><th>可空</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>主键</td></tr>
+        <tr><td class="col-name">instance_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>所属实例</td></tr>
+        <tr><td class="col-name">node_bpmn_id</td><td class="col-type">varchar(128)</td><td><span class="b-null">NULL</span></td><td>抄送发生的节点</td></tr>
+        <tr><td class="col-name">to_user_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>被抄送人</td></tr>
+        <tr><td class="col-name">from_user_id</td><td class="col-type">varchar(64)</td><td><span class="b-null">NULL</span></td><td>抄送发起人（手动抄送时）</td></tr>
+        <tr><td class="col-name">reason</td><td class="col-type">varchar(500)</td><td><span class="b-null">NULL</span></td><td>抄送说明</td></tr>
+        <tr><td class="col-name">read_at<span class="badge b-idx">IDX</span></td><td class="col-type">timestamptz</td><td><span class="b-null">NULL</span></td><td>已读时刻（NULL=未读）</td></tr>
+        <tr><td class="col-name">created_at</td><td class="col-type">timestamptz</td><td><span class="b-notnull">NOT NULL</span></td><td>抄送时刻</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 转签台账 -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">flow 运行态 · RU</span>
+      <div><span class="name">cmx_flow_task_delegation</span><span class="cn">转签台账表</span><span class="badge b-new">新建</span></div>
+      <p class="desc">转办 / 加签 / 委派的完整流转链，可追溯「这个任务被谁转给谁、为什么」。审计与展示核心。</p>
+    </div>
+    <table>
+      <thead><tr><th>列名</th><th>类型</th><th>可空</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>主键</td></tr>
+        <tr><td class="col-name">task_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>被操作的任务</td></tr>
+        <tr><td class="col-name">instance_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>所属实例</td></tr>
+        <tr><td class="col-name">type</td><td class="col-type">varchar(16)</td><td><span class="b-notnull">NOT NULL</span></td><td>TRANSFER / ADDSIGN_BEFORE / ADDSIGN_AFTER / DELEGATE</td></tr>
+        <tr><td class="col-name">from_user_id</td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>操作发起人（原办理人）</td></tr>
+        <tr><td class="col-name">to_user_id</td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>目标人</td></tr>
+        <tr><td class="col-name">temp_task_id</td><td class="col-type">varchar(64)</td><td><span class="b-null">NULL</span></td><td>加签产生的临时任务 id（转办/委派为 NULL）</td></tr>
+        <tr><td class="col-name">reason</td><td class="col-type">varchar(500)</td><td><span class="b-null">NULL</span></td><td>转签意见</td></tr>
+        <tr><td class="col-name">created_at</td><td class="col-type">timestamptz</td><td><span class="b-notnull">NOT NULL</span></td><td>操作时刻</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- task 改动 -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">flow 运行态 · RU</span>
+      <div><span class="name">cmx_flow_task</span><span class="cn">用户任务表（既有）</span><span class="badge b-alter">改动 · 加列</span></div>
+      <p class="desc">加三列支撑转签，幂等 <code class="inl">ADD COLUMN IF NOT EXISTS</code>。既有任务 owner=assignee、parent 为空，行为与 M1~M3 完全一致（零回归）。</p>
+    </div>
+    <table>
+      <thead><tr><th>新增列</th><th>类型</th><th>可空</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="col-name">owner_user_id</td><td class="col-type">varchar(64)</td><td><span class="b-null">NULL</span></td><td>任务所有者（委派时 ≠ assignee）；缺省 = assignee</td></tr>
+        <tr><td class="col-name">parent_task_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-null">NULL</span></td><td>加签临时任务的父任务；主任务为 NULL</td></tr>
+        <tr><td class="col-name">delegation_state</td><td class="col-type">varchar(16)</td><td><span class="b-null">NULL</span></td><td>NULL(常规) / DELEGATED(委派中) / ADDSIGN(加签临时)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ============ 6. 引擎改动点 ============ -->
+  <h2 class="sec">六、引擎改动点（Rust 侧，本次不写）</h2>
+  <section class="panel">
+    <table>
+      <thead><tr><th>模块</th><th>改动</th><th>性质</th></tr></thead>
+      <tbody>
+        <tr><td class="col-name">cmx-flow-model</td><td>UserTask 加 <code class="inl">candidate_expr</code>、<code class="inl">cc_expr</code>；新增 CcRecord / TaskDelegation / TaskCandidate DTO；Task 加 owner/parent/delegation_state</td><td><span class="badge b-alter">加字段</span></td></tr>
+        <tr><td class="col-name">cmx-flow-model</td><td>新增 <code class="inl">AssigneeResolver</code> trait（候选人表达式 → 用户集），与 <code class="inl">JavaDelegate</code> 同为「引擎向外的扩展点」</td><td><span class="badge b-new">新契约</span></td></tr>
+        <tr><td class="col-name">cmx-flow-bpmn</td><td>compiler 解析 <code class="inl">candidateUsers/candidateGroups/cmx:cc/cmx:position</code> 等属性</td><td><span class="badge b-alter">扩展</span></td></tr>
+        <tr><td class="col-name">cmx-flow-engine</td><td>userTask 到达时调 resolver 解析候选人 → 单人直派 / 多人落候选池；节点离开时生成抄送；新增 <code class="inl">transfer_task/add_sign/delegate_task/claim_task/mark_cc_read</code> API</td><td><span class="badge b-new">核心</span></td></tr>
+        <tr><td class="col-name">cmx-iam 集成</td><td>实现一个 <code class="inl">IamAssigneeResolver</code>：用 cmx-iam 的 user/role 查询 + 新的 org/position 查询，把表达式解析成用户。引擎只依赖 trait，不直接依赖 iam</td><td><span class="badge b-new">适配器</span></td></tr>
+        <tr><td class="col-name">cmx-flow-store-pg</td><td>聚合快照带上 candidate/cc/delegation；新增按用户查待办/抄送的查询</td><td><span class="badge b-alter">扩展</span></td></tr>
+      </tbody>
+    </table>
+    <div class="callout reuse">
+      <b>架构一致性：</b><code class="inl">AssigneeResolver</code> 是继 <code class="inl">JavaDelegate</code>（M1）、<code class="inl">Clock</code>（M2.5）之后的<b>第三个"引擎向外的可注入扩展点"</b>——引擎定义 trait，宿主注入实现（生产接 IAM、测试用假 resolver）。延续「引擎与基础设施解耦、可测」的一贯设计。
+    </div>
+  </section>
+
+  <!-- ============ 7. 里程碑拆分 ============ -->
+  <h2 class="sec">七、建议里程碑拆分</h2>
+  <section class="panel">
+    <p class="lead">M4 面较宽，建议拆成三个可独立验收的子步，每步都可端到端跑通 + 落 fico 库 + 更新文档三件套。</p>
+    <table>
+      <thead><tr><th>子步</th><th>范围</th><th>产出</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="ms-tag">M4.1</span></td>
+          <td><b>身份地基</b>：cmx_org + cmx_position + cmx_user_position；AssigneeResolver 契约 + IAM 适配器；候选人表达式解析 + claim 认领</td>
+          <td>候选人从字符串升级为 role/position/org 解析；「我的待办」按真实用户查</td>
+        </tr>
+        <tr>
+          <td><span class="ms-tag">M4.2</span></td>
+          <td><b>抄送</b>：cmx_flow_cc；节点配置抄送 + 手动抄送；已读追踪；「抄送我的」列表</td>
+          <td>知会+已读闭环，最独立、风险最低，可先落</td>
+        </tr>
+        <tr>
+          <td><span class="ms-tag">M4.3</span></td>
+          <td><b>转签</b>：task 加列 + cmx_flow_task_delegation；转办 → 委派 → 加签（按此难度序）</td>
+          <td>转办家族三动作；加签的动态临时任务是最难点，压轴</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note">管理台（角色/岗位/组织的增删改查界面）建议与 M4.1 并行，或复用现有 IAM 管理台扩展岗位/组织页签。</p>
+  </section>
+
+  <!-- ============ 8. 风险与非目标 ============ -->
+  <h2 class="sec">八、风险 · 边界 · 非目标</h2>
+  <section class="panel">
+    <h3>关键风险</h3>
+    <ul class="tight">
+      <li><b>候选人快照 vs 实时</b>：已决定<b>快照式</b>（到达时解析落库）。需接受"审批中角色变更不影响已生成待办"，并在文档写明。</li>
+      <li><b>加签的动态节点</b>：加签在运行期插入原定义里没有的临时任务，可嵌套。需引擎支持"非定义驱动"的令牌/任务，是本里程碑最大技术点，务必配充分测试。</li>
+      <li><b>会签 × 候选人</b>：<code class="inl">role(finance)</code> 用于会签节点时，M3 的 collection 展开需与候选人解析对齐（把解析出的用户集作为 collection）。两者交界要理清。</li>
+      <li><b>org_id 历史数据</b>：现有 cmx_user.org_id 可能已有值但无对应 cmx_org 记录。建表后需数据校验/回填，避免解析空指。</li>
+    </ul>
+    <h3>本次非目标（M4 不做，留后续）</h3>
+    <ul class="tight">
+      <li>委派办结后<b>回 owner 二次确认</b>——先做直通委派。</li>
+      <li>抄送的<b>站内信 / 邮件 / IM 推送</b>——只落库 + 前端列表，不接通知渠道。</li>
+      <li>基于岗位 <code class="inl">level</code> 的<b>自动逐级升级</b>（如"审批人的上级")——岗位职级字段预留，逻辑后续。</li>
+      <li>数据权限（<code class="inl">cmx_role.data_scope</code> 那套「本部门/本人」）——本次只做候选人解析，不做数据行级权限。</li>
+    </ul>
+    <div class="callout warn">
+      <b>不动既有：</b>M1~M3 + M2.5 的流程语义、表结构、测试<u>全部不改</u>。M4 全靠加列（幂等）+ 新表 + 新扩展点接入，既有 39 个测试须继续全绿作为回归基线。
+    </div>
+  </section>
+
+  <footer>
+    <div>本文档为 <b>设计方案</b>，非已实现结构。评审通过后按 M4.1 → M4.2 → M4.3 落地，每步补迁移 + 更新 schema 文档。</div>
+    <div>cmx-flow 流程引擎 · M4 抄送/转签 + 角色·岗位 设计方案 · 待评审</div>
+  </footer>
+
+</div>
+</body>
+</html>

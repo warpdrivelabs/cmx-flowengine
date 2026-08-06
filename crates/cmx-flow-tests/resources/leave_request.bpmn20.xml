@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  M1 样例流程：请假审批（leave_request）
+  拓扑：
+    start ──► calc(serviceTask: 计算请假天数) ──► review(userTask: 经理审批)
+      ──► gw(exclusiveGateway 金额/天数判断)
+            ├─ ${days > 3}  ──► director(userTask: 总监审批) ──► done(end)
+            └─ default      ─────────────────────────────────► done(end)
+  覆盖：startEvent / endEvent / serviceTask(delegate) / userTask(等待态) /
+        exclusiveGateway + conditionExpression + default flow。
+  命名空间刻意用 bpmn: 前缀 + flowable: 扩展，验证前缀无关解析与方言兼容。
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:flowable="http://flowable.org/bpmn"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  targetNamespace="http://cmx/flow/samples">
+  <bpmn:process id="leave_request" name="请假审批" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="发起请假"/>
+    <bpmn:sequenceFlow id="f_start_calc" sourceRef="start" targetRef="calc"/>
+
+    <bpmn:serviceTask id="calc" name="计算请假天数"
+                      flowable:delegateExpression="${calcDaysDelegate}"/>
+    <bpmn:sequenceFlow id="f_calc_review" sourceRef="calc" targetRef="review"/>
+
+    <bpmn:userTask id="review" name="经理审批" flowable:assignee="manager"/>
+    <bpmn:sequenceFlow id="f_review_gw" sourceRef="review" targetRef="gw"/>
+
+    <bpmn:exclusiveGateway id="gw" name="是否需总监审批" default="f_gw_done"/>
+
+    <bpmn:sequenceFlow id="f_gw_director" sourceRef="gw" targetRef="director">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${days &gt; 3}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f_gw_done" sourceRef="gw" targetRef="done"/>
+
+    <bpmn:userTask id="director" name="总监审批" flowable:assignee="director"/>
+    <bpmn:sequenceFlow id="f_director_done" sourceRef="director" targetRef="done"/>
+
+    <bpmn:endEvent id="done" name="审批结束"/>
+
+  </bpmn:process>
+</bpmn:definitions>

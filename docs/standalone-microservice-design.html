@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cmx-flow 独立流程微服务 · 架构设计方案 v2</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --ink:#e6edf3; --muted:#9198a1;
+    --line:#30363d; --brand:#4c8dff; --brand-d:#1f6feb; --ok:#3fb950; --warn:#d29922;
+    --new:#db6d28; --purple:#a371f7; --pink:#f778ba; --cyan:#39c5cf; --red:#f85149;
+    --code-bg:#0b0f16;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1120px;margin:0 auto;padding:40px 28px 120px}
+  h1{font-size:29px;font-weight:800;letter-spacing:-.5px;margin:0 0 6px;
+    background:linear-gradient(100deg,#f778ba,#a371f7 50%,#4c8dff);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .sub{color:var(--muted);font-size:15px;margin:0 0 8px}
+  .tag{display:inline-block;font-size:12px;font-weight:700;padding:2px 9px;border-radius:20px;border:1px solid var(--line);color:var(--muted);margin-right:6px}
+  .tag.k{color:var(--ok);border-color:#1f512b}
+  .tag.n{color:var(--new);border-color:#5a3418}
+  .tag.p{color:var(--purple);border-color:#3d2a63}
+  .tag.c{color:var(--cyan);border-color:#194a4f}
+  h2{font-size:22px;font-weight:800;margin:52px 0 14px;padding-top:18px;border-top:1px solid var(--line)}
+  h2 .n{font-size:13px;color:var(--muted);font-weight:600;margin-left:8px}
+  h3{font-size:17px;font-weight:700;margin:30px 0 10px;color:#cdd9e5}
+  h4{font-size:14.5px;font-weight:700;margin:18px 0 8px;color:var(--cyan)}
+  p{margin:10px 0}
+  code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:13px;
+    background:var(--code-bg);border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#c9d7e6}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;margin:12px 0}
+  pre code{background:none;border:none;padding:0;font-size:12.5px;line-height:1.7;color:#c9d7e6}
+  .kw{color:var(--pink)} .cm{color:#6a737d;font-style:italic} .st{color:#7ee787} .fn{color:#79c0ff} .num{color:#f0883e}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0}
+  .card.brand{border-color:#1f4b8f;background:linear-gradient(180deg,#111a2e,#131722)}
+  .card.ok{border-color:#1f512b} .card.warn{border-color:#5a4412} .card.new{border-color:#5a3418} .card.red{border-color:#5a1f22}
+  .card b{color:#fff}
+  .grid{display:grid;gap:12px;margin:14px 0}
+  .g2{grid-template-columns:1fr 1fr} .g3{grid-template-columns:1fr 1fr 1fr}
+  @media(max-width:760px){.g2,.g3{grid-template-columns:1fr}}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#cdd9e5;font-weight:700}
+  td code{font-size:12px}
+  .hl{background:linear-gradient(transparent 60%,#3a2a12 60%);color:#ffd98a;padding:0 2px}
+  .hlp{background:linear-gradient(transparent 60%,#2a1f44 60%);color:#d6bcfa;padding:0 2px}
+  .hlg{background:linear-gradient(transparent 60%,#12351f 60%);color:#9be7ac;padding:0 2px}
+  .kv{color:var(--muted);font-size:13.5px}
+  .badge{display:inline-block;font-size:10.5px;font-weight:800;padding:1px 7px;border-radius:5px;vertical-align:middle}
+  .badge.keep{background:#12351f;color:#7ee787} .badge.new{background:#3a2412;color:#f0a868}
+  .badge.rewrite{background:#3a1a1c;color:#ff9d9d} .badge.reuse{background:#132a4d;color:#8fb8ff}
+  .badge.ext{background:#2a1f44;color:#d6bcfa}
+  ul,ol{margin:10px 0;padding-left:22px} li{margin:5px 0}
+  .filename{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--cyan)}
+  .step{display:flex;gap:12px;margin:10px 0;align-items:flex-start}
+  .step-n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--brand-d);color:#fff;font-weight:800;font-size:13px;display:grid;place-items:center;margin-top:2px}
+  .step-b{flex:1}
+  .lane{border-left:3px solid var(--line);padding-left:14px;margin:10px 0}
+  .lane.keep{border-color:var(--ok)} .lane.rewrite{border-color:var(--red)} .lane.new{border-color:var(--new)} .lane.ext{border-color:var(--purple)}
+  .toc{columns:2;column-gap:26px;font-size:14px} .toc a{color:#9db8e0;text-decoration:none} .toc a:hover{color:#fff}
+  @media(max-width:760px){.toc{columns:1}}
+  .ascii{white-space:pre;font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.45;color:#9db8e0;background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:16px;overflow:auto}
+  .pill{font-size:11px;padding:1px 8px;border-radius:12px;border:1px solid var(--line);color:var(--muted);margin-left:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>cmx-flow → 独立流程微服务 <span style="font-size:16px;-webkit-text-fill-color:var(--muted);color:var(--muted)">v2</span></h1>
+<p class="sub">纯流程引擎微服务：身份/组织/表单全外部化，前端一芯三壳（门户内嵌 · 可嵌组件 · headless API 供三方自建）。</p>
+<div>
+<span class="tag c">架构方案 v2</span>
+<span class="tag">不动代码 · 纯设计</span>
+<span class="tag p">身份/组织/表单 = 外部</span>
+<span class="tag k">引擎自持</span>
+</div>
+
+<div class="card brand">
+<b>v2 相对 v1 的三处关键调整（按最新要求）：</b>
+<ol style="margin:8px 0 0">
+<li><b>身份/组织/表单彻底外部化</b> —— 流程<span class="hl">不自带也不复制</span>用户/角色/组织/表单，全部由第三方系统提供服务或数据。流程只持有"流程本身"的东西（定义、实例、令牌、任务、意见、抄送、绑定）。三个既有 trait（<code>AssigneeResolver</code>/<code>SubflowRouter</code>/表单绑定）从"接平台 IAM"改为<span class="hlp">接外部 HTTP 适配器</span>。</li>
+<li><b>前端"一芯三壳"</b> —— 同一套流程 UI 逻辑，三种交付：①继续以 native_pages 内嵌 <b>CMXPortalManager 门户</b>（现状保留）；②抽成<span class="hlp">框架无关可嵌 Web Component</span>（<code>&lt;flow-designer&gt;</code>/<code>&lt;flow-todo&gt;</code>/<code>&lt;flow-task-form&gt;</code>）供三方系统集成；③提供<span class="hlp">headless REST/gRPC API</span>，三方完全自研设计器/待办界面。</li>
+<li><b>集成契约已有先例</b> —— 平台 <code>dev-local.toml</code> 的 <code>[center_client.urls] flow = "http://flow-center:8080/api/plugin/flow/import"</code> + <code>flow_service</code> 服务发现<span class="hlg">早已为"外部 flow-center 服务"预留</span>（与 menu/perm/form center 同构）。本方案正是兑现它。</li>
+</ol>
+</div>
+
+<h2>目录</h2>
+<div class="toc">
+<a href="#s1">1. 边界重划：流程"自持"什么，"外借"什么</a><br>
+<a href="#s2">2. 目标架构：一引擎 · 四外部适配器 · 三前端壳</a><br>
+<a href="#s3">3. 后端：可依赖 cmx-container 公共库（保留 infra 依赖）</a><br>
+<a href="#s4">4. 外部化 ①身份 ②组织 ③表单 ④单据 —— 四个适配器</a><br>
+<a href="#s5">5. 前端一芯三壳：门户内嵌 · 可嵌组件 · headless</a><br>
+<a href="#s6">6. Headless API 契约：三方自研设计器/待办</a><br>
+<a href="#s7">7. 多租户 + 认证（在外部身份前提下）</a><br>
+<a href="#s8">8. 可复用公共组件与 crate 清单</a><br>
+<a href="#s9">9. 部署 · 平台集成（center_client 对接）</a><br>
+<a href="#s10">10. 分阶段路线图</a><br>
+<a href="#s11">11. 工作量与风险矩阵</a><br>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s1">1. 边界重划：流程"自持"什么，"外借"什么 <span class="n">v2 的核心决策</span></h2>
+
+<div class="grid g2">
+<div class="card ok">
+<b>✅ 流程自持（引擎的本体，落自己的库）</b>
+<ul class="kv">
+<li>流程<b>定义</b>（BPMN + 版本 + 草稿/发布）</li>
+<li>运行态：<b>实例 · 令牌 · 任务 · 定时器作业</b></li>
+<li>历史：<b>hi_task · 意见留痕 · 抄送记录</b></li>
+<li><b>候选池</b>（任务↔候选用户 id 快照，仅存 id）</li>
+<li>子流程<b>组织绑定</b>（called_key + org_id → 目标 key，仅存 id/key）</li>
+<li>表单<b>绑定</b>（formKey → 外部表单坐标/URL，仅存指针）</li>
+</ul>
+</div>
+<div class="card" style="border-color:#3d2a63">
+<b>🟣 外借（第三方系统提供，流程只存 id/引用）</b>
+<ul class="kv">
+<li><b>用户</b>（是谁、昵称、状态）——外部 IdP/HR</li>
+<li><b>角色/岗位</b>（role/position → 用户）——外部</li>
+<li><b>组织</b>（org 树、部门归属、path 继承）——外部</li>
+<li><b>表单</b>（渲染什么、字段、数据）——外部表单系统</li>
+<li><b>业务单据</b>（真实单据数据、回写）——外部业务系统</li>
+</ul>
+</div>
+</div>
+
+<div class="card brand">
+<b>判定标准（一条线）：</b>凡是<span class="hl">"流程为了推进而必须知道的事实"</span>——谁在哪个节点、令牌到哪了、任务归谁——流程自持；凡是<span class="hlp">"关于人/组织/表单的真相"</span>——这个 id 对应谁、这个角色下有哪些人、这张表单长什么样——流程<b>只存引用（id/key/URL），运行时向外部要</b>。流程库里<span class="hlg">永远不会出现一张 user/role/org/form 表</span>。
+</div>
+
+<div class="card">
+<b>今天与目标的差：</b>现在 <code>PgIamAssigneeResolver</code>（<span class="filename">store-pg/resolver.rs</span>）<b>直连</b>平台 IAM 库查 <code>cmx_user/cmx_role/cmx_user_role/cmx_position/cmx_org</code>。v2 把这个"直连 SQL"换成"<span class="hl">调外部 HTTP API</span>"——<code>AssigneeResolver</code> trait 一字不改（<span class="filename">model/resolver.rs</span> 早已中立，注释即写"引擎不依赖任何 IAM/DB"），只是换一个 <code>HttpAssigneeResolver</code> 实现。这是 v2 全部外部化的<span class="hlg">同一个套路</span>：trait 不动，换实现。
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s2">2. 目标架构：一引擎 · 四外部适配器 · 三前端壳 <span class="n">全景</span></h2>
+
+<div class="ascii">                          ┌───────────────── 三前端壳（任选/并存）─────────────────┐
+                          │  ① CMXPortalManager 门户    ② 可嵌 Web Component    ③ 三方自研 │
+                          │     native_pages 三页          &lt;flow-designer&gt; 等       (用 headless) │
+                          └───────────┬────────────────────────┬─────────────────────┬─────────┘
+                                      │        HTTP /api/flow/* + SSE                │
+                                      ▼                                              ▼
+┌───────────────────────────────────────────────────────────────────────────────────────────┐
+│                             flow-server (Rust · 单二进制)                                    │
+│  ┌────────────────────────────────────────────────────────────────────────────────────┐   │
+│  │ flow-http  (重写 cmx-flow-api 装配)  · 租户中间件 · 认证中间件(JWT/JWKS) · OpenAPI     │   │
+│  └───────────────────────────────────┬────────────────────────────────────────────────┘   │
+│                          ┌───────────▼───────────┐                                          │
+│                          │  Engine&lt;S&gt;  (纯核·零改) │  model / bpmn / engine                  │
+│                          └───────────┬───────────┘                                          │
+│         ┌──────────────┬─────────────┼───────────────┬────────────────┐                      │
+│         ▼              ▼             ▼               ▼                ▼                      │
+│  RuntimeStore   AssigneeResolver  SubflowRouter  FormResolver     Delegate                   │
+│   (自持·PG)      (HTTP 适配器)     (HTTP 适配器)   (HTTP 适配器)    (HTTP 适配器)              │
+│         │              │             │               │                │                      │
+│         ▼              └─────────────┴───────────────┴────────────────┘                      │
+│  ┌────────────┐                     │  出站适配器（四外部服务）                              │
+│  │ Postgres   │                     ▼                                                        │
+│  │ cmx_flow_* │        ┌────────────────────────────────────────────────────────┐          │
+│  │ +tenant_id │        │ ①身份服务(IdP/HR)  ②组织服务  ③表单服务  ④业务单据系统  │  第三方   │
+│  └────────────┘        └────────────────────────────────────────────────────────┘          │
+│                        + 出站 webhook（实例/任务生命周期）→ 通知第三方                        │
+└───────────────────────────────────────────────────────────────────────────────────────────┘
+       ▲ 平台通过 center_client 对接：dev-local.toml [center_client.urls] flow = http://flow-center/...</div>
+
+<div class="grid g3">
+<div class="card"><b>一引擎</b><br><span class="kv"><code>model/bpmn/engine</code> 零改。<code>RuntimeStore</code> 自持流程数据落 PG。这是唯一"自己的库"。</span></div>
+<div class="card"><b>四外部适配器</b><br><span class="kv">身份/组织/表单/单据全走 trait→HTTP。默认给"外部 REST 适配器"实现；平台内嵌部署时可换"回连平台库"实现。</span></div>
+<div class="card"><b>三前端壳</b><br><span class="kv">门户 native_pages（保留）· 可嵌 Web Component（新）· headless API（新）。三者共用同一 <code>/api/flow/*</code>。</span></div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s3">3. 后端：可依赖 cmx-container 公共库 <span class="n">v2 放宽：允许保留 infra 依赖</span></h2>
+
+<div class="card ok">
+<b>v2 明确允许流程微服务依赖 cmx-container 的部分公共库</b>（不再追求"零 cmx 依赖"）。这让后端几乎<span class="hlg">零重写</span>——只有 <code>cmx-flow-api</code> 的 HTTP 装配层要脱 <code>cmx-api</code>（因为它拖入整个平台且带门户 <code>CmxAppState</code>）。infra 层（<code>cmx-database-pg</code>/<code>cmx-core</code>/<code>cmx-job-core</code>）大方保留。
+</div>
+
+<table>
+<tr><th>crate</th><th>层</th><th>v2 动作</th></tr>
+<tr><td><code>cmx-flow-model / bpmn / engine</code></td><td>引擎核</td><td><span class="badge keep">原样</span> 已框架无关</td></tr>
+<tr><td><code>cmx-flow-def / store-pg</code></td><td>持久化</td><td><span class="badge keep">原样</span>（store-pg 的 <code>PgIamAssigneeResolver</code>/<code>PgSubflowRouter</code> <b>不删</b>，作为"回连平台库"的可选实现；新增 HTTP 实现平行存在）</td></tr>
+<tr><td><code>cmx-database-pg</code></td><td>infra</td><td><span class="badge reuse">依赖</span> tokio-postgres 多数据源池（租户库靠它 register）</td></tr>
+<tr><td><code>cmx-core</code></td><td>infra</td><td><span class="badge reuse">依赖</span> DataValue</td></tr>
+<tr><td><code>cmx-job-core</code></td><td>infra</td><td><span class="badge reuse">依赖</span> 异步作业 SSE + SKIP LOCKED 抢占（定时器/催办/webhook 重试）</td></tr>
+<tr><td><code>cmx-flow-api</code> → <code>flow-http</code></td><td>HTTP</td><td><span class="badge rewrite">重写装配</span> 脱 cmx-api；handler 体逐字搬</td></tr>
+<tr><td>新增 <code>cmx-flow-adapters</code></td><td>适配器</td><td><span class="badge new">新 crate</span> 四个 HTTP 外部适配器（见 §4）</td></tr>
+</table>
+
+<div class="card">
+<b>为什么只有 flow-api 要动：</b>它 <code>impl ModuleRoutes&lt;CmxAppState&gt;</code> + handler 带 <code>State(_s)</code>/<code>CmxSvrContext(_ctx)</code>（<span class="hl">绑定但基本不用</span>）。<code>cmx-api</code> 传递拖入 biz/metadata/plugin/ai/portal/rpc 整个平台。重写=①自建 <code>AppState{rt, adapters, tenant_cfg}</code>；②自写 <code>TenantCtx</code> extractor；③自定义响应封套 <code>{code,msg,data}</code>（形状照抄，前端零改）；④普通 <code>Router::new().route(...)</code>。<code>cmx-flow-demo/main.rs</code> 已是这个形状的活样板。
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s4">4. 外部化四个适配器 <span class="n">身份 · 组织 · 表单 · 单据</span></h2>
+
+<p>核心手法统一：<span class="hlp">trait 保留 → 新增 HTTP 实现 → 引擎注入</span>。每个适配器都给"外部 REST"默认实现 + "回连平台"可选实现。</p>
+
+<h3>① 身份适配器 —— <code>AssigneeResolver</code>（trait 已在，零改）</h3>
+<div class="card">
+<span class="kv">trait（<span class="filename">model/resolver.rs:32</span>）把 <code>CandidateRef</code>(user/role/position/org) 解析成用户 id 列表。今天 <code>PgIamAssigneeResolver</code> 查平台库。v2 新增：</span>
+<pre><code><span class="kw">struct</span> <span class="fn">HttpAssigneeResolver</span> { base_url, http, token }
+<span class="cm">// 外部身份服务约定 4 个只读端点（或合成 1 个 resolve）：</span>
+GET  {base}/identity/role/{code}/users      <span class="cm">// role → [user_id]</span>
+GET  {base}/identity/position/{code}/users  <span class="cm">// position → [user_id]</span>
+GET  {base}/identity/org/{id}/users?deep=1  <span class="cm">// org 子树 → [user_id]</span>
+POST {base}/identity/resolve  {refs:[...]}   <span class="cm">// 批量一发（推荐，省 N 次往返）</span></code></pre>
+<span class="kv">引擎 <code>engine.set_resolver(Arc::new(HttpAssigneeResolver::new(...)))</code>——一行切换。候选池只落 <b>解析出的用户 id 快照</b>，流程不存"角色→人"关系（那是外部的真相）。</span>
+</div>
+
+<h3>② 组织适配器 —— <code>SubflowRouter</code> + 用户展示名</h3>
+<div class="card">
+<span class="kv"><code>SubflowRouter</code>（<span class="filename">model/subflow.rs:35</span>）按 <code>(called_key, org_id)</code> 解析子流程，今天沿 <code>cmx_org.path</code> 前缀继承。v2：<b>组织绑定仍自持</b>（called_key+org_id→target_key 是流程配置），但<span class="hl">org 树/path 继承向外部组织服务查</span>：</span>
+<pre><code>GET {base}/org/{id}/ancestors   <span class="cm">// 返回祖先链，供"沿组织树向上找绑定"</span>
+GET {base}/users?ids=a,b,c       <span class="cm">// id → 昵称/头像/状态，纯展示（待办列表显示人名）</span></code></pre>
+<span class="kv"><code>HttpSubflowRouter</code> 拿祖先链在自持的绑定表里匹配。用户展示名是<b>纯 UI 增强</b>（前端把 id 换成名字），可缓存、可降级为显示 id。</span>
+</div>
+
+<h3>③ 表单适配器 —— 表单绑定升级（已有 kind 分派，加 external 型）</h3>
+<div class="card">
+<span class="kv">今天表单绑定（<code>cmx_flow_form_binding</code>）已支持多 kind：<code>native</code>/<code>html</code>/<code>workspace</code>（门户页）。v2 加两个<span class="hlp">外部型</span>，让表单完全由第三方渲染：</span>
+<table style="margin-top:8px">
+<tr><th>kind</th><th>含义</th><th>前端行为</th></tr>
+<tr><td><code>external_url</code></td><td>外部表单页 URL（模板带 <code>{taskId}{instanceId}{formKey}{bizId}</code>）</td><td>iframe 内嵌 或 新窗口打开第三方表单</td></tr>
+<tr><td><code>schema</code></td><td>外部返回 JSON-Schema，流程内建轻量渲染器画表单</td><td><code>GET {formSvc}/form/{formKey}?ctx=…</code> 取 schema+data，提交回 <code>PUT</code></td></tr>
+<tr><td><code>native/html/workspace</code></td><td>门户内嵌（现状）</td><td>仅门户壳可用；三方壳忽略或降级</td></tr>
+</table>
+<span class="kv" style="margin-top:6px">流程只存<b>指针</b>（URL 模板 或 formSvc 坐标），永不存表单结构/数据。办结前"先存表单再办结"的跨页桥（F5 已有）改为<span class="hl">调外部表单服务的保存端点</span>。</span>
+</div>
+
+<h3>④ 单据适配器 —— serviceTask HTTP delegate + 生命周期 webhook</h3>
+<div class="card">
+<span class="kv"><code>JavaDelegate</code>（<span class="filename">engine/delegate.rs:32</span>）今天是进程内实现（如 RiskDelegate）。v2 加 <code>HttpDelegate</code>：节点配 URL，引擎把变量 POST 过去、拿返回写回变量——<span class="hl">把"算风险/调外部逻辑"外包给第三方</span>。加出站生命周期 webhook：</span>
+<pre><code><span class="cm">// 出站（flow → 第三方业务系统），带签名头</span>
+POST {hook}  { event:<span class="st">"instance.started|completed|terminated"</span>, ... }
+POST {hook}  { event:<span class="st">"task.created|completed|reassigned"</span>, taskId, assignee, ... }
+<span class="cm">// 入站（业务系统 → flow）：发起、办理、查询，全走 headless API §6</span></code></pre>
+<span class="kv">单据关联表（<code>cmx_flow_biz_link</code>）自持——只存 <code>(biz_table, biz_id, instance_id)</code> 三元指针，<b>不存单据内容</b>。真实单据数据由业务系统持有，需要时前端/webhook 去业务系统取。</span>
+</div>
+
+<div class="card brand"><b>四适配器的共性：</b>全部是 <code>Arc&lt;dyn Trait&gt;</code> 注入 + 一个新 crate <code>cmx-flow-adapters</code> 装 HTTP 实现。<span class="hlg">引擎、store、handler 一律不感知外部是谁</span>——配置切 URL 即换后端。默认 mock/自带实现让流程能<b>脱离一切外部单独跑起来</b>（开发/演示），生产配上真实外部服务 URL。</div>
+
+<!-- ============================================================ -->
+<h2 id="s5">5. 前端一芯三壳 <span class="n">门户内嵌 · 可嵌组件 · headless</span></h2>
+
+<p>同一套 UI 逻辑（列表/卡片/过滤/分页/表单/审批轨迹/bpmn 画布 + 全 <code>/api/flow/*</code> 调用）抽成<b>与宿主无关的核</b>，三种壳包装：</p>
+
+<div class="grid g3">
+<div class="card">
+<b>壳① 门户内嵌</b> <span class="badge keep">保留现状</span><br>
+<span class="kv">继续以 <code>native_pages</code> 三页跑在 CMXPortalManager。<code>ctx.host.renderRoot</code>(shadow) + <code>openWorkNode</code> 门户链保留。<b>零回归</b>——今天能跑的照跑。这是"流程界面依赖门户"那一支。</span>
+</div>
+<div class="card" style="border-color:#3d2a63">
+<b>壳② 可嵌 Web Component</b> <span class="badge new">新</span><br>
+<span class="kv">把核封成框架无关 custom element：<code>&lt;flow-designer&gt;</code> / <code>&lt;flow-todo&gt;</code> / <code>&lt;flow-task-form&gt;</code>。第三方系统 <code>&lt;script&gt;</code> 引入 + 放标签 + 配 <code>api-base</code>/<code>token</code> 属性即用。<b>可嵌进 React/Vue/Angular/原生任意框架</b>。对标 <code>cmx-mega-sheet</code>（零运行时依赖单元素）。</span>
+</div>
+<div class="card">
+<b>壳③ 三方全自研</b> <span class="badge new">headless</span><br>
+<span class="kv">只给 <b>REST/gRPC API + SSE + OpenAPI</b>（§6），第三方用自己的技术栈画设计器/待办/表单，一行流程前端代码都不用我们的。流程微服务对他们只是一组端点。</span>
+</div>
+</div>
+
+<div class="card">
+<b>"抽核"怎么落地（关键改造）：</b>今天三页面把 DOM 挂载写死在 <code>ctx.host.renderRoot</code>（门户 shadow）。抽核 = 把<span class="hl">"取挂载根 + 取上下文(props)"</span>参数化：
+<pre><code><span class="cm">// 核：mountFlowTodo(rootEl, { apiBase, token, tenant, user, onOpenTask })</span>
+<span class="cm">//   门户壳：rootEl = ctx.host.renderRoot; onOpenTask = openWorkNode(门户链)</span>
+<span class="cm">//   组件壳：rootEl = this.shadowRoot; onOpenTask = 派发 CustomEvent('flow-open-task')</span>
+<span class="cm">//   —— 同一核，两种挂载/两种"打开任务"回调</span></code></pre>
+<span class="kv"><code>openWorkNode</code> 那 ~200 行门户特有逻辑塌缩成一个 <code>onOpenTask</code> 回调：门户壳里它是"开工作区 Tab"，组件壳里它是"派发事件让宿主决定怎么开"，headless 里根本不存在。</span>
+</div>
+
+<div class="card ok"><b>图标/主题复用：</b>组件壳直接加载 <code>cmx-ui5-runtime</code> dist（预打包 ui5 web components + icon + SAP 主题），现有 <code>&lt;ui5-icon&gt;</code> 和 <code>--sap*</code> token 零改生效。三方若不想要 ui5，核也提供<b>无 ui5 降级</b>（demo 的纯 HTML 版已证明 UI 不依赖 ui5 也能看）。</div>
+
+<!-- ============================================================ -->
+<h2 id="s6">6. Headless API 契约：三方自研设计器/待办 <span class="n">对外的正式接口</span></h2>
+
+<p>把今天的 <code>/api/flow/*</code>（内部端点）升级为<b>对外正式契约</b>：稳定版本化、OpenAPI 描述、认证 + 多租户、SSE 实时。分三组能力：</p>
+
+<div class="grid g3">
+<div class="card">
+<b>设计态（画流程）</b>
+<pre style="margin:6px 0"><code>GET  /definitions
+GET  /definitions/{k}
+POST /definitions/draft
+POST /definitions/{k}/publish
+GET  /definitions/{k}/versions
+POST .../versions/{v}/activate</code></pre>
+<span class="kv">三方自研设计器用 bpmn-js（或任意 BPMN 工具）产出 XML，POST draft/publish。BPMN 是<b>标准</b>，不锁我们的设计器。</span>
+</div>
+<div class="card">
+<b>运行态（发起/办理）</b>
+<pre style="margin:6px 0"><code>POST /instances            起
+GET  /instances/{id}       轨迹
+POST /instances/{id}/cancel
+POST /tasks/{id}/complete
+POST /tasks/{id}/claim
+POST /tasks/{id}/transfer
+POST /tasks/{id}/delegate|addsign</code></pre>
+<span class="kv">业务系统入站发起、驱动流转。全部幂等/带业务键。</span>
+</div>
+<div class="card">
+<b>待办态（查任务）</b>
+<pre style="margin:6px 0"><code>GET /tasks/my            我的待办
+GET /todos/cc|initiated|done
+GET /todos/filters
+GET /forms/{key}         表单坐标
+SSE /events?user=&amp;tenant= 实时推</code></pre>
+<span class="kv">三方自研待办界面靠这组 + SSE 增量刷新（替今天的前端轮询）。</span>
+</div>
+</div>
+
+<div class="card new">
+<b>对外契约的四条硬要求（比内部端点多出来的）：</b>
+<ol>
+<li><b>版本化前缀</b> <code>/api/flow/v1/*</code>，破坏性变更进 v2，老版本并存——三方集成不能被我们升级打断。</li>
+<li><b>OpenAPI/gRPC-proto 描述</b>——三方能生成客户端 SDK。</li>
+<li><b>认证 + 租户</b>：每个请求带 JWT（用户级）或 API Key（服务间），中间件解出 <code>tenant</code>+<code>user</code> 强制过滤。</li>
+<li><b>SSE 事件流</b> <code>task.created/completed</code>、<code>instance.*</code>——三方 UI 实时更新，不必轮询。（<code>cmx-job-core</code> 的 SSE 中继可复用）</li>
+</ol>
+</div>
+
+<div class="card"><b>身份在 headless 下怎么传？</b>三方系统<span class="hl">用自己的登录态换成对 flow 的 JWT</span>（OIDC 或签发一个 flow 专用 token，claim 带 tenant/user/roles）。flow 不认第三方的 session，只认标准 token。这样"用户是外部的"贯穿到 API 边界：flow 从不管登录，只<b>信任 token 里的身份声明</b>，并用 §4① 的身份适配器把 role/org 引用解析成人。</div>
+
+<!-- ============================================================ -->
+<h2 id="s7">7. 多租户 + 认证（在外部身份前提下） <span class="n">谁是租户由外部定</span></h2>
+
+<div class="grid g2">
+<div class="card">
+<b>多租户</b>
+<span class="kv">flow 自持的表全部加 <code>tenant_id</code>（+ 复合索引），<code>RuntimeStore</code> trait 签名穿 tenant，每查带 <code>WHERE tenant_id=$</code>，RLS 兜底。<b>tenant 从 JWT claim 来</b>（外部 IdP 决定谁属于哪个租户）。大客户可选 db-per-tenant（<code>cmx-database-pg</code> 的 <code>register_datasource(tenant, url)</code> 天然支持）。</span>
+</div>
+<div class="card">
+<b>认证</b>
+<span class="kv">OIDC/JWKS 验签中间件，只消费 claim（<code>sub/tenant/roles</code>），<b>不自建用户体系</b>。这与"身份外部化"是同一件事的两面：认证委托 IdP，人员/组织委托身份服务。接口级 RBAC 按 <code>claim.roles</code> 判（<code>flow:design</code> / <code>flow:task</code>）。</span>
+</div>
+</div>
+
+<div class="card warn"><b>越权防线（多租户 + 外部身份的叠加风险）：</b>①每条 SQL 强制 tenant 过滤（trait 签名逼着传，漏不了）；②RLS 数据库层兜底；③候选池/办理权校验只信服务端解析结果，不信前端传的 assignee；④headless API Key 绑租户，跨租户调用 403。</div>
+
+<!-- ============================================================ -->
+<h2 id="s8">8. 可复用公共组件与 crate 清单 <span class="n">仓库现成资产</span></h2>
+
+<h3>8.1 Rust（后端，v2 允许依赖）</h3>
+<table>
+<tr><th>crate</th><th>用途</th></tr>
+<tr><td><code>cmx-flow-model/bpmn/engine</code></td><td><span class="badge keep">核心</span> 引擎本体（含三注入 trait：AssigneeResolver/SubflowRouter/JavaDelegate + Clock）</td></tr>
+<tr><td><code>cmx-flow-def/store-pg</code></td><td><span class="badge keep">持久化</span> 加 tenant；保留 Pg*Resolver 作"回连平台"可选实现</td></tr>
+<tr><td><code>cmx-database-pg</code></td><td><span class="badge reuse">数据层</span> 多数据源池，租户库 register</td></tr>
+<tr><td><code>cmx-core</code></td><td><span class="badge reuse">基础</span> DataValue</td></tr>
+<tr><td><code>cmx-job-core</code></td><td><span class="badge reuse">作业</span> SSE 中继（headless 实时）+ SKIP LOCKED 抢占（定时器/webhook 重试防重）</td></tr>
+<tr><td><code>cmx-flow-demo</code></td><td><span class="badge reuse">样板</span> 独立 axum 服务活参考</td></tr>
+</table>
+
+<h3>8.2 前端（组件壳，框架无关）</h3>
+<table>
+<tr><th>包</th><th>用途</th></tr>
+<tr><td><code>cmx-ui5-runtime</code> <span class="pill">packages/</span></td><td><span class="badge keep">直接加载</span> ui5 组件+icon+SAP 主题 dist，<code>&lt;ui5-icon&gt;</code>/token 零改</td></tr>
+<tr><td><code>cmx-data-comp</code> <span class="pill">packages/</span></td><td><span class="badge reuse">按需</span> cmx-ui5-form(任务表单 schema 渲染)、cmx-split-pane/cmx-view-tabs(四区布局)、cmx-revo-grid(待办表格)、cmx-floating-dialog(弹窗)</td></tr>
+<tr><td><code>cmx-mega-sheet</code> <span class="pill">cmx-spreadsheet/</span></td><td><span class="badge reuse">范式</span> 零运行时依赖单 custom element 的打包范本（<code>&lt;flow-*&gt;</code> 照此封）</td></tr>
+<tr><td>bpmn-js UMD</td><td><span class="badge keep">托管</span> 自服务 /vendor 托管；三方也可自带任意 BPMN 工具（只要产标准 XML）</td></tr>
+</table>
+
+<h3>8.3 集成/部署范式</h3>
+<div class="card"><span class="kv"><code>cmx-home-site</code>(Cloudflare 静态站上线) + <code>cmx-rust-sheet</code>/<code>cmx-sheetwright</code>(独立 Cargo workspace)示范"独立 workspace + 静态前端 + 独立部署"套路。<b>平台 <code>center_client</code> 机制</b>（menu/perm/form/flow center 的 URL-直连 或 Nacos 服务发现）示范"平台如何对接一个外部子服务"——flow 微服务就填 <code>flow-center</code> 那个位置。</span></div>
+
+<!-- ============================================================ -->
+<h2 id="s9">9. 部署 · 平台集成（center_client 对接） <span class="n">兑现预留的位置</span></h2>
+
+<div class="card ok">
+<b>平台早已为外部 flow 服务留好接口。</b><code>dev-local.toml</code>：
+<pre><code>[center_client.urls]
+<span class="cm"># flow = "http://flow-center:8080/api/plugin/flow/import"</span>   <span class="cm"># URL 直连模式</span>
+[center_client.discovery]
+flow_service = <span class="st">"cmx-server-local"</span>                          <span class="cm"># Nacos 服务发现模式</span></code></pre>
+<span class="kv">与 menu/perm/form center 同构。<b>把注释解开、指向独立部署的 flow-server</b>，平台就以"外部流程中心"方式对接——这正是 v2 要落的形态。<code>/api/service-catalog</code> 还提供服务发现。</span>
+</div>
+
+<div class="grid g2">
+<div class="card">
+<b>打包 / 运行</b>
+<ul class="kv">
+<li>flow-server：单 Rust 二进制 → distroless 镜像；<code>/healthz</code>/<code>/readyz</code></li>
+<li>flow-web（组件壳/静态站）：内嵌 <code>ServeDir</code> 或独立 CDN</li>
+<li><code>docker-compose</code>：flow-server + postgres +（可选）keycloak</li>
+<li>水平扩展：多副本共享 PG，定时器/webhook 用 SKIP LOCKED 认领防重</li>
+</ul>
+</div>
+<div class="card">
+<b>配置（全环境变量，零平台 ConfigManager）</b>
+<pre><code>FLOW_PG_URL=postgres://…/flow
+FLOW_TENANCY=shared|db-per-tenant
+FLOW_OIDC_ISSUER / FLOW_OIDC_JWKS
+FLOW_IDENTITY_SVC=https://id-svc/…    <span class="cm">#①</span>
+FLOW_ORG_SVC=https://org-svc/…        <span class="cm">#②</span>
+FLOW_FORM_SVC=https://form-svc/…      <span class="cm">#③</span>
+FLOW_WEBHOOK_URLS / SIGNING_KEY       <span class="cm">#④</span></code></pre>
+</div>
+</div>
+
+<div class="card brand"><b>三种部署姿态，同一二进制：</b>①<b>纯独立</b>（四适配器全配外部 URL，自建认证，供三方 headless/组件）；②<b>平台内嵌</b>（适配器换"回连平台库"实现，前端走门户 native_pages——即今天）；③<b>混合</b>（如身份回连平台、表单走外部）。<span class="hlg">配置决定姿态，代码一份。</span></div>
+
+<!-- ============================================================ -->
+<h2 id="s10">10. 分阶段路线图 <span class="n">S0 → S6</span></h2>
+
+<div class="step"><div class="step-n">0</div><div class="step-b"><b>S0 · 独立 workspace + flow-http 脱平台</b> <span class="badge rewrite">核心</span><br><span class="kv">新建独立 Cargo workspace，纳入 clean-lift crate；重写 flow-api 装配脱 cmx-api（AppState/封套/Router），handler 逐字搬。产出：flow-server 单进程，curl 全端点通（等价今天，单租户、mock 外部）。</span></div></div>
+<div class="step"><div class="step-n">1</div><div class="step-b"><b>S1 · 四外部适配器（trait→HTTP）</b> <span class="badge ext">外部化</span><br><span class="kv">新 crate <code>cmx-flow-adapters</code>：HttpAssigneeResolver/HttpSubflowRouter/HttpFormResolver/HttpDelegate + 出站 webhook。给每个 mock 默认实现（脱外部可单跑）。产出：配 URL 即接第三方身份/组织/表单。</span></div></div>
+<div class="step"><div class="step-n">2</div><div class="step-b"><b>S2 · 多租户 + 认证</b> <span class="badge new">安全</span><br><span class="kv">全表 tenant_id + RuntimeStore 签名穿透 + RLS；OIDC 验签中间件（claim 取 tenant/user/roles）。产出：两租户隔离 + 真登录 E2E。</span></div></div>
+<div class="step"><div class="step-n">3</div><div class="step-b"><b>S3 · Headless API v1 正式化</b> <span class="badge new">对外</span><br><span class="kv"><code>/api/flow/v1/*</code> 版本化 + OpenAPI + SSE 事件流 + API Key（服务间）。产出：三方可据文档自研设计器/待办。</span></div></div>
+<div class="step"><div class="step-n">4</div><div class="step-b"><b>S4 · 前端抽核 + 门户壳不回归</b> <span class="badge keep">保现状</span><br><span class="kv">三页面抽核（参数化 rootEl + onOpenTask）；门户壳用核重接，CDP 验证今天功能零回归。产出：同一核跑在门户。</span></div></div>
+<div class="step"><div class="step-n">5</div><div class="step-b"><b>S5 · 可嵌 Web Component 壳</b> <span class="badge new">供集成</span><br><span class="kv"><code>&lt;flow-designer/todo/task-form&gt;</code> 封装（对标 cmx-mega-sheet）+ 加载 cmx-ui5-runtime + 无 ui5 降级。产出：三方系统 script 引入即用的组件。</span></div></div>
+<div class="step"><div class="step-n">6</div><div class="step-b"><b>S6 · 平台 center_client 对接 + 交付</b> <span class="badge reuse">收口</span><br><span class="kv">解开 <code>[center_client.urls].flow</code> 指向独立 flow-server；docker-compose/distroless；三姿态部署文档。产出：平台以"外部流程中心"对接的成品。</span></div></div>
+
+<!-- ============================================================ -->
+<h2 id="s11">11. 工作量与风险矩阵 <span class="n">v2 诚实评估</span></h2>
+
+<table>
+<tr><th>方面</th><th>量级</th><th>难度</th><th>说明</th></tr>
+<tr><td>引擎核（model/bpmn/engine）</td><td>0</td><td>—</td><td><span class="hlg">原样，零改</span></td></tr>
+<tr><td>持久化 + 多租户</td><td>中</td><td>中</td><td>加 tenant 列/签名 + RLS（绿地但有成熟范式）</td></tr>
+<tr><td>flow-http 重写（脱 cmx-api）</td><td>中</td><td>中低</td><td>装配换、handler 搬，机械活</td></tr>
+<tr><td>四外部适配器</td><td>中</td><td>中</td><td>trait 已在（3 个），新增 HTTP 实现；表单加两 kind；delegate 加 HTTP 型</td></tr>
+<tr><td>认证</td><td>小中</td><td>中</td><td>接标准 OIDC 库，只消费 claim</td></tr>
+<tr><td>Headless API 正式化</td><td>小中</td><td>低中</td><td>端点已全在，加版本/OpenAPI/SSE/APIKey</td></tr>
+<tr><td>前端抽核 + 门户壳</td><td>中</td><td>中</td><td>参数化挂载 + onOpenTask 回调；门户不回归</td></tr>
+<tr><td>可嵌 Web Component 壳</td><td>中</td><td>中</td><td>封装 + 主题 + 降级；有 cmx-mega-sheet 范本</td></tr>
+</table>
+
+<div class="grid g2">
+<div class="card ok"><b>结构性优势（v2 更顺）</b>
+<ul class="kv">
+<li>"外部化"正是三个注入 trait 的<b>设计初衷</b>——trait 注释明写"引擎不依赖 IAM/DB"</li>
+<li>表单绑定已有 kind 分派，加 external 型是延长线不是新机制</li>
+<li>平台 center_client <b>早为外部 flow 服务预留</b>——集成契约已存在</li>
+<li>headless 端点<b>今天全在</b>，正式化是包装非新建</li>
+<li>前端核与门户壳可切分，切完门户仍能用同一核</li>
+</ul></div>
+<div class="card warn"><b>需留心</b>
+<ul class="kv">
+<li><b>外部服务可用性</b>：身份/表单服务挂了流程要能优雅降级（缓存 id、显示 id、表单 iframe 兜底）</li>
+<li><b>N+1 解析</b>：候选人/展示名批量端点 + 缓存，别每任务一次往返</li>
+<li><b>多租户越权</b>：RLS + trait 强制传 tenant 双保险</li>
+<li><b>契约稳定性</b>：headless 对外后破坏性变更要走版本，不能随意改</li>
+<li><b>抽核回归</b>：门户壳改造需 CDP 全量回归今天已验的办理/查看/叠加</li>
+</ul></div>
+</div>
+
+<div class="card brand">
+<b>v2 总评：</b>方向与代码的天然结构<span class="hlg">高度吻合</span>——三个注入 trait 本就是为"外部实现"设计的，表单 kind 分派本就可扩展，平台本就为外部 flow-center 留了位。所以"身份/组织/表单外部化"不是硬改，是<span class="hl">兑现既有扩展点</span>。真正的新增是：flow-http 脱壳（一次性）、多租户（绿地）、可嵌组件 + headless 正式化（增量）。<b>引擎一行不改，前端一芯三壳并存，一份二进制三种部署姿态。</b>
+</div>
+
+<p style="margin-top:40px;color:var(--muted);font-size:13px;text-align:center">
+cmx-flow 独立流程微服务架构方案 v2 · 身份/组织/表单外部化 + 一芯三壳 + headless 契约 · 纯设计文档（不含代码改动）
+</p>
+
+</div>
+</body>
+</html>

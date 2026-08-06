@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  演示流程：报销会签审批（expense_countersign）
+  拓扑（多实例会签 + 或签）：
+    start ─► 部门经理初审(userTask)
+      ─► 金额判断(exclusiveGateway)
+            ├─ ${amount > 20000}  ─► 财务会签(userTask · 并行多实例)
+            │                          collection=approvers, 过半通过
+            │                        ─► 结束
+            └─ default(小额)      ─────────────────────────────────► 结束
+  M3 要素：
+    - parallel multiInstance（会签）：一个 userTask 按 approvers 数组展开成 N 个并行待办
+    - completionCondition：${nrOfCompletedInstances/nrOfInstances >= 0.5}（过半即通过，剩余作废）
+    - elementVariable：每个会签人各自的数据随任务携带（element_value）
+  演示「实例取消」：任意进行中实例可撤单 → Terminated（归档 HI）。
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:flowable="http://flowable.org/bpmn"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  targetNamespace="http://cmx/flow/demo">
+  <bpmn:process id="expense_countersign" name="报销会签审批" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="提交报销"/>
+    <bpmn:sequenceFlow id="f0" sourceRef="start" targetRef="dept_manager"/>
+
+    <bpmn:userTask id="dept_manager" name="部门经理初审" flowable:assignee="部门经理"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="dept_manager" targetRef="gw_amount"/>
+
+    <bpmn:exclusiveGateway id="gw_amount" name="金额判断" default="f_small"/>
+
+    <bpmn:sequenceFlow id="f_big" sourceRef="gw_amount" targetRef="finance_sign">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${amount &gt; 20000}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f_small" sourceRef="gw_amount" targetRef="done"/>
+
+    <bpmn:userTask id="finance_sign" name="财务会签" flowable:assignee="${approver}">
+      <bpmn:multiInstanceLoopCharacteristics isSequential="false"
+           flowable:collection="approvers" flowable:elementVariable="approver">
+        <bpmn:completionCondition>${nrOfCompletedInstances/nrOfInstances &gt;= 0.5}</bpmn:completionCondition>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:userTask>
+    <bpmn:sequenceFlow id="f2" sourceRef="finance_sign" targetRef="done"/>
+
+    <bpmn:endEvent id="done" name="审批完成"/>
+
+  </bpmn:process>
+</bpmn:definitions>

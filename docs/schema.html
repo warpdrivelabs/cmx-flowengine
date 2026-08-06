@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cmx-flow 流程引擎 · 数据库表结构文档</title>
+<style>
+  :root {
+    --bg: #f6f8fa; --panel: #ffffff; --ink: #1f2328; --muted: #656d76;
+    --line: #d0d7de; --line-soft: #eaeef2;
+    --brand: #0969da; --brand-soft: #ddf4ff;
+    --pk: #8250df; --pk-soft: #fbefff; --idx: #1a7f37; --idx-soft: #e6f6eb;
+    --null: #9a6700; --notnull: #cf222e;
+    --code-bg: #f6f8fa; --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    line-height: 1.65; font-size: 15px;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 32px 24px 80px; }
+
+  /* Header */
+  header.hero {
+    background: linear-gradient(135deg, #0969da 0%, #0a4d8c 100%);
+    color: #fff; border-radius: 14px; padding: 34px 36px; margin-bottom: 28px;
+    box-shadow: 0 8px 24px rgba(9,105,218,.18);
+  }
+  header.hero h1 { margin: 0 0 8px; font-size: 26px; letter-spacing: .3px; }
+  header.hero p { margin: 0; opacity: .92; font-size: 14.5px; }
+  .hero-meta { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .hero-meta span {
+    background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.25);
+    border-radius: 999px; padding: 4px 13px; font-size: 12.5px; font-family: var(--mono);
+  }
+
+  /* Overview panel */
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 22px 26px; margin-bottom: 22px;
+  }
+  .panel h2 { margin: 2px 0 14px; font-size: 19px; display: flex; align-items: center; gap: 9px; }
+  .panel h2 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--brand); display: inline-block; }
+  .lead { color: var(--muted); font-size: 14.5px; }
+  ul.tight { margin: 10px 0 0; padding-left: 20px; }
+  ul.tight li { margin: 5px 0; }
+
+  /* ER diagram */
+  .er { display: grid; grid-template-columns: 1fr; gap: 0; margin: 8px 0 4px; }
+  .er-diagram {
+    font-family: var(--mono); font-size: 13px; background: var(--code-bg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; overflow-x: auto;
+    color: var(--ink); line-height: 1.5;
+  }
+  .er-diagram .t { color: var(--brand); font-weight: 700; }
+  .er-diagram .card { color: var(--pk); font-weight: 700; }
+  .er-diagram .note { color: var(--muted); }
+
+  /* Table cards */
+  .tbl-card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    margin-bottom: 24px; overflow: hidden;
+  }
+  .tbl-head { padding: 18px 24px 14px; border-bottom: 1px solid var(--line-soft); }
+  .tbl-head .name {
+    font-family: var(--mono); font-size: 18px; font-weight: 700; color: var(--brand);
+  }
+  .tbl-head .cn { color: var(--muted); font-size: 14px; margin-left: 10px; }
+  .tbl-head .desc { margin: 9px 0 0; color: var(--ink); font-size: 14px; }
+  .tbl-head .cnt { float: right; font-size: 12.5px; color: var(--muted); font-family: var(--mono); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  thead th {
+    text-align: left; background: #f9fafb; color: var(--muted); font-weight: 600;
+    padding: 9px 14px; border-bottom: 1px solid var(--line); white-space: nowrap;
+    font-size: 12.5px; text-transform: uppercase; letter-spacing: .4px;
+  }
+  tbody td { padding: 9px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #fbfcfd; }
+  .col-name { font-family: var(--mono); font-weight: 600; color: var(--ink); white-space: nowrap; }
+  .col-type { font-family: var(--mono); color: #0a4d8c; white-space: nowrap; }
+
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px;
+    border-radius: 999px; margin-left: 6px; font-family: var(--mono); vertical-align: middle;
+  }
+  .b-pk { background: var(--pk-soft); color: var(--pk); border: 1px solid #e5c8ff; }
+  .b-idx { background: var(--idx-soft); color: var(--idx); border: 1px solid #b7e0c1; }
+  .b-notnull { color: var(--notnull); font-weight: 700; font-family: var(--mono); font-size: 12px; }
+  .b-null { color: var(--null); font-family: var(--mono); font-size: 12px; }
+  .mono-default { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .dash { color: var(--line); }
+
+  /* index sub-section */
+  .idx-wrap { padding: 14px 24px 20px; background: #fcfdfe; border-top: 1px solid var(--line-soft); }
+  .idx-wrap h4 { margin: 4px 0 10px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .idx-row { font-family: var(--mono); font-size: 12.8px; padding: 4px 0; }
+  .idx-row .iname { color: var(--idx); font-weight: 700; }
+  .idx-row .icols { color: var(--ink); }
+  .idx-row .ipk { color: var(--pk); font-weight: 700; }
+
+  /* enum legend */
+  .enum-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .enum-chip {
+    font-family: var(--mono); font-size: 12.5px; background: var(--brand-soft);
+    border: 1px solid #b6e3ff; color: #0a4d8c; border-radius: 7px; padding: 4px 10px;
+  }
+  .enum-chip b { color: var(--brand); }
+
+  code.inl { font-family: var(--mono); background: var(--code-bg); border: 1px solid var(--line-soft); border-radius: 5px; padding: 1px 6px; font-size: 12.8px; }
+
+  footer { margin-top: 30px; color: var(--muted); font-size: 12.5px; text-align: center; line-height: 1.8; }
+  footer .warn { color: var(--null); }
+  a { color: var(--brand); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <h1>cmx-flow 流程引擎 · 数据库表结构文档</h1>
+    <p>M1 顺序审批 + M2 并行网关/历史归档 + M3 多实例会签·或签/实例取消 + M2.5 边界定时器 · 运行态/历史态分离（RU/HI）</p>
+    <div class="hero-meta">
+      <span>数据库：PostgreSQL</span>
+      <span>schema：public</span>
+      <span>表数量：7（RU 5 + HI 2）</span>
+      <span>前缀：cmx_flow_</span>
+      <span>外键：无（索引替代）</span>
+    </div>
+  </header>
+
+  <section class="panel">
+    <h2><span class="dot"></span>概述</h2>
+    <p class="lead">
+      流程引擎把运行态拆成 <b>RU（运行态）</b> 与 <b>HI（历史态）</b> 两组表，对齐 Flowable 的 RU/HI 分离。
+      RU 五张表——<b>实例</b>（主体 + 变量）、<b>令牌</b>（流经流程图的执行指针）、<b>任务</b>（用户任务，等待态外化）、
+      <b>多实例域</b>（会签/或签的计数账本）、<b>定时器作业</b>（边界定时器到期表）——构成一个<b>聚合</b>，引擎以
+      「实例 + 其全部令牌 + 其任务 + 其多实例域 + 其定时器作业」为原子单元读写。
+      每个 BPMN 等待态对应<b>一次数据库事务提交</b>，即「等待态即提交点」。实例进入终态时，<b>同一事务内</b>幂等归档到 HI 两张历史表。
+    </p>
+    <ul class="tight">
+      <li>所有表以 <code class="inl">cmx_flow_</code> 前缀命名，符合系统基础表命名约束。</li>
+      <li><b>不使用外键约束</b>：保留关联字段（<code class="inl">instance_id</code> / <code class="inl">token_id</code>）并用索引替代。</li>
+      <li>主键均为 <code class="inl">VARCHAR(64)</code>，承载引擎生成的 UUID 字符串。</li>
+      <li>所有时间列为 <code class="inl">TIMESTAMPTZ</code>（带时区），对应 Rust 侧 <code class="inl">DateTime&lt;Utc&gt;</code>。</li>
+      <li>实例变量以 <code class="inl">JSONB</code> 存储，天然对齐流程作用域的动态 KV。</li>
+      <li><b>M2 新增</b>：令牌 <code class="inl">JOINING</code> 状态（并行网关合流等待）+ 两张历史表（含存续/办理时长）。</li>
+      <li><b>M3 新增</b>：<code class="inl">cmx_flow_mi_scope</code> 多实例执行域表（会签/或签）+ <code class="inl">cmx_flow_task.element_value</code> 列；实例取消激活 <code class="inl">TERMINATED</code> 终态归档。</li>
+      <li><b>M2.5 新增</b>：<code class="inl">cmx_flow_job</code> 定时器作业表（边界定时器）；<b>可注入时钟</b> + 显式 <code class="inl">trigger_due_timers()</code> 推进，<code class="inl">find_due_jobs</code> 按 <code class="inl">due_at</code> 跨实例扫描到期作业。</li>
+    </ul>
+  </section>
+
+  <section class="panel">
+    <h2><span class="dot"></span>逻辑关系（无物理外键）</h2>
+    <div class="er-diagram">
+<span class="t">cmx_flow_instance</span>  <span class="note">（流程实例 · 聚合根 · RU）</span>
+     │  id (PK)
+     │
+     ├──&lt; <span class="t">cmx_flow_token</span>   <span class="note">token.instance_id → instance.id  （一实例多令牌）</span>
+     │         │  id (PK)
+     │         │
+     │         └──&lt; <span class="note">task.token_id → token.id     （一令牌一等待任务）</span>
+     │
+     ├──&lt; <span class="t">cmx_flow_task</span>    <span class="note">task.instance_id → instance.id   （一实例多任务）</span>
+     │
+     ├──&lt; <span class="t">cmx_flow_mi_scope</span> <span class="note">scope.instance_id → instance.id  （M3 · 会签/或签账本）</span>
+     │        <span class="note">node_bpmn_id 关联同节点的子任务/子令牌</span>
+     │
+     └──&lt; <span class="t">cmx_flow_job</span>     <span class="note">job.instance_id → instance.id  （M2.5 · 定时器作业，挂在宿主令牌上）</span>
+
+<span class="note">实例终态归档（同事务，幂等 upsert）：</span>
+     <span class="t">cmx_flow_instance</span>         ──►  <span class="t">cmx_flow_hi_instance</span>   <span class="note">（HI · 含 duration_ms）</span>
+     <span class="t">cmx_flow_task</span> (completed)  ──►  <span class="t">cmx_flow_hi_task</span>       <span class="note">（HI · 含 duration_ms）</span>
+
+<span class="note">关联全部通过普通列 + 索引实现，无 FOREIGN KEY 约束。</span>
+    </div>
+  </section>
+
+  <!-- ============ cmx_flow_instance ============ -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">8 列 · 4 索引</span>
+      <div><span class="name">cmx_flow_instance</span><span class="cn">流程实例表</span></div>
+      <p class="desc">流程实例主体。记录流程定义 key、业务键、生命周期状态与实例级变量（JSONB）。聚合根。</p>
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>列名</th><th>类型</th><th>可空</th><th>默认值</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>实例唯一标识（UUID）</td></tr>
+        <tr><td>2</td><td class="col-name">definition_key<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(128)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>流程定义 key（BPMN process 的 id）</td></tr>
+        <tr><td>3</td><td class="col-name">business_key<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(128)</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>业务键，对接业务单据（可空）</td></tr>
+        <tr><td>4</td><td class="col-name">state<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(16)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>实例状态（见下方枚举）</td></tr>
+        <tr><td>5</td><td class="col-name">variables</td><td class="col-type">jsonb</td><td><span class="b-notnull">NOT NULL</span></td><td class="mono-default">'{}'::jsonb</td><td>实例级流程变量（动态 KV）</td></tr>
+        <tr><td>6</td><td class="col-name">created_at</td><td class="col-type">timestamptz</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>创建时间</td></tr>
+        <tr><td>7</td><td class="col-name">updated_at</td><td class="col-type">timestamptz</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>最近更新时间</td></tr>
+        <tr><td>8</td><td class="col-name">ended_at</td><td class="col-type">timestamptz</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>完成/终止时间（未结束为 NULL）</td></tr>
+      </tbody>
+    </table>
+    <div class="idx-wrap">
+      <h4>索引</h4>
+      <div class="idx-row"><span class="ipk">cmx_flow_instance_pkey</span> &nbsp;UNIQUE&nbsp; <span class="icols">(id)</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_instance_defkey</span> &nbsp;<span class="icols">(definition_key)</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_instance_bizkey</span> &nbsp;<span class="icols">(business_key)</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_instance_state</span> &nbsp;<span class="icols">(state)</span></div>
+      <h4 style="margin-top:16px">state 枚举值</h4>
+      <div class="enum-grid">
+        <span class="enum-chip"><b>ACTIVE</b> — 活动中（有活动令牌或停在等待态）</span>
+        <span class="enum-chip"><b>COMPLETED</b> — 已完成（所有令牌抵达结束事件）</span>
+        <span class="enum-chip"><b>TERMINATED</b> — 已终止（外部取消 / 撤单，M3 激活）</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ cmx_flow_token ============ -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">7 列 · 2 索引</span>
+      <div><span class="name">cmx_flow_token</span><span class="cn">令牌表</span></div>
+      <p class="desc">令牌 = 流经流程图的执行指针。<code class="inl">node_bpmn_id</code> 记录其当前占据的节点（稳定锚点，非 arena 下标）。<code class="inl">parent_id</code> 为并行网关分裂预留（M1 恒为 NULL）。</p>
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>列名</th><th>类型</th><th>可空</th><th>默认值</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>令牌唯一标识（UUID）</td></tr>
+        <tr><td>2</td><td class="col-name">instance_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>所属实例 id（逻辑关联 instance.id）</td></tr>
+        <tr><td>3</td><td class="col-name">node_bpmn_id</td><td class="col-type">varchar(128)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>当前所在节点的 BPMN id</td></tr>
+        <tr><td>4</td><td class="col-name">state</td><td class="col-type">varchar(16)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>令牌状态（见下方枚举）</td></tr>
+        <tr><td>5</td><td class="col-name">parent_id</td><td class="col-type">varchar(64)</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>父令牌 id（并行分裂用，M1 恒 NULL）</td></tr>
+        <tr><td>6</td><td class="col-name">created_at</td><td class="col-type">timestamptz</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>创建时间</td></tr>
+        <tr><td>7</td><td class="col-name">updated_at</td><td class="col-type">timestamptz</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>最近更新时间</td></tr>
+      </tbody>
+    </table>
+    <div class="idx-wrap">
+      <h4>索引</h4>
+      <div class="idx-row"><span class="ipk">cmx_flow_token_pkey</span> &nbsp;UNIQUE&nbsp; <span class="icols">(id)</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_token_instance</span> &nbsp;<span class="icols">(instance_id)</span> &nbsp;<span class="note" style="color:var(--muted)">— 按实例载入全部令牌</span></div>
+      <h4 style="margin-top:16px">state 枚举值</h4>
+      <div class="enum-grid">
+        <span class="enum-chip"><b>ACTIVE</b> — 活动，可被推进</span>
+        <span class="enum-chip"><b>WAITING</b> — 等待，停在等待态节点（如用户任务）</span>
+        <span class="enum-chip"><b>JOINING</b> — 合流等待，停在并行网关 join 等兄弟令牌到齐（M2）</span>
+        <span class="enum-chip"><b>ENDED</b> — 已结束，抵达结束事件</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ cmx_flow_task ============ -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">11 列 · 4 索引</span>
+      <div><span class="name">cmx_flow_task</span><span class="cn">用户任务表</span></div>
+      <p class="desc">用户任务 = 等待态节点的外化产物。令牌停在 userTask 时创建一条任务，外部办结后令牌恢复推进。<code class="inl">(assignee, completed)</code> 复合索引服务「我的待办」查询。<b>M3</b> 增 <code class="inl">element_value</code> 承载会签子任务各自的元素。</p>
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>列名</th><th>类型</th><th>可空</th><th>默认值</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>任务唯一标识（UUID）</td></tr>
+        <tr><td>2</td><td class="col-name">instance_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>所属实例 id（逻辑关联 instance.id）</td></tr>
+        <tr><td>3</td><td class="col-name">token_id</td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>产生该任务的令牌 id（逻辑关联 token.id）</td></tr>
+        <tr><td>4</td><td class="col-name">node_bpmn_id</td><td class="col-type">varchar(128)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>对应 userTask 节点的 BPMN id</td></tr>
+        <tr><td>5</td><td class="col-name">name</td><td class="col-type">varchar(255)</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>任务名（取自节点 name）</td></tr>
+        <tr><td>6</td><td class="col-name">assignee<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(128)</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>办理人</td></tr>
+        <tr><td>7</td><td class="col-name">candidate_groups</td><td class="col-type">varchar(512)</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>候选组（逗号分隔，M1 不解析）</td></tr>
+        <tr><td>8</td><td class="col-name">element_value</td><td class="col-type">jsonb</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td><b>M3</b>：多实例子任务携带的当前元素（会签每人各自数据；单实例为 NULL）</td></tr>
+        <tr><td>9</td><td class="col-name">completed</td><td class="col-type">boolean</td><td><span class="b-notnull">NOT NULL</span></td><td class="mono-default">false</td><td>是否已办结</td></tr>
+        <tr><td>10</td><td class="col-name">created_at</td><td class="col-type">timestamptz</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>创建时间</td></tr>
+        <tr><td>11</td><td class="col-name">completed_at</td><td class="col-type">timestamptz</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>办结时间（未办结为 NULL）</td></tr>
+      </tbody>
+    </table>
+    <div class="idx-wrap">
+      <h4>索引</h4>
+      <div class="idx-row"><span class="ipk">cmx_flow_task_pkey</span> &nbsp;UNIQUE&nbsp; <span class="icols">(id)</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_task_instance</span> &nbsp;<span class="icols">(instance_id)</span> &nbsp;<span class="note" style="color:var(--muted)">— 按实例载入全部任务</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_task_assignee</span> &nbsp;<span class="icols">(assignee)</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_task_open</span> &nbsp;<span class="icols">(assignee, completed)</span> &nbsp;<span class="note" style="color:var(--muted)">— 「我的待办」复合索引</span></div>
+    </div>
+  </div>
+
+  <!-- ============ cmx_flow_mi_scope ============ -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">11 列 · 2 索引 · M3</span>
+      <div><span class="name">cmx_flow_mi_scope</span><span class="cn">多实例执行域表</span></div>
+      <p class="desc">多实例（multiInstance）把一个逻辑 userTask 展开成多个子任务：<b>并行 = 会签</b>（齐头并进），<b>顺序 = 或签</b>（逐个办理）。本表记账每次展开：总数 / 已完成 / 顺序游标 / 完成条件。随聚合快照全删重插——故进程重启后 <code class="inl">completionCondition</code> 仍能基于恢复的计数正确求值。</p>
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>列名</th><th>类型</th><th>可空</th><th>默认值</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>域唯一标识（UUID）</td></tr>
+        <tr><td>2</td><td class="col-name">instance_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>所属实例 id（逻辑关联 instance.id）</td></tr>
+        <tr><td>3</td><td class="col-name">node_bpmn_id</td><td class="col-type">varchar(128)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>对应 multiInstance 节点 BPMN id（关联同节点子任务/子令牌）</td></tr>
+        <tr><td>4</td><td class="col-name">sequential</td><td class="col-type">boolean</td><td><span class="b-notnull">NOT NULL</span></td><td class="mono-default">false</td><td>true=顺序(或签)；false=并行(会签)</td></tr>
+        <tr><td>5</td><td class="col-name">total</td><td class="col-type">integer</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>子实例总数（nrOfInstances）</td></tr>
+        <tr><td>6</td><td class="col-name">completed</td><td class="col-type">integer</td><td><span class="b-notnull">NOT NULL</span></td><td class="mono-default">0</td><td>已办结子实例数（nrOfCompletedInstances）</td></tr>
+        <tr><td>7</td><td class="col-name">next_index</td><td class="col-type">integer</td><td><span class="b-notnull">NOT NULL</span></td><td class="mono-default">0</td><td>顺序模式下一个待展开元素下标；并行模式恒 = total</td></tr>
+        <tr><td>8</td><td class="col-name">collection</td><td class="col-type">jsonb</td><td><span class="b-notnull">NOT NULL</span></td><td class="mono-default">'[]'</td><td>展开用的元素快照（定格避免中途变量被改）</td></tr>
+        <tr><td>9</td><td class="col-name">element_var</td><td class="col-type">varchar(128)</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>子任务携带当前元素的变量名（elementVariable）</td></tr>
+        <tr><td>10</td><td class="col-name">completion_condition</td><td class="col-type">varchar(512)</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>完成条件表达式（命中即提前收口剩余子实例）</td></tr>
+        <tr><td>11</td><td class="col-name">finished</td><td class="col-type">boolean</td><td><span class="b-notnull">NOT NULL</span></td><td class="mono-default">false</td><td>本域是否已收口（完成条件命中或全部完成）</td></tr>
+      </tbody>
+    </table>
+    <div class="idx-wrap">
+      <h4>索引</h4>
+      <div class="idx-row"><span class="ipk">cmx_flow_mi_scope_pkey</span> &nbsp;UNIQUE&nbsp; <span class="icols">(id)</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_mi_scope_instance</span> &nbsp;<span class="icols">(instance_id)</span> &nbsp;<span class="note" style="color:var(--muted)">— 按实例载入全部多实例域</span></div>
+    </div>
+    <div class="idx-wrap">
+      <h4>完成条件内置变量</h4>
+      <p class="desc" style="margin:0">求值时以实例变量为底叠加（不落库）：<code class="inl">nrOfInstances</code> / <code class="inl">nrOfCompletedInstances</code> / <code class="inl">nrOfActiveInstances</code>。例：<code class="inl">${nrOfCompletedInstances/nrOfInstances &gt;= 0.5}</code>（过半即通过）、<code class="inl">${rejected == true}</code>（任一驳回即终止或签）。</p>
+    </div>
+  </div>
+
+  <!-- ============ cmx_flow_job ============ -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">7 列 · 3 索引 · M2.5</span>
+      <div><span class="name">cmx_flow_job</span><span class="cn">定时器作业表</span></div>
+      <p class="desc">边界定时器的「到期待触发」表。令牌到达挂有边界定时器的 userTask 时，为每个定时器建一条作业（记 <code class="inl">due_at</code>）。引擎用<b>可注入时钟</b> + 显式 <code class="inl">trigger_due_timers()</code> 推进（不自带后台线程）：<code class="inl">find_due_jobs</code> 按 <code class="inl">due_at</code> 索引跨实例扫描到期作业，触发后令牌走定时器出边（中断型）或发旁路令牌（非中断型）。令牌离开宿主即撤销作业。</p>
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>列名</th><th>类型</th><th>可空</th><th>默认值</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>作业唯一标识（UUID）</td></tr>
+        <tr><td>2</td><td class="col-name">instance_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>所属实例 id（逻辑关联 instance.id）</td></tr>
+        <tr><td>3</td><td class="col-name">token_id</td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>挂载令牌 id（停在宿主 userTask）；令牌离开即撤销</td></tr>
+        <tr><td>4</td><td class="col-name">boundary_bpmn_id</td><td class="col-type">varchar(128)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>触发时令牌要去的边界事件节点 bpmn_id</td></tr>
+        <tr><td>5</td><td class="col-name">cancel_activity</td><td class="col-type">boolean</td><td><span class="b-notnull">NOT NULL</span></td><td class="mono-default">true</td><td>true=中断型（中断宿主任务）；false=非中断型（发旁路令牌）</td></tr>
+        <tr><td>6</td><td class="col-name">due_at<span class="badge b-idx">IDX</span></td><td class="col-type">timestamptz</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>到期时刻（宿主到达时刻 + 时长）</td></tr>
+        <tr><td>7</td><td class="col-name">created_at</td><td class="col-type">timestamptz</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>作业创建时间</td></tr>
+      </tbody>
+    </table>
+    <div class="idx-wrap">
+      <h4>索引</h4>
+      <div class="idx-row"><span class="ipk">cmx_flow_job_pkey</span> &nbsp;UNIQUE&nbsp; <span class="icols">(id)</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_job_instance</span> &nbsp;<span class="icols">(instance_id)</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_job_due</span> &nbsp;<span class="icols">(due_at)</span> &nbsp;<span class="note" style="color:var(--muted)">— 跨实例到期扫描（find_due_jobs）</span></div>
+    </div>
+    <div class="idx-wrap">
+      <h4>时长格式</h4>
+      <p class="desc" style="margin:0">来自 BPMN <code class="inl">&lt;timeDuration&gt;</code> 的 ISO 8601 相对时长（<code class="inl">PT24H</code>/<code class="inl">PT30M</code>/<code class="inl">P1D</code> 等），编译期手写解析为秒。M2.5 仅支持 <code class="inl">timeDuration</code>（相对时长），不支持 <code class="inl">timeDate</code>（绝对时刻）/ <code class="inl">timeCycle</code>（循环）。</p>
+    </div>
+  </div>
+
+  <!-- ============ cmx_flow_hi_instance ============ -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">9 列 · 3 索引 · HI</span>
+      <div><span class="name">cmx_flow_hi_instance</span><span class="cn">历史实例表</span></div>
+      <p class="desc">实例进入终态（COMPLETED / TERMINATED）时归档，与热运行态解耦，供审计/查询。由 store 在同事务内幂等 upsert（<code class="inl">ON CONFLICT DO UPDATE</code>）。</p>
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>列名</th><th>类型</th><th>可空</th><th>默认值</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>实例 id（与运行态同值）</td></tr>
+        <tr><td>2</td><td class="col-name">definition_key<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(128)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>流程定义 key</td></tr>
+        <tr><td>3</td><td class="col-name">business_key<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(128)</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>业务键</td></tr>
+        <tr><td>4</td><td class="col-name">state</td><td class="col-type">varchar(16)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>终态：COMPLETED / TERMINATED</td></tr>
+        <tr><td>5</td><td class="col-name">variables</td><td class="col-type">jsonb</td><td><span class="b-notnull">NOT NULL</span></td><td class="mono-default">'{}'::jsonb</td><td>归档时的实例变量快照</td></tr>
+        <tr><td>6</td><td class="col-name">created_at</td><td class="col-type">timestamptz</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>实例创建时间</td></tr>
+        <tr><td>7</td><td class="col-name">ended_at</td><td class="col-type">timestamptz</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>实例结束时间</td></tr>
+        <tr><td>8</td><td class="col-name">duration_ms</td><td class="col-type">bigint</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>存续时长（ended − created，毫秒）</td></tr>
+        <tr><td>9</td><td class="col-name">archived_at</td><td class="col-type">timestamptz</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>归档写入时刻</td></tr>
+      </tbody>
+    </table>
+    <div class="idx-wrap">
+      <h4>索引</h4>
+      <div class="idx-row"><span class="ipk">cmx_flow_hi_instance_pkey</span> &nbsp;UNIQUE&nbsp; <span class="icols">(id)</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_hi_instance_defkey</span> &nbsp;<span class="icols">(definition_key)</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_hi_instance_bizkey</span> &nbsp;<span class="icols">(business_key)</span></div>
+    </div>
+  </div>
+
+  <!-- ============ cmx_flow_hi_task ============ -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">9 列 · 2 索引 · HI</span>
+      <div><span class="name">cmx_flow_hi_task</span><span class="cn">历史任务表</span></div>
+      <p class="desc">办结任务归档，含办理时长，供工时分析/审计。随实例终态在同事务内幂等 upsert。</p>
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>列名</th><th>类型</th><th>可空</th><th>默认值</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>任务 id（与运行态同值）</td></tr>
+        <tr><td>2</td><td class="col-name">instance_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>所属实例 id</td></tr>
+        <tr><td>3</td><td class="col-name">node_bpmn_id</td><td class="col-type">varchar(128)</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>对应 userTask 节点 BPMN id</td></tr>
+        <tr><td>4</td><td class="col-name">name</td><td class="col-type">varchar(255)</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>任务名</td></tr>
+        <tr><td>5</td><td class="col-name">assignee<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(128)</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>办理人</td></tr>
+        <tr><td>6</td><td class="col-name">created_at</td><td class="col-type">timestamptz</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>任务创建时间</td></tr>
+        <tr><td>7</td><td class="col-name">completed_at</td><td class="col-type">timestamptz</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>办结时间</td></tr>
+        <tr><td>8</td><td class="col-name">duration_ms</td><td class="col-type">bigint</td><td><span class="b-null">NULL</span></td><td><span class="dash">—</span></td><td>办理时长（completed − created，毫秒）</td></tr>
+        <tr><td>9</td><td class="col-name">archived_at</td><td class="col-type">timestamptz</td><td><span class="b-notnull">NOT NULL</span></td><td><span class="dash">—</span></td><td>归档写入时刻</td></tr>
+      </tbody>
+    </table>
+    <div class="idx-wrap">
+      <h4>索引</h4>
+      <div class="idx-row"><span class="ipk">cmx_flow_hi_task_pkey</span> &nbsp;UNIQUE&nbsp; <span class="icols">(id)</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_hi_task_instance</span> &nbsp;<span class="icols">(instance_id)</span></div>
+      <div class="idx-row"><span class="iname">idx_cmx_flow_hi_task_assignee</span> &nbsp;<span class="icols">(assignee)</span></div>
+    </div>
+  </div>
+
+  <section class="panel">
+    <h2><span class="dot"></span>Rust 类型对应</h2>
+    <ul class="tight">
+      <li><code class="inl">varchar</code> ↔ <code class="inl">String</code>；可空列 ↔ <code class="inl">Option&lt;String&gt;</code></li>
+      <li><code class="inl">timestamptz</code> ↔ <code class="inl">DateTime&lt;Utc&gt;</code>；可空 ↔ <code class="inl">Option&lt;DateTime&lt;Utc&gt;&gt;</code>（写入 NULL 须带类型标记 <code class="inl">NullTyped(Timestamp)</code>）</li>
+      <li><code class="inl">bigint</code> ↔ <code class="inl">i64</code>；可空 ↔ <code class="inl">Option&lt;i64&gt;</code>（写入 NULL 须 <code class="inl">NullTyped(Int)</code>）</li>
+      <li><code class="inl">jsonb</code> ↔ <code class="inl">Variables</code>（内部 <code class="inl">BTreeMap&lt;String, serde_json::Value&gt;</code>）</li>
+      <li><code class="inl">boolean</code> ↔ <code class="inl">bool</code></li>
+      <li><code class="inl">state</code> 文本列 ↔ Rust 枚举 <code class="inl">InstanceState</code> / <code class="inl">TokenState</code>（SCREAMING_SNAKE_CASE 字符串）</li>
+    </ul>
+  </section>
+
+  <footer>
+    <div>本文档由 PostgreSQL <code class="inl">information_schema</code> + <code class="inl">pg_indexes</code> 真实结构生成，与线上表定义一致。</div>
+    <div class="warn">⚠ 表结构目前由 cmx-flow-store-pg 内置 DDL 自举（ensure_schema），已同步到 docs/sql/migrations/20260717_001（M1+M2）、20260717_002（M3）、20260717_003（M2.5）与 docs/sql/init/init_ddl.sql。</div>
+    <div>cmx-flow 流程引擎 · M1 顺序审批 + M2 并行网关/历史归档 + M3 多实例会签·或签/实例取消 + M2.5 边界定时器 · 生成日期 2026-07-17</div>
+  </footer>
+
+</div>
+</body>
+</html>

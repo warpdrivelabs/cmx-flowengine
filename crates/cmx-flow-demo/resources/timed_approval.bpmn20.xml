@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  演示流程：限时审批（timed_approval）—— M2.5 边界定时器
+  拓扑：
+    start ─► 部门经理审批(userTask)
+              │  ├─[边界定时器 PT20S, 非中断] ─► 发送催办(userTask)  ← 20秒后发催办，经理任务不断
+              │  └─[边界定时器 PT30S, 中断]   ─► 总监审批(userTask)  ← 30秒未办则升级到总监
+              └─(经理正常办结) ─► 结束
+  M2.5 要素：
+    - 中断型边界定时器（cancelActivity 默认 true）：超时中断宿主任务，令牌走升级分支
+    - 非中断型（cancelActivity=false）：超时发旁路催办令牌，宿主任务继续等
+    - 短时长（20s/30s）便于现场看它触发；引擎用可注入时钟 + 后台 poller 每 5s trigger 一次
+  注意：一个 userTask 上挂两个边界定时器——非中断的先到（20s）发催办，中断的后到（30s）升级。
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:flowable="http://flowable.org/bpmn"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  targetNamespace="http://cmx/flow/demo">
+  <bpmn:process id="timed_approval" name="限时审批" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="提交申请"/>
+    <bpmn:sequenceFlow id="f0" sourceRef="start" targetRef="manager"/>
+
+    <bpmn:userTask id="manager" name="部门经理审批" flowable:assignee="部门经理"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="manager" targetRef="done"/>
+
+    <!-- 非中断型：20 秒后发催办，经理任务不中断 -->
+    <bpmn:boundaryEvent id="remind" attachedToRef="manager" cancelActivity="false">
+      <bpmn:timerEventDefinition><bpmn:timeDuration>PT20S</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="f2" sourceRef="remind" targetRef="notify"/>
+    <bpmn:userTask id="notify" name="发送催办通知" flowable:assignee="助理"/>
+    <bpmn:sequenceFlow id="f3" sourceRef="notify" targetRef="done"/>
+
+    <!-- 中断型：30 秒未办则中断经理审批，升级到总监 -->
+    <bpmn:boundaryEvent id="timeout" attachedToRef="manager">
+      <bpmn:timerEventDefinition><bpmn:timeDuration>PT30S</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="f4" sourceRef="timeout" targetRef="director"/>
+    <bpmn:userTask id="director" name="总监审批（超时升级）" flowable:assignee="总监"/>
+    <bpmn:sequenceFlow id="f5" sourceRef="director" targetRef="done"/>
+
+    <bpmn:endEvent id="done" name="审批完成"/>
+
+  </bpmn:process>
+</bpmn:definitions>

@@ -1,0 +1,6 @@
+# Rust 工具链锁定：与 cmx-container 对齐，避免"本机能过、CI 不过"的漂移。
+# 版本随 workspace edition=2024 对齐；升级时同步 cmx-container。
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

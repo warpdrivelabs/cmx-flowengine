@@ -1,0 +1,35 @@
+[package]
+name = "cmx-flow-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# 令牌执行内核：在只读 ProcessDefinition IR 上推进令牌，实现 BPMN 语义（M1 子集）。
+# 核心不变量「等待态即提交点」——令牌推进到 userTask 等等待态即停止并交由 RuntimeStore
+# 落库。含 serviceTask 的 delegate 注册表、进程内 InMemoryStore（测试/嵌入用）。
+# 引擎只依赖 cmx-flow-model 的中立契约，不认识任何数据库驱动。
+
+[dependencies]
+# 内部依赖 - 流程引擎 IR 与运行态模型
+cmx-flow-model = { workspace = true }
+
+# 异步 trait（delegate 契约 / 复用 RuntimeStore）
+async-trait = { workspace = true }
+# 错误处理
+thiserror = { workspace = true }
+# 日志追踪
+tracing = { workspace = true }
+# 时间处理（实例/令牌/任务时间戳）
+chrono = { workspace = true }
+# 唯一标识符（实例/令牌/任务 id 生成）
+uuid = { workspace = true, features = ["v4"] }
+# JSON（变量交换）
+serde_json = { workspace = true }
+# 异步锁（InMemoryStore 内部）
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+# 单测里跑 async
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# 内部依赖 - BPMN 编译器（单测用样例 XML 直接编译）
+cmx-flow-bpmn = { workspace = true }

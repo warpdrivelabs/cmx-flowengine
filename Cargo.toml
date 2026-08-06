@@ -1,0 +1,59 @@
+# cmx-flowengine —— 独立流程引擎微服务（从 cmx-container 抽出的 S0 骨架）。
+#
+# 方案见 docs/standalone-microservice-design.html。本 workspace 承载与平台/框架解耦的
+# 流程引擎全部 crate（model/bpmn/engine/def/store-pg）+ 独立可跑 demo + 引擎测试套件。
+# 平台适配层 cmx-flow-api 仍留在 cmx-container（keep-wired，经跨 workspace 路径引用本库）。
+#
+# 依赖策略：域内 flow crate 纯 path；基础设施（cmx-database-pg / cmx-core）以 path 复用
+# cmx-container 的成员 crate（它们仍属 cmx-container workspace，对其根解析 workspace=true
+# 与 [patch.nora]，故本库无需 nora 私仓、无需把 infra 纳入 members）；外部 crate 走 aliyun
+# 镜像（见 .cargo/config.toml），版本与 cmx-container 根对齐以便 Cargo 合一。
+[workspace]
+resolver = "2"
+members = [
+    "crates/cmx-flow-model",
+    "crates/cmx-flow-bpmn",
+    "crates/cmx-flow-engine",
+    "crates/cmx-flow-def",
+    "crates/cmx-flow-store-pg",
+    "crates/cmx-flow-demo",
+    "crates/cmx-flow-tests",
+]
+
+[workspace.package]
+# 与 cmx-container 对齐（迁走的 crate 用 version.workspace/edition.workspace/authors.workspace）
+version = "0.1.12"
+edition = "2024"
+authors = ["skylake@pansoft.com"]
+
+[workspace.dependencies]
+# —— 域内 flow crate（纯 path，不经私仓）——
+cmx-flow-model = { path = "crates/cmx-flow-model", version = "0.1.12" }
+cmx-flow-bpmn = { path = "crates/cmx-flow-bpmn", version = "0.1.12" }
+cmx-flow-engine = { path = "crates/cmx-flow-engine", version = "0.1.12" }
+cmx-flow-def = { path = "crates/cmx-flow-def", version = "0.1.12" }
+cmx-flow-store-pg = { path = "crates/cmx-flow-store-pg", version = "0.1.12" }
+
+# —— 复用 cmx-container 基础设施（跨 workspace 路径；仍是 cmx-container 成员，非本库成员）——
+# tokio-postgres 并行 DB 层（多数据源池 / register_datasource / query_sql / 事务门面）
+cmx-database-pg = { path = "../cmx-container/crates/libs/cmx-infra/cmx-database-pg", version = "0.1.12" }
+# 核心库（DataValue：强类型写入参数 / 查询结果读取）
+cmx-core = { path = "../cmx-container/crates/libs/cmx-core", version = "0.1.12" }
+
+# —— 外部 crate（版本照抄 cmx-container 根 [workspace.dependencies]）——
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+thiserror = "2.0"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.21", features = ["v4", "serde"] }
+async-trait = "0.1"
+roxmltree = "0.20"
+tokio = { version = "1.41", features = ["full"] }
+axum = { version = "0.8.9", features = ["macros", "multipart"] }
+tower-http = { version = "0.6", features = ["fs", "cors", "trace", "compression-full", "timeout", "limit"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"

@@ -1,0 +1,7 @@
+# 构建产物（target 体积大，5G+）
+/target/
+.DS_Store
+
+# 注意：.cargo/config.toml 是**必须**纳入版本控制的（nora registry 定义 + aliyun 镜像，
+# 缺它跨 workspace 解析 cmx-container 根的 [patch.nora] 会失败）；Cargo.lock 亦保留
+# （本库含二进制 cmx-flow-demo，锁定依赖利于可复现构建）。故不忽略这两者。

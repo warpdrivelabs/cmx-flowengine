@@ -1,0 +1,32 @@
+[package]
+name = "cmx-flow-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# 流程引擎 M1 端到端测试。默认跑内存态（InMemoryStore，无外部依赖，始终可跑）；
+# PG 落库测试用 #[ignore] 门控，需本地 PG 与 TEST_PG_URL，对齐 cmx-database-test 约定：
+#   TEST_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/cmx \
+#     cargo test -p cmx-flow-tests -- --ignored
+
+[dependencies]
+# 内部依赖 - 流程引擎 IR 与运行态模型
+cmx-flow-model = { workspace = true }
+# 内部依赖 - BPMN 编译器
+cmx-flow-bpmn = { workspace = true }
+# 内部依赖 - 令牌执行内核
+cmx-flow-engine = { workspace = true }
+# 内部依赖 - PG 持久化
+cmx-flow-store-pg = { workspace = true }
+# 内部依赖 - tokio-postgres DB 层（PG 测试注册数据源用）
+cmx-database-pg = { workspace = true }
+
+[dev-dependencies]
+# 异步测试运行时
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# JSON（构造流程变量）
+serde_json = { workspace = true }
+# delegate 实现里可能用到
+async-trait = { workspace = true }
+# 时间（M2.5 定时器测试用 TestClock + Duration）
+chrono = { workspace = true }

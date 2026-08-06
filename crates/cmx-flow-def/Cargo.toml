@@ -1,0 +1,37 @@
+[package]
+name = "cmx-flow-def"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# 流程定义持久化层（设计器 ⇄ 引擎之间缺失的一环）：存 BPMN XML + 版本 + 草稿/发布状态。
+# 设计器画完存草稿（先试编译挡回非法 XML）→ 发布（version+1）→ 引擎启动时从库读已发布定义
+# 逐个 compile + deploy。存 XML 原样（标准交换格式，可重新编辑/审阅/版本 diff），装载时编译。
+# 表：cmx_flow_definition（当前指针）/ cmx_flow_definition_version（不可变历史）。
+
+[dependencies]
+# 内部依赖 - BPMN 编译器（save_draft/publish 前试编译校验）
+cmx-flow-bpmn = { workspace = true }
+# 内部依赖 - 中立模型（ProcessDefinition，编译产物类型）
+cmx-flow-model = { workspace = true }
+# 内部依赖 - tokio-postgres 并行 DB 层
+cmx-database-pg = { workspace = true }
+# 内部依赖 - 核心库（DataValue：强类型写入参数）
+cmx-core = { workspace = true }
+
+# 异步 trait
+async-trait = { workspace = true }
+# 错误处理
+thiserror = { workspace = true }
+# 日志追踪
+tracing = { workspace = true }
+# 时间处理（TIMESTAMPTZ <-> DateTime<Utc>）
+chrono = { workspace = true }
+# 版本行主键
+uuid = { workspace = true, features = ["v4"] }
+# JSON（诊断/序列化）
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

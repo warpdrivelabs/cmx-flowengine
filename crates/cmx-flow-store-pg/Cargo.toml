@@ -1,0 +1,29 @@
+[package]
+name = "cmx-flow-store-pg"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# 流程引擎的 PostgreSQL 持久化：实现 cmx-flow-model::RuntimeStore，接入 cmx-database-pg
+# （tokio-postgres 并行 DB 层）。以 InstanceSnapshot 聚合为单位读写；save_snapshot 在
+# 单个 DB 事务内「更新实例 + 重写令牌 + 重写任务」，一次提交 = 一个 BPMN 等待态提交点。
+# 表：cmx_flow_instance / cmx_flow_token / cmx_flow_task（cmx_ 前缀，无外键，索引替代）。
+
+[dependencies]
+# 内部依赖 - 流程引擎中立模型与 RuntimeStore 契约
+cmx-flow-model = { workspace = true }
+# 内部依赖 - tokio-postgres 并行 DB 层（事务/执行/查询门面）
+cmx-database-pg = { workspace = true }
+# 内部依赖 - 核心库（DataValue：强类型写入参数）
+cmx-core = { workspace = true }
+
+# 异步 trait（实现 RuntimeStore）
+async-trait = { workspace = true }
+# 错误处理
+thiserror = { workspace = true }
+# 日志追踪
+tracing = { workspace = true }
+# 时间处理（时间戳列 <-> DateTime<Utc>）
+chrono = { workspace = true }
+# JSON（variables jsonb 列 <-> serde_json::Value）
+serde_json = { workspace = true }

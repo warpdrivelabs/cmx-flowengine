@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cmx-flow 表单集成 · F1 详细设计 · 数据管道打通（纯后端）</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --ink:#e6edf3; --muted:#9198a1;
+    --line:#30363d; --brand:#4c8dff; --brand-d:#1f6feb; --ok:#3fb950; --warn:#d29922;
+    --new:#db6d28; --purple:#a371f7; --pink:#f778ba; --cyan:#39c5cf; --red:#f85149;
+    --code-bg:#0b0f16;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 28px 120px}
+  h1{font-size:29px;font-weight:800;letter-spacing:-.5px;margin:0 0 6px;
+    background:linear-gradient(100deg,#4c8dff,#3fb950 60%,#39c5cf);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .sub{color:var(--muted);font-size:15px;margin:0 0 8px}
+  .tag{display:inline-block;font-size:12px;font-weight:700;padding:2px 9px;border-radius:20px;border:1px solid var(--line);color:var(--muted);margin-right:6px}
+  .tag.k{color:var(--ok);border-color:#1f512b}
+  .tag.n{color:var(--new);border-color:#5a3418}
+  .tag.p{color:var(--purple);border-color:#3d2a63}
+  h2{font-size:22px;font-weight:800;margin:50px 0 14px;padding-top:18px;border-top:1px solid var(--line)}
+  h2 .n{font-size:13px;color:var(--muted);font-weight:600;margin-left:8px}
+  h3{font-size:17px;font-weight:700;margin:28px 0 10px;color:#cdd9e5}
+  h4{font-size:14.5px;font-weight:700;margin:18px 0 8px;color:var(--cyan)}
+  p{margin:10px 0}
+  code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:13px;
+    background:var(--code-bg);border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#a5d6ff}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:16px 18px;overflow:auto;margin:14px 0}
+  pre code{background:none;border:0;padding:0;color:#c9d1d9;font-size:12.5px;line-height:1.7;display:block}
+  .kw{color:#ff7b72} .st{color:#a5d6ff} .cm{color:#8b949e;font-style:italic} .fn{color:#d2a8ff} .nm{color:#79c0ff} .pu{color:#ffa657} .ty{color:#7ee787}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:16px 0}
+  .card.ok{border-color:#1f512b;background:linear-gradient(180deg,#12241a,var(--panel))}
+  .card.warn{border-color:#5a4518;background:linear-gradient(180deg,#241f12,var(--panel))}
+  .card.brand{border-color:#1f3d6f;background:linear-gradient(180deg,#111d33,var(--panel))}
+  .card.red{border-color:#5a2321;background:linear-gradient(180deg,#2a1513,var(--panel))}
+  .grid{display:grid;gap:14px}
+  .grid.c2{grid-template-columns:1fr 1fr}
+  @media(max-width:820px){.grid.c2{grid-template-columns:1fr}}
+  ul,ol{margin:10px 0;padding-left:22px} li{margin:5px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-weight:700;color:#cdd9e5}
+  td code{font-size:12px}
+  .badge{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:5px}
+  .badge.have{background:#12261a;color:var(--ok);border:1px solid #1f512b}
+  .badge.new{background:#2a1d12;color:var(--new);border:1px solid #5a3418}
+  .badge.mig{background:#221a2e;color:var(--purple);border:1px solid #3d2a63}
+  .step{display:flex;gap:14px;margin:12px 0;align-items:flex-start}
+  .step-n{flex:0 0 28px;height:28px;border-radius:50%;background:var(--brand-d);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px}
+  .step-b{flex:1}
+  .lead{font-size:16px;color:#cdd9e5;border-left:3px solid var(--ok);padding-left:14px;margin:16px 0}
+  .kv{color:var(--muted);font-size:13px}
+  .hl{color:var(--brand);font-weight:600}
+  .hl2{color:var(--purple);font-weight:600}
+  .hlg{color:var(--ok);font-weight:600}
+  em{color:var(--warn);font-style:normal;font-weight:600}
+  .flow-diagram{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:20px;margin:16px 0;font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.85;color:#c9d1d9;overflow:auto;white-space:pre}
+  .toc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 22px;margin:22px 0}
+  .toc a{color:#a5d6ff;text-decoration:none;font-size:14px;display:inline-block;padding:3px 14px 3px 0}
+  .toc a:hover{color:#fff}
+  .pill{font-size:11px;padding:1px 6px;border-radius:4px;background:#1f2733;color:var(--muted);border:1px solid var(--line);margin-left:6px}
+  .chk{color:var(--ok);font-weight:800}
+  .filename{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--cyan);background:#0e1a1c;border:1px solid #16343a;border-radius:5px;padding:1px 7px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>F1 · 数据管道打通</h1>
+<p class="sub">让「表单数据能进出流程」在<b>不碰任何前端</b>的前提下 curl 可验 · cmx-flow 表单集成第一阶段</p>
+<p><span class="tag k">纯后端</span><span class="tag">引擎内核零改动</span><span class="tag p">curl 可验收</span><span class="tag n">地基阶段</span></p>
+
+<div class="card brand">
+<b>F1 目标：</b>把发起/办结两个 API 从 demo 硬编码字段改成<span class="hl">通用变量入参</span>，建立<span class="hl2">单据↔实例双向关联</span>，让「表单产出的任意 JSON 能作为流程变量进出、并驱动网关流转」这件事<span class="hlg">在没有任何表单页的情况下用 curl 完整验证</span>。这是整个集成的地基——地基不稳，上面的待办中心、表单宿主都是空中楼阁。
+<div style="margin-top:10px;font-size:13px;color:var(--muted)">
+<b>核实结论（已读代码）：</b>引擎的 <code>start_process_org(def_key, <span class="ty">Variables</span>, biz_key, org_id)</code> 和 <code>complete_task(instance_id, task_id, <span class="ty">Variables</span>)</code> <span class="hlg">早就接受任意 Variables</span>，返回 <code>ExecutionResult</code>。瓶颈只在 API 层——两个 <code>Req</code> 结构把入参写死成了 <code>applicant/amount/decision</code>。F1 = 拆掉这道人为的墙 + 补一条关联线。</div>
+</div>
+
+<div class="toc">
+<a href="#s1">1 · 范围边界</a>
+<a href="#s2">2 · 现状精确核实</a>
+<a href="#s3">3 · 改动一：通用变量入参</a>
+<a href="#s4">4 · 改动二：单据↔实例关联</a>
+<a href="#s5">5 · 发起链路的事务与补偿</a>
+<a href="#s6">6 · 数据库改动</a>
+<a href="#s7">7 · curl 验收剧本</a>
+<a href="#s8">8 · 单据字段回填变量</a>
+<a href="#s9">9 · 交付物与验收清单</a>
+<a href="#s10">10 · 风险</a>
+</div>
+
+<!-- 1 -->
+<h2 id="s1">1 · 范围边界 <span class="n">F1 做什么、不做什么</span></h2>
+<div class="grid c2">
+<div class="card ok">
+<h4><span class="chk">✓</span> F1 做</h4>
+<ul>
+<li><code>StartReq</code> / <code>CompleteReq</code> 改通用 <code>variables: Value</code></li>
+<li>新增 <code>businessKey / orgId</code> 显式入参</li>
+<li>业务表加 <code>process_instance_id</code> 列（关联表方案见 §4）</li>
+<li>发起后回写关联 + 失败补偿</li>
+<li>提供 <code>GET /flow/instances/{id}/variables</code> 只读变量</li>
+<li>一套 curl 剧本端到端验证</li>
+</ul>
+</div>
+<div class="card">
+<h4>✕ F1 不做（留后阶段）</h4>
+<ul>
+<li>formKey 绑定（F2）</li>
+<li>「我的待办」跨实例查询（F2）</li>
+<li>待办中心页 / 表单宿主页（F3/F4）</li>
+<li>任何前端页面</li>
+<li>审批意见留痕表（F3 带出）</li>
+<li>引擎内核逻辑（永不动）</li>
+</ul>
+</div>
+</div>
+<div class="card"><b>可验收的一句话：</b>F1 完成后，一个后端同学<span class="hl">只用 curl</span> 就能：起一个流程实例并塞入任意业务变量 → 该变量驱动网关走对分支 → 办结任务时再塞入决策变量 → 流程按决策流转到下一环节 → 查到「这个实例绑的是哪张业务单据」以及反向「这张单据在哪个流程实例里」。全程不需要任何 UI。</div>
+
+<!-- 2 -->
+<h2 id="s2">2 · 现状精确核实 <span class="n">改动点锚定到真实代码</span></h2>
+
+<h3>2.1 引擎侧（不动）</h3>
+<pre><code><span class="cm">// cmx-flow-engine/src/engine.rs:208 —— 已接受任意 Variables</span>
+<span class="kw">pub async fn</span> <span class="fn">start_process_org</span>(&<span class="kw">self</span>,
+    definition_key: &<span class="ty">str</span>,
+    variables: <span class="ty">Variables</span>,          <span class="cm">// ← 任意 JSON KV，现成</span>
+    business_key: <span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;,
+    org_id: <span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;,
+) -&gt; <span class="ty">Result</span>&lt;<span class="ty">ExecutionResult</span>&gt;
+
+<span class="cm">// cmx-flow-engine/src/engine.rs:514 —— 已 merge 任意 Variables</span>
+<span class="kw">pub async fn</span> <span class="fn">complete_task</span>(&<span class="kw">self</span>,
+    instance_id: &<span class="ty">str</span>, task_id: &<span class="ty">str</span>,
+    variables: <span class="ty">Variables</span>,          <span class="cm">// ← 提交变量，现成</span>
+) -&gt; <span class="ty">Result</span>&lt;<span class="ty">ExecutionResult</span>&gt;
+
+<span class="cm">// ExecutionResult { instance_id, state, open_tasks: Vec&lt;TaskView&gt; }</span></code></pre>
+<p class="kv"><code>Variables</code> 是 <code>BTreeMap&lt;String, serde_json::Value&gt;</code>，有 <code>from_json(Value)</code> 构造器——API 层拿到请求体的 <code>variables</code> 字段直接喂进去即可。</p>
+
+<h3>2.2 API 层（要改的墙）</h3>
+<pre><code><span class="cm">// cmx-flow-api/src/handlers.rs:310 —— 当前是 demo 硬编码</span>
+<span class="kw">pub struct</span> <span class="ty">StartReq</span> {
+    definition_key: <span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;,
+    applicant: <span class="ty">String</span>,      <span class="cm">// ✕ 硬编码业务字段</span>
+    amount: <span class="ty">f64</span>,            <span class="cm">// ✕ 硬编码业务字段</span>
+    approvers: <span class="ty">Option</span>&lt;<span class="ty">Vec</span>&lt;<span class="ty">String</span>&gt;&gt;,  <span class="cm">// ✕</span>
+    org_id: <span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;,
+}
+<span class="cm">// handlers.rs:428</span>
+<span class="kw">pub struct</span> <span class="ty">CompleteReq</span> {
+    instance_id: <span class="ty">String</span>,
+    decision: <span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;,  <span class="cm">// ✕ 只能传一个 decision</span>
+}</code></pre>
+
+<h3>2.3 业务数据侧（核实过的事实）</h3>
+<table>
+<tr><th>事实</th><th>证据</th><th>对 F1 的意义</th></tr>
+<tr><td>dct 保存回主键</td><td><code>dct_upsert</code> 返回 <code>{count, idMap}</code>，idMap 是 temp→真 bigint 号映射</td><td>「存单据→拿 bizId」可行</td></tr>
+<tr><td>业务表与流程表<b>同库</b></td><td>flow 用 <code>fico-db</code>；dct <code>resolve_db_id</code> 默认 <code>get_biz_db_id()</code> 也是 fico-db</td><td>关联回写可在同库协调，非跨库分布式事务</td></tr>
+<tr><td>实例表有 jsonb 变量列</td><td><code>cmx_flow_instance(id, definition_key, business_key, state, variables jsonb, …)</code></td><td>变量天然持久化，无需额外表</td></tr>
+<tr><td>快照单事务落库</td><td><code>save_snapshot</code>：begin→更新实例+删旧令牌任务+插新→commit</td><td>办结的变量 merge 原子提交</td></tr>
+<tr><td>业务表建表走迁移</td><td><code>docs/sql/init/init_ddl.sql</code> + migrations；dct 只 upsert 已存在表</td><td>加 <code>process_instance_id</code> 列是一条迁移，非运行时 DDL</td></tr>
+</table>
+
+<!-- 3 -->
+<h2 id="s3">3 · 改动一：通用变量入参 <span class="n">拆掉 API 层的墙</span></h2>
+
+<h3>3.1 新 StartReq</h3>
+<pre><code>#[derive(<span class="ty">Deserialize</span>)]
+#[serde(rename_all = <span class="st">"camelCase"</span>)]
+<span class="kw">pub struct</span> <span class="ty">StartReq</span> {
+    definition_key: <span class="ty">String</span>,                <span class="cm">// 必填(去掉默认 credit_approval)</span>
+    #[serde(default)]
+    business_key: <span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;,          <span class="cm">// 人读单号 PAY-2026-0042</span>
+    #[serde(default)]
+    org_id: <span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;,               <span class="cm">// 发起组织(驱动子流程路由)</span>
+    #[serde(default)]
+    variables: <span class="ty">Value</span>,                      <span class="cm">// ← 任意业务/决策变量对象</span>
+    <span class="cm">// F1 可选：发起即绑单据(见 §4)</span>
+    #[serde(default)]
+    biz_link: <span class="ty">Option</span>&lt;<span class="ty">BizLink</span>&gt;,           <span class="cm">// { bizTable, bizId }</span>
+}
+
+<span class="kw">pub async fn</span> <span class="fn">start_instance</span>(…, <span class="ty">Json</span>(req): <span class="ty">Json</span>&lt;<span class="ty">StartReq</span>&gt;)
+      -&gt; <span class="ty">Result</span>&lt;<span class="ty">Json</span>&lt;<span class="ty">ApiResp</span>&lt;<span class="ty">Value</span>&gt;&gt;&gt; {
+    <span class="kw">let</span> vars = <span class="ty">Variables</span>::<span class="fn">from_json</span>(req.variables);   <span class="cm">// 一行喂进引擎</span>
+    <span class="kw">let</span> result = rt.engine
+        .<span class="fn">start_process_org</span>(&req.definition_key, vars,
+                            req.business_key, req.org_id).<span class="kw">await</span>?;
+    <span class="cm">// F1 §4：若带 biz_link，回写关联(带补偿)</span>
+    <span class="kw">if let Some</span>(link) = req.biz_link {
+        <span class="fn">link_biz_to_instance</span>(&link, &result.instance_id).<span class="kw">await</span>?;
+    }
+    <span class="fn">load_view</span>(rt, &result.instance_id).<span class="kw">await</span>
+}</code></pre>
+
+<div class="card warn"><b>兼容性注意：</b>现有 demo 前端（<code>cmx-flow-demo</code>）和已落地的设计工作台可能还在发老形状的 <code>{applicant, amount}</code>。两种处理：<b>(a)</b> 保留一个 <code>#[serde(default)] applicant/amount</code> 的向后兼容层，若 <code>variables</code> 为空则从旧字段拼一个（渐进迁移）；<b>(b)</b> demo 是独立 crate，直接改它的调用。<span class="hl">建议 (a)</span>——一个 <code>fn legacy_vars(req) -&gt; Value</code> 兼容垫片，零破坏，后续删除。</div>
+
+<h3>3.2 新 CompleteReq</h3>
+<pre><code>#[derive(<span class="ty">Deserialize</span>)]
+#[serde(rename_all = <span class="st">"camelCase"</span>)]
+<span class="kw">pub struct</span> <span class="ty">CompleteReq</span> {
+    instance_id: <span class="ty">String</span>,
+    #[serde(default)]
+    variables: <span class="ty">Value</span>,        <span class="cm">// ← 办结提交的任意变量(含决策/意见)</span>
+    <span class="cm">// 向后兼容：decision 若单独传，并入 variables.lastDecision</span>
+    #[serde(default)]
+    decision: <span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;,
+}
+
+<span class="cm">// handler: 合并 decision 兼容旧调用</span>
+<span class="kw">let mut</span> vars = <span class="ty">Variables</span>::<span class="fn">from_json</span>(req.variables);
+<span class="kw">if let Some</span>(d) = req.decision { vars.<span class="fn">set</span>(<span class="st">"lastDecision"</span>, json!(d)); }
+rt.engine.<span class="fn">complete_task</span>(&req.instance_id, &task_id, vars).<span class="kw">await</span>?;</code></pre>
+
+<div class="card ok"><b>为什么这样就够：</b>网关条件表达式（如 <code>${amount &gt; 50000}</code>、<code>${lastDecision == 'approve'}</code>）读的就是实例变量。表单办结时把 <code>lastDecision/amount/任意字段</code> 塞进 <code>variables</code>，<code>complete_task</code> 一 merge，下一步网关立刻能读到。<span class="hl">F1 不需要「表单」，只需要让 curl 能塞变量——变量塞进去了，流转就活了。</span></div>
+
+<!-- 4 -->
+<h2 id="s4">4 · 改动二：单据↔实例关联 <span class="n">两个方向都要能查</span></h2>
+
+<p class="lead">「这个实例绑哪张单据」和「这张单据在哪个流程里」——两个方向都要 O(1) 可查。有两种落法，F1 选<span class="hl">关联表</span>（解耦、不侵入业务表）。</p>
+
+<div class="grid c2">
+<div class="card">
+<h4>方案 A：业务表加列 <span class="badge mig">侵入</span></h4>
+<p>每张业务表加 <code>process_instance_id BIGINT</code>。</p>
+<p class="kv">优点：单表查单据即知流程。缺点：要改<b>每一张</b>可走流程的业务表；一单多流程时不够用。</p>
+</div>
+<div class="card ok">
+<h4>方案 B：独立关联表 <span class="badge new">F1 选这个</span></h4>
+<p>一张 <code>cmx_flow_biz_link</code>，多对多，业务表零改动。</p>
+<p class="kv">优点：解耦、一单可挂多流程（如「报销单」既走审批又走付款）、双向索引。缺点：多一次 join。</p>
+</div>
+</div>
+
+<h3>4.1 关联表 DDL</h3>
+<pre><code><span class="cm">-- docs/sql/migrations/20260801_001_cmx_flow_biz_link.up.sql</span>
+<span class="kw">CREATE TABLE IF NOT EXISTS</span> cmx_flow_biz_link (
+    id             <span class="ty">BIGINT</span>       <span class="kw">PRIMARY KEY</span>,        <span class="cm">-- 后端铸号</span>
+    instance_id    <span class="ty">VARCHAR</span>(64)  <span class="kw">NOT NULL</span>,           <span class="cm">-- cmx_flow_instance.id</span>
+    biz_table      <span class="ty">VARCHAR</span>(128) <span class="kw">NOT NULL</span>,           <span class="cm">-- cf_pay_request</span>
+    biz_id         <span class="ty">VARCHAR</span>(128) <span class="kw">NOT NULL</span>,           <span class="cm">-- PR8842(单据主键,字符串兼容)</span>
+    biz_key        <span class="ty">VARCHAR</span>(128),                     <span class="cm">-- 人读单号(冗余,便于展示)</span>
+    role           <span class="ty">VARCHAR</span>(32)  <span class="kw">NOT NULL DEFAULT</span> <span class="st">'primary'</span>, <span class="cm">-- 主单/附件…</span>
+    created_at     <span class="ty">TIMESTAMPTZ</span> <span class="kw">NOT NULL</span>
+);
+<span class="cm">-- 双向查询索引</span>
+<span class="kw">CREATE INDEX</span> idx_biz_link_instance <span class="kw">ON</span> cmx_flow_biz_link (instance_id);
+<span class="kw">CREATE UNIQUE INDEX</span> uq_biz_link_biz
+    <span class="kw">ON</span> cmx_flow_biz_link (biz_table, biz_id, instance_id);</code></pre>
+<p class="kv">同库（fico-db）；<code>cmx_</code> 前缀、无外键（软关联 + 索引）、id 后端铸号——完全对齐现有约定（对标 <code>cmx_flow_definition</code> 系列的落法）。</p>
+
+<h3>4.2 两个查询端点</h3>
+<table>
+<tr><th>端点</th><th>用途</th></tr>
+<tr><td><code>GET /api/flow/instances/{id}/biz</code></td><td>正向：实例 → 绑的单据（表+主键+单号）</td></tr>
+<tr><td><code>GET /api/flow/biz/{table}/{bizId}/instances</code></td><td>反向：单据 → 关联的流程实例（含状态，可判「在审批中」）</td></tr>
+</table>
+<p class="kv">反向端点是关键：业务单据列表页据此显示「审批中/已通过」徽标——虽然 F1 不做页面，但端点先备好，F3 直接用。</p>
+
+<!-- 5 -->
+<h2 id="s5">5 · 发起链路的事务与补偿 <span class="n">数据双写一致性</span></h2>
+
+<p class="lead">发起 = 「存业务单据 + 起流程实例 + 写关联」三步跨两个子系统（dct 存储 + flow 存储）。虽同库但非同一事务，必须设计失败补偿，否则会出现「单据存了流程没起」的孤儿。</p>
+
+<h3>5.1 F1 的编排选择：客户端编排 vs 服务端编排</h3>
+<div class="card">
+<b>F1 采用「服务端不强绑，客户端按序调 + 幂等兜底」。</b>理由：起流程的动作天然发生在表单提交时（F3/F4），由前端按序调三个已存在的端点最自然；F1 只需保证<span class="hl">每步幂等 + 提供对账端点</span>，让偶发失败可自愈，不引入分布式事务框架。</div>
+
+<div class="flow-diagram">
+ 客户端(F3表单/F1的curl脚本)          服务端
+   │
+   │ ① POST /api/dct/entries  (存单据, 幂等: 同 biz_key upsert)
+   │    ──────────────────────────────►  dct 落库, 返回 {idMap: {temp→PR8842}}
+   │ ◄──────────────────────────────
+   │    拿到真实 bizId = PR8842
+   │
+   │ ② POST /api/flow/instances
+   │    { definitionKey, businessKey, orgId,
+   │      variables:{...}, bizLink:{bizTable, bizId} }
+   │    ──────────────────────────────►  起实例(引擎)
+   │                                      + 写 cmx_flow_biz_link (§4)
+   │                                      ⚠ 若 link 写失败 → 见 5.2
+   │ ◄──────────────────────────────
+   │    { instanceId: inst_77, state: RUNNING, openTasks:[…] }
+   ▼
+</div>
+
+<h3>5.2 失败补偿矩阵</h3>
+<table>
+<tr><th>失败点</th><th>后果</th><th>补偿</th></tr>
+<tr><td>① 存单据失败</td><td>无单据、无流程</td><td>整体失败返回，用户重试。无残留。</td></tr>
+<tr><td>② 起流程失败（单据已存）</td><td>孤儿单据（无流程）</td><td>单据状态默认 <code>draft</code>；未关联流程的 draft 单据可重新提交发起。<b>对账端点</b> §4.2 反向查为空即「未进流程」。</td></tr>
+<tr><td>②内 link 写失败（实例已起）</td><td>孤儿实例（无单据关联）</td><td>关键：<code>link_biz_to_instance</code> 失败时，<span class="hl">回滚实例</span>（调 <code>cancel_instance</code>）或标记实例 <code>orphan</code> 待对账。F1 选前者——起实例与写 link 在 handler 内<b>顺序执行，link 失败即取消实例</b>，对客户端表现为「发起失败，请重试」。</td></tr>
+</table>
+
+<div class="card ok"><b>为什么不上分布式事务：</b>同库（fico-db）下，起实例（<code>save_snapshot</code> 单事务）+ 写 link，可以放进<span class="hl">同一个 DB 事务</span>——若 <code>PgRuntimeStore</code> 暴露「在既有事务内写 link」的钩子，则实例与 link 天然原子。F1 务实做法：先用「link 失败即 cancel 实例」的应用层补偿（改动最小），把「同事务写 link」列为 F1 的<em>加固项</em>（若 store 事务边界允许）。单据（步骤①）与流程（步骤②）之间用幂等 + 对账，不追求跨子系统强一致——审批场景容忍「单据先落草稿、流程稍后起」。</div>
+
+<!-- 6 -->
+<h2 id="s6">6 · 数据库改动 <span class="n">一条迁移</span></h2>
+<table>
+<tr><th>文件</th><th>内容</th><th>性质</th></tr>
+<tr><td><span class="filename">migrations/20260801_001_cmx_flow_biz_link.up.sql</span></td><td>建关联表 + 两个索引（§4.1）</td><td><span class="badge new">新表</span></td></tr>
+<tr><td><span class="filename">…_biz_link.down.sql</span></td><td><code>DROP TABLE cmx_flow_biz_link</code></td><td>回滚</td></tr>
+<tr><td>业务表</td><td><b>零改动</b>（方案 B 不侵入）</td><td><span class="badge have">不动</span></td></tr>
+<tr><td>cmx_flow_instance</td><td><b>零改动</b>（variables jsonb 已在，business_key 已在）</td><td><span class="badge have">不动</span></td></tr>
+</table>
+<p class="kv">建表 DDL 同时进 store 层的 <code>ensure_schema</code>（对标 <code>cmx_flow_definition</code> 的 <code>DDL_STATEMENTS</code>，启动自举幂等）+ 迁移文件（生产）——双写，与现有约定一致。</p>
+
+<!-- 7 -->
+<h2 id="s7">7 · curl 验收剧本 <span class="n">F1 的灵魂：无 UI 全验证</span></h2>
+
+<p>用真实存在的定义 <code>credit_approval</code>（或造一张带金额网关的测试定义）跑通全链路：</p>
+
+<pre><code><span class="cm"># 0) 登录拿 token（dev 白名单也可免）</span>
+TOKEN=$(curl -s .../api/auth/login -d '{"username":"admin","password":"cmxadmin"}' | jq -r .data.access_token)
+
+<span class="cm"># 1) 起流程，塞任意业务变量（金额 8.5 万 → 应触发大额分支）</span>
+curl -s -X POST .../api/flow/instances -H "Authorization: Bearer $TOKEN" -d '{
+  "definitionKey": "credit_approval",
+  "businessKey":   "PAY-2026-0042",
+  "orgId":         "d_fin_sh",
+  "variables": { "amount": 85000, "applicant": "u_1001",
+                 "bizTable": "cf_pay_request", "bizId": "PR8842" },
+  "bizLink": { "bizTable": "cf_pay_request", "bizId": "PR8842" }
+}'
+<span class="cm"># → { instanceId: "inst_77", state: "RUNNING", openTasks:[{id:"t1", nodeBpmnId:"review"}] }</span>
+
+<span class="cm"># 2) 验证变量进去了</span>
+curl -s .../api/flow/instances/inst_77/variables -H "Authorization: Bearer $TOKEN"
+<span class="cm"># → { amount:85000, applicant:"u_1001", bizTable:..., bizId:... }</span>
+
+<span class="cm"># 3) 验证正向关联</span>
+curl -s .../api/flow/instances/inst_77/biz -H "Authorization: Bearer $TOKEN"
+<span class="cm"># → { bizTable:"cf_pay_request", bizId:"PR8842", bizKey:"PAY-2026-0042" }</span>
+
+<span class="cm"># 4) 验证反向关联</span>
+curl -s .../api/flow/biz/cf_pay_request/PR8842/instances -H "Authorization: Bearer $TOKEN"
+<span class="cm"># → [{ instanceId:"inst_77", state:"RUNNING", definitionKey:"credit_approval" }]</span>
+
+<span class="cm"># 5) 办结第一个任务，塞决策变量 → 驱动流转</span>
+curl -s -X POST .../api/flow/tasks/t1/complete -H "Authorization: Bearer $TOKEN" -d '{
+  "instanceId": "inst_77",
+  "variables": { "lastDecision": "approve", "comment": "金额属实，同意" }
+}'
+<span class="cm"># → state 推进；因 amount&gt;5万，openTasks 出现下一环节(总监审批)</span>
+
+<span class="cm"># 6) 反证：造一个 amount=3000 的实例，办结后应走小额直通/结束</span>
+<span class="cm">#    证明"变量真的驱动了网关"，而非碰巧</span></code></pre>
+
+<div class="card ok"><b>验收判据：</b>步骤 5 与步骤 6 的<span class="hl">流转结果不同</span>（大额多一环、小额少一环），且差异<span class="hl">完全由 curl 塞进去的 <code>amount/lastDecision</code> 决定</span>——这就证明了「表单数据（此处由 curl 模拟）能进出流程并驱动流转」。F1 达标，且没写一行前端。</div>
+
+<!-- 8 -->
+<h2 id="s8">8 · 单据字段回填变量 <span class="n">单一事实源</span></h2>
+
+<p class="lead">§7 的 curl 里 amount 是手填的。真实场景（F3）amount 来自业务单据。F1 要立好规矩：<em>决策字段以单据为准，起流程时从单据快照取，不让人再填一遍</em>——否则单据里 8 万、变量里填成 5 万，网关走错。</p>
+
+<h3>8.1 规矩：变量是单据的投影，不是副本</h3>
+<ul>
+<li>发起时：服务端可选地<span class="hl">从刚存的单据里读关键字段</span>（如 amount）注入变量，而非信任客户端传的 amount。</li>
+<li>F1 落法：<code>StartReq</code> 支持一个可选的 <code>varsFromBiz: ["amount", "applicant"]</code> 白名单——服务端按 <code>bizLink</code> 查单据、取这些字段、覆盖进 variables。客户端传的同名值仅作 fallback。</li>
+<li>不做也可（F1 最小版可让客户端传全量变量），但<span class="hl">建议 F1 就把这个投影钩子留好</span>，避免 F3 才发现字段漂移要返工。</li>
+</ul>
+
+<div class="card"><b>取舍：</b>F1 最小实现可以先<b>不做</b> §8 的自动投影，只在文档约定「决策字段以单据为准」，把 <code>varsFromBiz</code> 作为 F1 的加固项 / F3 的前置项。核心 F1（§3/§4/§5/§7）不依赖它。这里列出是为了<span class="hl">在地基阶段就锁定单一事实源原则</span>，防止后面数据漂移。</div>
+
+<!-- 9 -->
+<h2 id="s9">9 · 交付物与验收清单 <span class="n">Definition of Done</span></h2>
+
+<h3>9.1 代码交付物</h3>
+<table>
+<tr><th>Crate / 文件</th><th>改动</th></tr>
+<tr><td><span class="filename">cmx-flow-api/handlers.rs</span></td><td><code>StartReq</code>/<code>CompleteReq</code> 改通用 variables + 兼容垫片；<code>start_instance</code>/<code>complete_task</code> handler 适配</td></tr>
+<tr><td><span class="filename">cmx-flow-api/handlers.rs</span></td><td>新 handler：<code>get_instance_variables</code>、<code>get_instance_biz</code>、<code>get_biz_instances</code>、<code>link_biz_to_instance</code>（内部）</td></tr>
+<tr><td><span class="filename">cmx-flow-api/lib.rs</span></td><td>注册 4 条新路由（对标现有 <code>.route(...)</code> 风格）</td></tr>
+<tr><td><span class="filename">cmx-flow-store-pg</span>（或新 <code>cmx-flow-biz-link</code> 模块）</td><td>关联表 CRUD + <code>ensure_schema</code> DDL；正向/反向查询</td></tr>
+<tr><td><span class="filename">migrations/20260801_001_*.{up,down}.sql</span></td><td>关联表迁移</td></tr>
+<tr><td><span class="filename">cmx-flow-model</span></td><td>可选：<code>BizLink</code> DTO（<code>{biz_table, biz_id, biz_key?}</code>）</td></tr>
+<tr><td>引擎内核</td><td><b>零改动</b></td></tr>
+</table>
+
+<h3>9.2 验收清单</h3>
+<ul>
+<li><span class="chk">☐</span> 起流程可传任意 <code>variables</code>，<code>GET /variables</code> 能读回</li>
+<li><span class="chk">☐</span> 办结可传任意 <code>variables</code>，merge 后网关按新值流转</li>
+<li><span class="chk">☐</span> §7 大额 vs 小额两条 curl，流转结果不同（变量真驱动网关）</li>
+<li><span class="chk">☐</span> 正向/反向关联端点都返回正确结果</li>
+<li><span class="chk">☐</span> link 写失败时实例被取消（无孤儿实例），curl 可复现</li>
+<li><span class="chk">☐</span> 旧形状 <code>{applicant, amount, decision}</code> 仍能工作（兼容垫片）</li>
+<li><span class="chk">☐</span> 迁移幂等（重复 apply 不报错）；<code>ensure_schema</code> 自举建表</li>
+<li><span class="chk">☐</span> 80+ 引擎测试零回归；新增 API/store 层测试覆盖关联表 CRUD</li>
+</ul>
+
+<!-- 10 -->
+<h2 id="s10">10 · 风险 <span class="n">F1 特有</span></h2>
+<table>
+<tr><th>风险</th><th>对策</th></tr>
+<tr><td><b>破坏现有 demo/设计工作台的起流程调用</b></td><td>兼容垫片（§3.1a）：<code>variables</code> 空时从旧字段拼；灰度期两形状并存，回归测试覆盖旧路径。</td></tr>
+<tr><td><b>link 与实例非同事务 → 孤儿</b></td><td>F1 应用层补偿（link 失败即 cancel 实例）；加固项：探 <code>PgRuntimeStore</code> 事务边界能否同事务写 link。</td></tr>
+<tr><td><b>bizId 类型</b>：单据主键是 bigint，关联表存字符串</td><td>关联表 <code>biz_id VARCHAR</code> 兼容各种主键（bigint/code/uuid）；查询按字符串精确匹配，铸号侧保证唯一。</td></tr>
+<tr><td><b>variables 无 schema，什么都能塞</b></td><td>F1 不做校验（保持通用）；决策字段的约束靠 §8 单一事实源 + F2 formFields 白名单。地基阶段刻意宽松。</td></tr>
+<tr><td><b>一单多流程</b>（报销单既审批又付款）</td><td>关联表 <code>role</code> 列 + 多对多设计已支持；反向查返回数组。</td></tr>
+</table>
+
+<div class="card brand" style="margin-top:40px">
+<b>F1 一句话：</b>拆掉 API 层那道把 <code>variables</code> 写死成 <code>applicant/amount</code> 的<span class="hl">人为的墙</span>，补一张<span class="hl2">单据↔实例关联表</span>，让「任意业务数据能作为变量进出流程、驱动流转」这件事<span class="hlg">用 curl 就能端到端证明</span>。引擎内核一行不动，前端一页不写。地基夯实了，F2 的 formKey 绑定、F3 的待办开表单才有稳固的立足点。</div>
+
+</div>
+</body>
+</html>

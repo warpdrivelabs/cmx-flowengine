@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cmx-flow 可视化流程设计器 · 方案</title>
+<style>
+:root{
+  --bg:#f6f8fa; --panel:#fff; --ink:#1f2328; --muted:#656d76; --line:#d0d7de; --line-soft:#eaeef2;
+  --brand:#0969da; --brand-d:#0a4d8c; --brand-soft:#ddf4ff;
+  --pk:#8250df; --pk-soft:#fbefff; --ok:#1a7f37; --ok-soft:#e6f6eb;
+  --amber:#9a6700; --amber-soft:#fff8e6; --new:#bc4c00; --new-soft:#fff1e7;
+  --sub:#0e7c66; --sub-soft:#e2f7f2; --code-bg:#f6f8fa;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:0 24px 96px}
+.hero{background:linear-gradient(135deg,#0969da 0%,#0a4d8c 100%);color:#fff;margin:0 -24px 40px;padding:52px 24px 44px;border-radius:0 0 24px 24px}
+.hero-in{max-width:1080px;margin:0 auto}
+.eyebrow{font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;opacity:.85;font-weight:600}
+.hero h1{margin:12px 0 10px;font-size:33px;line-height:1.2;font-weight:800;letter-spacing:-.5px}
+.hero p{margin:0;font-size:16px;opacity:.94;max-width:760px}
+.hstats{display:flex;gap:14px;margin-top:28px;flex-wrap:wrap}
+.hstat{background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.2);border-radius:12px;padding:12px 18px;backdrop-filter:blur(6px)}
+.hstat .n{font-size:23px;font-weight:800;line-height:1}
+.hstat .l{font-size:12px;opacity:.85;margin-top:5px}
+.sec{margin:44px 0 0}
+.sec-h{display:flex;align-items:center;gap:11px;margin:0 0 6px}
+.sec-h .ix{width:27px;height:27px;border-radius:8px;background:var(--brand-soft);color:var(--brand-d);display:grid;place-items:center;font-weight:800;font-size:14px;flex:none}
+.sec-h h2{margin:0;font-size:22px;font-weight:750;letter-spacing:-.3px}
+.sec-lead{color:var(--muted);margin:0 0 20px 38px;font-size:14.5px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 24px;margin:16px 0}
+.panel.tight{padding:16px 18px}
+h3{font-size:16.5px;font-weight:700;margin:20px 0 9px}
+h3:first-child{margin-top:4px}
+p{margin:9px 0}
+.muted{color:var(--muted)}
+.k{font-family:var(--mono);font-size:12.5px;background:var(--code-bg);border:1px solid var(--line-soft);border-radius:5px;padding:1.5px 6px;color:var(--brand-d);white-space:nowrap}
+.inl{font-family:var(--mono);font-size:12.5px;color:var(--pk)}
+ul,ol{margin:9px 0;padding-left:24px}
+li{margin:5px 0}
+.note{background:var(--amber-soft);border:1px solid #f0e0b0;border-left:3px solid var(--amber);border-radius:0 8px 8px 0;padding:11px 15px;margin:14px 0;font-size:14px}
+.note.ok{background:var(--ok-soft);border-color:#b7e0c2;border-left-color:var(--ok)}
+.note.pk{background:var(--pk-soft);border-color:#e5cffb;border-left-color:var(--pk)}
+.note.new{background:var(--new-soft);border-color:#ffd3b8;border-left-color:var(--new)}
+.tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;vertical-align:middle}
+.t-brand{background:var(--brand-soft);color:var(--brand-d)}
+.t-pk{background:var(--pk-soft);color:var(--pk)}
+.t-ok{background:var(--ok-soft);color:var(--ok)}
+.t-sub{background:var(--sub-soft);color:var(--sub)}
+.t-new{background:var(--new-soft);color:var(--new)}
+.t-amber{background:var(--amber-soft);color:var(--amber)}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+th{font-weight:700;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid var(--line)}
+td.k-cell{font-family:var(--mono);font-size:12px;color:var(--brand-d);white-space:nowrap}
+tr:last-child td{border-bottom:none}
+.zones{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:18px 0}
+.zone{border:1px solid var(--line);border-radius:12px;padding:16px 18px;background:var(--panel)}
+.zone h4{margin:0 0 4px;font-size:15px;font-weight:750;display:flex;align-items:center;gap:8px}
+.zone .zi{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:12px;flex:none}
+.zone p{font-size:13px;color:var(--muted);margin:6px 0 0}
+.zone ul{font-size:13px;margin:8px 0 0;padding-left:20px}
+.layer{display:flex;gap:14px;align-items:flex-start;padding:14px 0;border-bottom:1px solid var(--line-soft)}
+.layer:last-child{border-bottom:none}
+.layer .lnum{width:30px;height:30px;border-radius:8px;background:var(--ink);color:#fff;display:grid;place-items:center;font-weight:800;font-size:14px;flex:none}
+.layer .lbody{flex:1}
+.layer .lt{font-weight:700;font-size:15px}
+.layer .ld{color:var(--muted);font-size:13.5px;margin-top:3px}
+.flow{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:16px 0;font-family:var(--mono);font-size:12px}
+.flow .node{background:var(--panel);border:1.5px solid var(--brand);border-radius:8px;padding:7px 12px;color:var(--brand-d);font-weight:600}
+.flow .node.alt{border-color:var(--pk);color:var(--pk)}
+.flow .node.ok{border-color:var(--ok);color:var(--ok)}
+.flow .ar{color:var(--muted);font-weight:700}
+pre{background:#0d1117;color:#e6edf3;border-radius:10px;padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6;margin:14px 0}
+pre .c{color:#8b949e}
+pre .g{color:#7ee787}
+pre .b{color:#79c0ff}
+pre .o{color:#ffa657}
+pre .p{color:#d2a8ff}
+.mile{display:flex;gap:0;margin:20px 0}
+.mile-t{flex:none;width:120px;position:relative;padding-right:20px}
+.mile-t::after{content:'';position:absolute;right:0;top:4px;bottom:-20px;width:2px;background:var(--line)}
+.milerow:last-child .mile-t::after{display:none}
+.milerow{display:flex;margin-bottom:22px}
+.mile-dot{position:absolute;right:-5px;top:2px;width:12px;height:12px;border-radius:50%;background:var(--brand);border:2px solid #fff;box-shadow:0 0 0 1px var(--brand)}
+.mile-c{flex:1;padding-left:22px}
+.mile-c h4{margin:0 0 5px;font-size:15.5px;font-weight:750}
+.mile-c p{margin:0;font-size:13.5px;color:var(--muted)}
+.pill{font-size:11px;font-weight:700;color:var(--muted);font-family:var(--mono)}
+.foot{margin-top:56px;padding-top:22px;border-top:1px solid var(--line);color:var(--muted);font-size:13px;text-align:center}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:760px){.zones,.two{grid-template-columns:1fr}.mile-t{width:84px}}
+.chk{list-style:none;padding-left:0}
+.chk li{padding-left:26px;position:relative}
+.chk li::before{content:'✓';position:absolute;left:2px;color:var(--ok);font-weight:800}
+.x li::before{content:'✗';color:var(--new)}
+.kbd{font-family:var(--mono);font-size:11px;background:#fff;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:1px 6px}
+</style>
+</head>
+<body>
+<div class="hero">
+  <div class="hero-in">
+    <div class="eyebrow">cmx-flow · 设计方案（未动代码）</div>
+    <h1>可视化流程设计器</h1>
+    <p>基于 BPMN 2.0 标准的拖拽式流程设计器：画流程图、配子流程组织路由、绑角色/岗位/组织、挂表单。产物直接是引擎 <span class="k" style="color:#cfe8ff;background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.25)">compile(xml)</span> 能跑的 BPMN——设计即所得，所见即可执行。</p>
+    <div class="hstats">
+      <div class="hstat"><div class="n">bpmn-js</div><div class="l">业界标准画布</div></div>
+      <div class="hstat"><div class="n">4 区</div><div class="l">工作台范式</div></div>
+      <div class="hstat"><div class="n">1 契约</div><div class="l">compile(xml) 不变</div></div>
+      <div class="hstat"><div class="n">6 阶段</div><div class="l">增量交付</div></div>
+      <div class="hstat"><div class="n">0 造轮子</div><div class="l">复用 IAM/表单/组织</div></div>
+    </div>
+  </div>
+</div>
+<div class="wrap">
+
+<!-- ══════════ 1. 定位 ══════════ -->
+<section class="sec">
+  <div class="sec-h"><div class="ix">1</div><h2>定位与设计哲学</h2></div>
+  <p class="sec-lead">设计器不是画图工具，是引擎定义的可视化编辑器。一条铁律贯穿全案。</p>
+
+  <div class="panel">
+    <div class="note pk" style="margin-top:0"><b>铁律：设计器产物 = 引擎输入。</b> 设计器最终吐出的必须是后端 <span class="inl">cmx_flow_bpmn::compile(xml) → ProcessDefinition</span> 能吃的 BPMN 2.0 XML。画布上画不出引擎跑不了的东西，引擎能跑的每个能力画布都能配。二者共用同一份「能力清单」，任何一端加能力，另一端同步——这是全案最重要的约束。</p></div>
+
+    <h3>四条原则</h3>
+    <table>
+      <tr><th style="width:150px">原则</th><th>含义</th></tr>
+      <tr><td><b>标准优先</b></td><td>画布用 <b>bpmn-js</b>（bpmn.io 官方，BPMN 2.0 事实标准）。连线、撞态、缩放、对齐、撤销、导出 XML 这些底层能力免费拿，我们只做 cmx 特有的属性面板与后端打通。不自研画布引擎。</td></tr>
+      <tr><td><b>契约驱动</b></td><td>设计器可配的属性 ⊆ 编译器可解析的属性。编译器现认 <span class="k">userTask</span> 的 <span class="k">assignee/candidateUsers/candidateGroups/cc</span>、<span class="k">callActivity</span> 的 <span class="k">calledElement/cmx:calledKey/in/out</span>、<span class="k">multiInstance</span>、<span class="k">boundaryEvent</span> 定时器等——属性面板逐项对标。</td></tr>
+      <tr><td><b>复用既有</b></td><td>角色/岗位/组织选择器直接拉 IAM 表（<span class="k">cmx_role</span>/<span class="k">cmx_position</span>/<span class="k">cmx_org</span>）；表单绑定接 <span class="k">cmx-form</span>/DOC/DCT 元数据；UI 用 <span class="k">cmx-data-comp</span> + UI5；工作台用 native-pages 四区范式（对标 RPT 设计器）。不重造任何一个。</td></tr>
+      <tr><td><b>专业健壮</b></td><td>校验前置（画布实时诊断 + 保存前编译校验 + 后端 topology 校验三道闸）；定义带版本；草稿/发布分离；每步可撤销。达到「专业、精致、稳定、健壮」。</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════ 2. 缺口 ══════════ -->
+<section class="sec">
+  <div class="sec-h"><div class="ix">2</div><h2>现状盘点：有什么、缺什么</h2></div>
+  <p class="sec-lead">动手前先照镜子。引擎侧能力已厚，前端侧从零起步，中间缺一个「定义持久化层」。</p>
+
+  <div class="two">
+    <div class="panel tight">
+      <h3 style="color:var(--ok)">✓ 已具备（直接复用）</h3>
+      <ul class="chk" style="font-size:13.5px">
+        <li><b>编译器</b>：8 种 task + 5 种 gateway + 事件 + callActivity + multiInstance + 候选人/抄送/组织路由，全能解析</li>
+        <li><b>4 个扩展点</b>：JavaDelegate / Clock / AssigneeResolver / SubflowRouter</li>
+        <li><b>IAM 绑定</b>：<span class="inl">role()/position()/org()</span> → 真实用户，PgIamAssigneeResolver 已落地</li>
+        <li><b>组织路由</b>：cmx_flow_subflow_binding + 沿 path 继承</li>
+        <li><b>表单/元数据</b>：cmx-form、DOC/DCT 元模型、cmx-data-comp 组件库</li>
+        <li><b>工作台范式</b>：RPT native-pages 四区设计器（designer.js 134KB 先例）</li>
+      </ul>
+    </div>
+    <div class="panel tight">
+      <h3 style="color:var(--new)">✗ 缺口（本案要补）</h3>
+      <ul class="x chk" style="font-size:13.5px">
+        <li><b>可编辑画布</b>：现在只有只读 <span class="inl">buildFlowStrip</span>（泳道条），无拖拽设计</li>
+        <li><b>定义持久化</b>：<span class="inl">engine.deploy()</span> 只存内存 HashMap，demo 靠 <span class="inl">include_str!</span> 硬编码 → 设计器要能存/取/版本化定义</li>
+        <li><b>属性面板</b>：把 BPMN 元素的 cmx 扩展属性做成可视化表单</li>
+        <li><b>绑定选择器</b>：角色/岗位/组织/表单的可视化选择控件</li>
+        <li><b>子流程组织路由 UI</b>：calledKey → 各组织绑定的可视化矩阵</li>
+        <li><b>部署编排</b>：草稿 → 校验 → 发布 → 引擎装载的前端流程</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="note new"><b>最关键的缺口是「定义持久化层」。</b> 它是设计器与引擎之间缺失的一环：设计器存 BPMN XML + 版本 → 引擎启动/热更时从库里读定义 deploy。没有它，设计器画完无处可存、引擎也读不到。<b>阶段 0 先补这个后端基座</b>（见第 6 节）。</div>
+</section>
+
+<!-- ══════════ 3. 架构 ══════════ -->
+<section class="sec">
+  <div class="sec-h"><div class="ix">3</div><h2>整体架构：五层</h2></div>
+  <p class="sec-lead">从画布到引擎，数据只有一种流向；BPMN XML 是贯穿全链的唯一交换格式。</p>
+
+  <div class="panel">
+    <div class="flow" style="justify-content:center;margin:6px 0 22px">
+      <span class="node">画布 bpmn-js</span><span class="ar">→</span>
+      <span class="node alt">属性面板</span><span class="ar">→</span>
+      <span class="node">BPMN XML</span><span class="ar">→</span>
+      <span class="node ok">定义服务</span><span class="ar">→</span>
+      <span class="node ok">compile()</span><span class="ar">→</span>
+      <span class="node ok">引擎</span>
+    </div>
+
+    <div class="layer"><div class="lnum">1</div><div class="lbody">
+      <div class="lt">画布层 <span class="tag t-brand">bpmn-js</span></div>
+      <div class="ld">bpmn.io 官方渲染器。拖拽建节点、连线、对齐、缩放、撤销、导入/导出标准 BPMN XML。我们扩展它的 palette（只保留引擎支持的元素）与 renderer（cmx 图标/配色）。<b>不碰它的核心，只加插件。</b></div>
+    </div></div>
+    <div class="layer"><div class="lnum">2</div><div class="lbody">
+      <div class="lt">属性层 <span class="tag t-pk">cmx-data-comp + UI5</span></div>
+      <div class="ld">选中元素 → 右侧属性面板出对应表单。userTask 出「办理人/候选人/抄送/表单/会签」；callActivity 出「子流程/组织路由」；boundaryEvent 出「定时器」。面板改动 ↔ 双向绑定到 bpmn-js 的 moddle（XML 模型）。用 <span class="k">CmxFloatingDialog</span>/<span class="k">cmx-ui5-form</span>/<span class="k">cmx-dict-select</span> 等既有封装。</div>
+    </div></div>
+    <div class="layer"><div class="lnum">3</div><div class="lbody">
+      <div class="lt">绑定层 <span class="tag t-sub">IAM / 表单 / 组织</span></div>
+      <div class="ld">属性面板里的「选角色/选岗位/选组织/选表单」控件，实时查后端既有系统：<span class="k">/api/iam/roles</span>、<span class="k">/api/iam/positions</span>、<span class="k">/api/org/tree</span>、<span class="k">/api/forms</span>。选中的 code/id 写回 BPMN 扩展属性（<span class="inl">flowable:candidateGroups="role(FINANCE)"</span>）。</div>
+    </div></div>
+    <div class="layer"><div class="lnum">4</div><div class="lbody">
+      <div class="lt">定义服务层 <span class="tag t-new">新建 · 阶段 0</span></div>
+      <div class="ld">缺口所在。<span class="k">cmx-flow-def</span> 存 BPMN XML + 版本 + 状态（草稿/已发布）。CRUD + 校验（调 compile 试编译）+ 发布（version+1，引擎热装载）+ 组织路由绑定管理。存 <span class="k">cmx_flow_definition</span> / <span class="k">cmx_flow_definition_version</span> 表。</div>
+    </div></div>
+    <div class="layer"><div class="lnum">5</div><div class="lbody">
+      <div class="lt">引擎层 <span class="tag t-ok">已具备 · 契约不变</span></div>
+      <div class="ld"><span class="inl">compile(xml) → ProcessDefinition</span> + <span class="inl">engine.deploy()</span>。<b>设计器不改引擎</b>，只通过标准 BPMN XML 喂给它。引擎新增的只是「从定义服务读 XML 而非 include_str!」这一条装载路径。</div>
+    </div></div>
+  </div>
+
+  <div class="note ok"><b>为什么这个分层稳：</b> 每层只认下一层的一种输入。画布只吐 XML，定义服务只存 XML，引擎只吃 XML。任何一层可独立替换（哪天换掉 bpmn-js，只要还吐标准 XML，后面全不动）。BPMN XML 作为「窄腰」把前后端彻底解耦。</div>
+</section>
+
+<!-- ══════════ 4. 四区工作台 ══════════ -->
+<section class="sec">
+  <div class="sec-h"><div class="ix">4</div><h2>四区工作台布局</h2></div>
+  <p class="sec-lead">对标 RPT 设计器（native-pages 四区范式），流程设计器同构：探索区 + 画布区 + 属性区 + 工具条。</p>
+
+  <div class="zones">
+    <div class="zone">
+      <h4><span class="zi" style="background:var(--brand-soft);color:var(--brand-d)">◧</span> 探索区（左）</h4>
+      <p>流程定义树 + 元素面板。</p>
+      <ul>
+        <li>已有流程列表（草稿/已发布，按模块分组）</li>
+        <li>BPMN 元素调色板（只列引擎支持的：开始/结束、用户任务、网关、子流程、定时边界…）</li>
+        <li>拖元素到画布 / 点流程进画布编辑</li>
+      </ul>
+    </div>
+    <div class="zone">
+      <h4><span class="zi" style="background:var(--pk-soft);color:var(--pk)">▦</span> 画布区（中）<span class="tag t-brand" style="margin-left:auto">bpmn-js</span></h4>
+      <p>核心。bpmn-js 渲染的可交互 BPMN 图。</p>
+      <ul>
+        <li>拖拽建节点、拉线连接、框选、对齐吸附</li>
+        <li>子流程节点可「钻入」看内部路径（复用现有递归渲染思路）</li>
+        <li>实时诊断：断头节点、无出口网关标红</li>
+      </ul>
+    </div>
+    <div class="zone">
+      <h4><span class="zi" style="background:var(--sub-soft);color:var(--sub)">▤</span> 属性区（右）</h4>
+      <p>选中元素的上下文属性表单。</p>
+      <ul>
+        <li>通用：id / 名称 / 文档注释</li>
+        <li>userTask：办理人·候选人·抄送·表单·会签</li>
+        <li>callActivity：子流程 key·组织路由·变量映射</li>
+        <li>gateway：条件表达式；boundary：定时器</li>
+      </ul>
+    </div>
+    <div class="zone">
+      <h4><span class="zi" style="background:var(--amber-soft);color:var(--amber)">▭</span> 工具条（顶）</h4>
+      <p>命令区。</p>
+      <ul>
+        <li>保存草稿 / 校验 / 发布 / 版本历史</li>
+        <li>撤销·重做（bpmn-js 原生 commandStack）</li>
+        <li>缩放·适应·导入 XML·导出 XML/SVG</li>
+        <li>组织路由矩阵（子流程绑定专用弹窗）</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="note"><b>复用 RPT 范式的收益：</b> native-pages 注册机制、四区 splitter 布局、工具条组件、explorer 树、属性面板骨架，RPT 设计器全都趟过一遍（见记忆 rpt-designer-mode / rpt-spreadjs-designer-toolbar）。流程设计器换掉中间画布（SpreadJS→bpmn-js）、换掉属性面板内容（报表元素→流程元素），骨架同构，工作量集中在画布集成与属性面板。</div>
+</section>
+
+<!-- ══════════ 5. 属性面板 × 后端契约 ══════════ -->
+<section class="sec">
+  <div class="sec-h"><div class="ix">5</div><h2>属性面板 ↔ 后端契约对照</h2></div>
+  <p class="sec-lead">每个可视化设置项，精确对应编译器认得的一个 BPMN 属性。这张表是设计器与引擎的接口契约。</p>
+
+  <div class="panel">
+    <h3>① 用户任务 userTask</h3>
+    <table>
+      <tr><th style="width:150px">面板设置项</th><th>BPMN 产物</th><th>后端消费</th></tr>
+      <tr><td>办理人（单人）</td><td class="k-cell">flowable:assignee="${u}"</td><td>直接指派</td></tr>
+      <tr><td>候选角色 <span class="tag t-sub">IAM</span></td><td class="k-cell">flowable:candidateGroups="role(FIN)"</td><td>AssigneeResolver → cmx_role</td></tr>
+      <tr><td>候选岗位 <span class="tag t-sub">IAM</span></td><td class="k-cell">candidates="position(MGR)"</td><td>→ cmx_position</td></tr>
+      <tr><td>候选组织 <span class="tag t-sub">IAM</span></td><td class="k-cell">candidates="org(D01)"</td><td>→ cmx_org 子树</td></tr>
+      <tr><td>抄送 <span class="tag t-brand">M4.2</span></td><td class="k-cell">cmx:cc="role(AUDIT)"</td><td>只读知会 + 已读追踪</td></tr>
+      <tr><td>会签/或签 <span class="tag t-brand">M3</span></td><td class="k-cell">&lt;multiInstanceLoopCharacteristics&gt;</td><td>MiScope 账本</td></tr>
+      <tr><td>绑定表单 <span class="tag t-pk">表单</span></td><td class="k-cell">flowable:formKey="..."</td><td class="muted">新增：编译器补 formKey 解析</td></tr>
+    </table>
+
+    <h3>② 子流程调用 callActivity <span class="tag t-sub">M5</span></h3>
+    <table>
+      <tr><th style="width:150px">面板设置项</th><th>BPMN 产物</th><th>后端消费</th></tr>
+      <tr><td>固定子流程</td><td class="k-cell">calledElement="fin_review_hq"</td><td>直接调用（M5.1）</td></tr>
+      <tr><td>逻辑 key（组织路由）</td><td class="k-cell">cmx:calledKey="fin_review"</td><td>SubflowRouter 运行期解析（M5.2）</td></tr>
+      <tr><td>输入变量映射</td><td class="k-cell">&lt;flowable:in source target&gt;</td><td>主→子传参</td></tr>
+      <tr><td>输出变量映射</td><td class="k-cell">&lt;flowable:out source target&gt;</td><td>子→主回写</td></tr>
+      <tr><td>组织路由矩阵 <span class="tag t-sub">IAM</span></td><td class="muted">→ cmx_flow_subflow_binding</td><td>非 BPMN，存绑定表（见 ③）</td></tr>
+    </table>
+
+    <h3>③ 组织路由矩阵（callActivity 专用弹窗）</h3>
+    <p class="muted" style="font-size:13.5px">这是你最关注的能力：一个逻辑 key，各组织绑不同子流程。设计器出可视化矩阵，落 <span class="k">cmx_flow_subflow_binding</span> 表（called_key + org_id + target_definition_key）。三层解析已实现（精确 / 沿 cmx_org.path 继承 / 默认兜底）。</p>
+    <pre><span class="c"># 组织路由矩阵 UI（逻辑 key = fin_review）</span>
+<span class="b">组织</span>              <span class="b">绑定子流程</span>            <span class="b">解析方式</span>
+─────────────────────────────────────────────
+总部 (df_root)     fin_review_hq       <span class="g">精确</span>
+├ 北京 (df_bj)     <span class="o">(未绑)</span>            <span class="p">继承总部 → hq</span>
+└ 上海 (df_sh)     fin_review_branch   <span class="g">精确</span>
+默认 (org=NULL)    fin_review_default  <span class="g">兜底</span>
+─────────────────────────────────────────────
+<span class="c"># 选组织行 → 下拉选子流程 → 存 binding，即时生效</span></pre>
+
+    <h3>④ 网关 / 事件</h3>
+    <table>
+      <tr><th style="width:150px">面板设置项</th><th>BPMN 产物</th><th>后端消费</th></tr>
+      <tr><td>排他/并行/包容网关</td><td class="k-cell">exclusive/parallel/inclusiveGateway</td><td>分支路由（M2）</td></tr>
+      <tr><td>分支条件</td><td class="k-cell">&lt;conditionExpression&gt;${amount&gt;5000}</td><td>expr.rs 求值</td></tr>
+      <tr><td>边界定时器 <span class="tag t-brand">M2.5</span></td><td class="k-cell">&lt;timerEventDefinition&gt;&lt;timeDuration&gt;</td><td>ISO8601 → Job 到期</td></tr>
+      <tr><td>服务任务</td><td class="k-cell">flowable:delegateExpression</td><td>JavaDelegate 扩展点</td></tr>
+    </table>
+  </div>
+
+  <div class="note pk"><b>属性面板的实现要点——双向绑定 moddle。</b> bpmn-js 内部把 XML 存成 moddle 对象树。属性面板改一个字段 → 通过 <span class="inl">modeling.updateProperties()</span> 写 moddle → 画布 XML 同步更新；反之点选元素 → 读 moddle 回填面板。cmx 自定义属性（<span class="k">cmx:calledKey</span>/<span class="k">cmx:cc</span>）需注册一个 <b>moddle 扩展描述符</b>（JSON schema），让 bpmn-js 认识 cmx 命名空间。这是集成的核心技术活。</div>
+</section>
+
+<!-- ══════════ 6. 后端基座 ══════════ -->
+<section class="sec">
+  <div class="sec-h"><div class="ix">6</div><h2>阶段 0：定义持久化基座</h2></div>
+  <p class="sec-lead">前端动工前，先补引擎侧唯一缺口。这是纯后端小切口，让「定义能存能取能版本化」。</p>
+
+  <div class="panel">
+    <h3>新增 crate：<span class="k">cmx-flow-def</span></h3>
+    <p>与现有 cmx-flow-model/engine/store-pg 平级。职责单一：流程定义的 CRUD + 版本 + 发布。</p>
+    <table>
+      <tr><th style="width:180px">能力</th><th>说明</th></tr>
+      <tr><td>save_draft(key, xml)</td><td>存草稿。先调 <span class="inl">compile(xml)</span> 试编译，语法/拓扑错直接挡回，带结构化诊断。</td></tr>
+      <tr><td>publish(key)</td><td>草稿 → 发布：version+1，标记 active，触发引擎热装载。旧版本保留（历史实例仍按旧版跑）。</td></tr>
+      <tr><td>list / get / get_version</td><td>列表、取当前版本 XML、取指定历史版本。</td></tr>
+      <tr><td>binding CRUD</td><td>组织路由矩阵的增删改查（cmx_flow_subflow_binding，M5.2 表已建）。</td></tr>
+    </table>
+
+    <h3>两张新表</h3>
+    <pre><span class="c">-- 定义主表（当前指针）</span>
+<span class="b">cmx_flow_definition</span>(
+  key PK, name, module, category,
+  active_version INT,           <span class="c">-- 指向当前发布版本</span>
+  state,                        <span class="c">-- DRAFT / PUBLISHED</span>
+  updated_at, updated_by )
+
+<span class="c">-- 版本表（不可变历史，每次发布追加一行）</span>
+<span class="b">cmx_flow_definition_version</span>(
+  id PK, def_key, version INT,
+  bpmn_xml TEXT,               <span class="c">-- 设计器产物，原样存</span>
+  published_at, published_by,
+  UNIQUE(def_key, version) )</pre>
+
+    <div class="note"><b>为什么存 XML 而非编译后的 IR：</b> XML 是标准交换格式，设计器能重新加载编辑、可人工审阅、可版本 diff、可导出迁移。IR 是引擎内部结构，会随代码演进。存 XML + 装载时 compile，既保留可编辑性又保证与引擎同步。代价是每次装载编译一次——定义数量级极小（几十上百个），可忽略。</div>
+
+    <h3>引擎装载路径改造（唯一改动）</h3>
+    <p>现在：<span class="inl">include_str!("credit.bpmn") → compile → deploy</span>（硬编码）。<br>
+    改后：<span class="inl">def_service.list_published() → 逐个 compile → deploy</span>（从库读）。demo 的 include_str 保留作 seed，生产走库。引擎核心零改动。</p>
+  </div>
+</section>
+
+<!-- ══════════ 7. 分阶段 ══════════ -->
+<section class="sec">
+  <div class="sec-h"><div class="ix">7</div><h2>分阶段交付</h2></div>
+  <p class="sec-lead">六个阶段，每个都能独立验收、独立见效。先打通「能画能存能跑」的最小闭环，再逐步加专业设置。</p>
+
+  <div class="panel">
+    <div class="mile">
+      <div style="flex:1">
+        <div class="milerow"><div class="mile-t"><span class="pill">阶段 0</span><div class="mile-dot"></div></div><div class="mile-c"><h4>定义持久化基座 <span class="tag t-new">纯后端</span></h4><p>cmx-flow-def crate + 两张表 + 引擎从库装载。设计器的「存/取/发布」有了着落。可独立测试：存 XML → 发布 → 引擎跑起来。</p></div></div>
+        <div class="milerow"><div class="mile-t"><span class="pill">阶段 1</span><div class="mile-dot"></div></div><div class="mile-c"><h4>画布最小闭环 <span class="tag t-brand">bpmn-js</span></h4><p>集成 bpmn-js 到 native-pages 四区工作台。能拖节点、连线、导出标准 BPMN、存草稿、发布 → 引擎能跑最简单的「开始→用户任务→结束」。<b>打通端到端。</b></p></div></div>
+        <div class="milerow"><div class="mile-t"><span class="pill">阶段 2</span><div class="mile-dot"></div></div><div class="mile-c"><h4>属性面板 · 基础 <span class="tag t-pk">属性</span></h4><p>选中元素出属性面板：id/名称/文档、办理人、网关条件、结束事件。moddle 双向绑定跑通。cmx 命名空间 moddle 扩展注册。</p></div></div>
+        <div class="milerow"><div class="mile-t"><span class="pill">阶段 3</span><div class="mile-dot"></div></div><div class="mile-c"><h4>IAM 绑定 · 角色/岗位/组织 <span class="tag t-sub">绑定</span></h4><p>候选人选择器接 IAM：可视化选角色/岗位/组织，写回 <span class="inl">role()/position()/org()</span> 表达式。抄送同理。这是「人与组织」维度的可视化。</p></div></div>
+        <div class="milerow"><div class="mile-t"><span class="pill">阶段 4</span><div class="mile-dot"></div></div><div class="mile-c"><h4>子流程 · 组织路由矩阵 <span class="tag t-sub">M5</span></h4><p>callActivity 属性面板 + 组织路由矩阵弹窗。逻辑 key、变量映射、各组织绑定不同子流程。你最关注的能力，完整可视化。</p></div></div>
+        <div class="milerow"><div class="mile-t"><span class="pill">阶段 5</span><div class="mile-dot"></div></div><div class="mile-c"><h4>进阶 · 会签/定时器/表单/版本 <span class="tag t-amber">专业</span></h4><p>会签配置、边界定时器、表单绑定（需编译器补 formKey）、版本历史与 diff、发布审计。收尾成「专业、精致、稳定、健壮」。</p></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note ok"><b>阶段 1 是关键里程碑。</b> 它证明「画布 → XML → 定义服务 → compile → 引擎」整条链通。此后每阶段都是在通路上加设置项，风险可控、增量见效。建议阶段 0+1 先做，看到端到端效果后再决定后续节奏——和 flow 引擎 M1→M5 一样的打法。</div>
+</section>
+
+<!-- ══════════ 8. 稳定健壮 ══════════ -->
+<section class="sec">
+  <div class="sec-h"><div class="ix">8</div><h2>专业·精致·稳定·健壮 怎么落实</h2></div>
+  <p class="sec-lead">你的四个形容词，逐条对应到具体机制，不是口号。</p>
+
+  <div class="two">
+    <div class="panel tight">
+      <h3 style="margin-top:2px">专业</h3>
+      <ul style="font-size:13.5px">
+        <li>bpmn-js = BPMN 2.0 官方标准，符号/语义与 Flowable/Camunda 一致，行业通用</li>
+        <li>属性面板术语对齐 BPMN 规范（会签/或签/边界事件/补偿）</li>
+        <li>导出标准 XML，可被任何 BPMN 工具打开</li>
+      </ul>
+      <h3>精致</h3>
+      <ul style="font-size:13.5px">
+        <li>沿用项目设计语言（cmx-data-comp + UI5，与 RPT 设计器同款皮肤）</li>
+        <li>子流程可钻入、组织路由矩阵可视化、实时诊断高亮</li>
+        <li>撤销/重做/对齐吸附/缩放适应，交互顺滑</li>
+      </ul>
+    </div>
+    <div class="panel tight">
+      <h3 style="margin-top:2px">稳定</h3>
+      <ul style="font-size:13.5px">
+        <li>bpmn-js 千万级装机量的成熟库，不自研画布核心</li>
+        <li>BPMN XML 窄腰解耦，前后端可独立演进</li>
+        <li>定义版本化：发新版不影响在跑的旧实例</li>
+        <li>草稿/发布分离，未发布不影响生产</li>
+      </ul>
+      <h3>健壮</h3>
+      <ul style="font-size:13.5px">
+        <li><b>三道校验闸</b>：画布实时诊断 → 保存前 compile 试编译 → 后端 check_topology</li>
+        <li>结构化诊断（复用 CmxErrCode + 专业对话框，见记忆 dct-doc-column-validation）</li>
+        <li>存 XML 原样，可回滚可审计</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="note pk"><b>三道校验闸详解：</b> ① 画布层——bpmn-js 实时标红断头节点/无条件分支；② 保存层——存草稿前后端调 <span class="inl">compile(xml)</span>，语法错/拓扑错（无 start、死循环、网关无出口）挡回并高亮定位；③ 装载层——发布时 <span class="inl">check_topology</span> 终检。一个非法流程根本存不进库，更进不了引擎。这是「健壮」的硬保证。</div>
+</section>
+
+<!-- ══════════ 9. 技术风险 ══════════ -->
+<section class="sec">
+  <div class="sec-h"><div class="ix">9</div><h2>已识别的技术风险与对策</h2></div>
+  <div class="panel">
+    <table>
+      <tr><th style="width:220px">风险</th><th>对策</th></tr>
+      <tr><td><b>bpmn-js moddle 扩展</b><br><span class="muted" style="font-size:12.5px">cmx: 命名空间自定义属性</span></td><td>写一个 moddle 扩展描述符（JSON schema）声明 cmx 命名空间的 calledKey/cc 等属性。bpmn.io 官方支持自定义扩展，有成熟范例（camunda/zeebe 都这么做）。阶段 2 攻克。</td></tr>
+      <tr><td><b>bpmn-js 与 UI5/native-pages 集成</b><br><span class="muted" style="font-size:12.5px">两套技术栈共存</span></td><td>bpmn-js 挂在画布区一个 div 上，与 UI5 组件通过事件通信，互不侵入。RPT 设计器已验证「第三方画布库（SpreadJS）+ native-pages 四区」可行，同构。</td></tr>
+      <tr><td><b>依赖体积</b><br><span class="muted" style="font-size:12.5px">bpmn-js ~500KB</span></td><td>按需加载：只在打开设计器页时加载，不进主 bundle。设计态低频操作，可接受。</td></tr>
+      <tr><td><b>表单绑定链路</b><br><span class="muted" style="font-size:12.5px">formKey 编译器暂未解析</span></td><td>编译器补 <span class="inl">parse formKey</span>（小改动），引擎把 formKey 透传给前端渲染表单。放阶段 5，不阻塞主线。</td></tr>
+      <tr><td><b>定义变更与在跑实例</b><br><span class="muted" style="font-size:12.5px">改流程影响存量</span></td><td>版本化解决：实例绑定发起时的 version，旧实例按旧定义跑完，新实例用新版。已在阶段 0 的表结构里预留 version 维度。</td></tr>
+    </table>
+  </div>
+</section>
+
+<div class="foot">
+  cmx-flow 可视化流程设计器 · 设计方案 v1（未动代码）<br>
+  画布 bpmn-js（业界标准）· 四区工作台（对标 RPT）· BPMN XML 窄腰契约 · compile(xml) 不变 · 六阶段增量交付<br>
+  <span style="opacity:.7">下一步：确认方案 → 阶段 0（定义持久化基座）开工</span>
+</div>
+
+</div>
+</body>
+</html>

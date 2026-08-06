@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cmx-flow M5 设计方案 · 子流程 · 按组织路由</title>
+<style>
+  :root {
+    --bg: #f6f8fa; --panel: #ffffff; --ink: #1f2328; --muted: #656d76;
+    --line: #d0d7de; --line-soft: #eaeef2;
+    --brand: #0969da; --brand-soft: #ddf4ff; --brand-d: #0a4d8c;
+    --pk: #8250df; --pk-soft: #fbefff; --idx: #1a7f37; --idx-soft: #e6f6eb;
+    --null: #9a6700; --notnull: #cf222e;
+    --new: #bc4c00; --new-soft: #fff1e7; --reuse: #1a7f37; --reuse-soft: #e6f6eb;
+    --amber: #9a6700; --amber-soft: #fff8e6;
+    --sub: #1a7f6e; --sub-soft: #e2f7f2;
+    --code-bg: #f6f8fa; --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    line-height: 1.65; font-size: 15px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px 80px; }
+
+  header.hero {
+    background: linear-gradient(135deg, #0e7c66 0%, #0a4d8c 100%);
+    color: #fff; border-radius: 14px; padding: 34px 36px; margin-bottom: 26px;
+    box-shadow: 0 8px 24px rgba(14,124,102,.20);
+  }
+  header.hero .tagline { font-size: 12.5px; letter-spacing: 2px; text-transform: uppercase; opacity: .8; margin-bottom: 8px; }
+  header.hero h1 { margin: 0 0 10px; font-size: 26px; letter-spacing: .3px; }
+  header.hero p { margin: 0; opacity: .92; font-size: 14.5px; }
+  .hero-meta { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .hero-meta span {
+    background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.25);
+    border-radius: 999px; padding: 4px 13px; font-size: 12.5px; font-family: var(--mono);
+  }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 22px 26px; margin-bottom: 22px; }
+  .panel h2 { margin: 2px 0 14px; font-size: 19px; display: flex; align-items: center; gap: 9px; }
+  .panel h2 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--sub); display: inline-block; }
+  .panel h3 { font-size: 15.5px; margin: 20px 0 8px; }
+  .lead { color: var(--muted); font-size: 14.5px; }
+  ul.tight { margin: 10px 0 0; padding-left: 20px; }
+  ul.tight li { margin: 6px 0; }
+  p.note { color: var(--muted); font-size: 13.5px; }
+
+  .cap-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 6px; }
+  @media (max-width: 760px) { .cap-grid { grid-template-columns: 1fr; } }
+  .cap { border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; background: #fcfdff; }
+  .cap .ic { font-size: 22px; }
+  .cap h4 { margin: 6px 0 6px; font-size: 15px; }
+  .cap p { margin: 0; font-size: 13px; color: var(--muted); }
+
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; margin-left: 6px; font-family: var(--mono); vertical-align: middle; }
+  .b-new { background: var(--new-soft); color: var(--new); border: 1px solid #ffcfa8; }
+  .b-reuse { background: var(--reuse-soft); color: var(--reuse); border: 1px solid #b7e0c1; }
+  .b-alter { background: var(--amber-soft); color: var(--amber); border: 1px solid #f0dfa8; }
+  .b-sub { background: var(--sub-soft); color: var(--sub); border: 1px solid #a8ddd2; }
+  .b-pk { background: var(--pk-soft); color: var(--pk); border: 1px solid #e5c8ff; }
+  .b-idx { background: var(--idx-soft); color: var(--idx); border: 1px solid #b7e0c1; }
+  .b-notnull { color: var(--notnull); font-weight: 700; font-family: var(--mono); font-size: 12px; }
+  .b-null { color: var(--null); font-family: var(--mono); font-size: 12px; }
+
+  .diagram {
+    font-family: var(--mono); font-size: 12.6px; background: var(--code-bg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; overflow-x: auto;
+    color: var(--ink); line-height: 1.55; white-space: pre; margin: 10px 0 4px;
+  }
+  .diagram .t { color: var(--brand); font-weight: 700; }
+  .diagram .n { color: var(--new); font-weight: 700; }
+  .diagram .g { color: var(--reuse); font-weight: 700; }
+  .diagram .s { color: var(--sub); font-weight: 700; }
+  .diagram .note { color: var(--muted); }
+
+  .tbl-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 20px; overflow: hidden; }
+  .tbl-head { padding: 16px 22px 12px; border-bottom: 1px solid var(--line-soft); }
+  .tbl-head .name { font-family: var(--mono); font-size: 16.5px; font-weight: 700; color: var(--brand); }
+  .tbl-head .cn { color: var(--muted); font-size: 13.5px; margin-left: 10px; }
+  .tbl-head .desc { margin: 8px 0 0; color: var(--ink); font-size: 13.5px; }
+  .tbl-head .cnt { float: right; font-size: 12px; color: var(--muted); font-family: var(--mono); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.3px; }
+  thead th { text-align: left; background: #f9fafb; color: var(--muted); font-weight: 600; padding: 8px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
+  tbody td { padding: 8px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  .col-name { font-family: var(--mono); font-weight: 600; color: var(--ink); white-space: nowrap; }
+  .col-type { font-family: var(--mono); color: #0a4d8c; white-space: nowrap; }
+  .dash { color: var(--line); }
+  .mono-default { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+
+  code.inl { font-family: var(--mono); background: var(--code-bg); border: 1px solid var(--line-soft); border-radius: 5px; padding: 1px 6px; font-size: 12.6px; }
+
+  .steps { counter-reset: step; margin: 8px 0 0; padding: 0; list-style: none; }
+  .steps li { position: relative; padding: 8px 0 8px 40px; border-left: 2px solid var(--line-soft); margin-left: 12px; }
+  .steps li::before { counter-increment: step; content: counter(step); position: absolute; left: -13px; top: 8px; width: 24px; height: 24px; border-radius: 50%; background: var(--sub); color: #fff; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; font-family: var(--mono); }
+  .steps li b { color: var(--brand-d); }
+
+  .ms-tag { font-family: var(--mono); font-weight: 700; font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--sub-soft); color: var(--sub); }
+
+  .callout { border-radius: 10px; padding: 14px 18px; margin: 14px 0; font-size: 13.6px; }
+  .callout.reuse { background: var(--reuse-soft); border: 1px solid #b7e0c1; }
+  .callout.warn { background: var(--amber-soft); border: 1px solid #f0dfa8; }
+  .callout.new { background: var(--new-soft); border: 1px solid #ffcfa8; }
+  .callout.sub { background: var(--sub-soft); border: 1px solid #a8ddd2; }
+  .callout b { color: var(--ink); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+  .legend span b { font-family: var(--mono); }
+
+  footer { margin-top: 30px; color: var(--muted); font-size: 12.5px; text-align: center; line-height: 1.8; }
+  h2.sec { font-size: 20px; margin: 34px 0 4px; padding-bottom: 6px; border-bottom: 2px solid var(--line); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="tagline">Design Proposal · M5.1 + M5.2 已全部落地实测</div>
+    <h1>cmx-flow M5 设计方案 · 子流程 · 按组织机构路由</h1>
+    <p>主流程一个「调用节点」不写死调哪个子流程，而是按<b>运行实例的组织机构</b>动态选择——各组织维护各自的子流程定义，同一主流程在不同组织跑出不同的审批链。以 <b>callActivity（调用活动）+ 组织路由</b>实现。</p>
+    <div class="hero-meta">
+      <span>M5.1 子流程机制：✅ 已落地实测</span>
+      <span>M5.2 组织路由：✅ 已落地实测</span>
+      <span>机制：callActivity 同步等待</span>
+      <span>继承：cmx_org.path 向上</span>
+      <span>不改：M1~M4 语义</span>
+    </div>
+  </header>
+
+  <!-- 0. 要解决什么 -->
+  <section class="panel">
+    <h2><span class="dot"></span>要解决什么</h2>
+    <p class="lead">
+      到 M4 为止，一份流程定义在所有组织跑法一样。但真实审批里，<b>同一个主流程，不同组织的中间环节不一样</b>：
+      「报销审批」主流程里的「财务复核」子环节，总部走三级、北京分公司走两级、上海分公司外包给共享中心——
+      每个组织的这段子流程<b>各自维护、独立演进</b>，主流程不该关心细节。
+    </p>
+    <div class="diagram">
+<span class="t">报销主流程</span>（一份定义，全组织共用）
+   start → 部门经理 → <span class="s">【财务复核·子流程】</span> → 出纳打款 → end
+                          │
+        ┌─────────────────┼─────────────────────┐
+        ▼(org=总部)        ▼(org=北京分公司)       ▼(org=上海分公司)
+   <span class="s">总部财务复核 v1</span>      <span class="s">北京财务复核 v1</span>        <span class="s">上海财务复核 v1</span>
+   三级会签              经理单签               外包共享中心
+    </div>
+    <p class="note">中间那个节点<b>不写死</b>调哪份子流程，只写一个逻辑 key（如 <code class="inl">fin_review</code>）。实例跑到这里，<b>按自己的组织</b>解析到该组织为 <code class="inl">fin_review</code> 绑定的子流程定义，启一个子实例跑。</p>
+  </section>
+
+  <!-- 1. 机制选择 -->
+  <h2 class="sec">一、机制：为什么是 callActivity + 组织路由</h2>
+  <section class="panel">
+    <p class="lead">BPMN 有两种「子流程」，选型直接决定能否满足「各组织各自维护」：</p>
+    <table>
+      <thead><tr><th>形态</th><th>是什么</th><th>能否各组织各自设置</th><th>结论</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>内联 subProcess</b></td>
+          <td>子流程块<b>内嵌</b>在主流程同一份 XML 里，随主流程一起部署</td>
+          <td>❌ 所有组织共用同一内联块，改一处全组织变</td>
+          <td>不选</td>
+        </tr>
+        <tr>
+          <td><b>callActivity</b><span class="badge b-sub">选它</span></td>
+          <td>主流程一个节点<b>调用一份独立部署的流程</b>，子流程单独维护、单独演进</td>
+          <td>✅ 调哪份可由「组织」决定 → 各组织绑各自的子流程</td>
+          <td><b>选</b></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="callout sub">
+      <b>核心创新点：</b>标准 callActivity 的 <code class="inl">calledElement</code> 是写死的流程 key。M5 把它改成<b>逻辑 key + 组织路由</b>——
+      节点写 <code class="inl">cmx:calledKey="fin_review"</code>（逻辑名，不是具体定义），运行期由 <b>SubflowRouter</b> 按实例的组织解析到<b>具体子流程部署</b>。这是「子流程网关」诉求的落地方式——不是新增一类网关，而是给 callActivity 加一层组织路由解析器。
+    </div>
+  </section>
+
+  <!-- 2. 组织路由解析 -->
+  <h2 class="sec">二、组织路由：实例的组织如何选到子流程</h2>
+  <section class="panel">
+    <p class="lead">复用 M4 已建立的模式——<b>可注入解析器</b>。M5 新增第四个扩展点 <b>SubflowRouter</b>（前三个：JavaDelegate·M1、Clock·M2.5、AssigneeResolver·M4）。</p>
+    <div class="diagram">
+主实例（org = <span class="g">d_bj_fin</span> 北京财务部）跑到 callActivity(calledKey=<span class="s">fin_review</span>)
+   │
+   ▼  <span class="n">SubflowRouter.resolve(calledKey, org)</span>
+   │
+   ├─ 1. 查 <span class="t">cmx_flow_subflow_binding</span> WHERE called_key=<span class="s">fin_review</span> AND org_id=<span class="g">d_bj_fin</span>
+   │        命中？→ 用该绑定的 target_definition_key ────────────────┐
+   │        未命中 ▼                                                  │
+   ├─ 2. 沿 <span class="t">cmx_org.path</span> 向上：d_bj_fin → d_bj → d_root，逐级找绑定  │ (向上继承)
+   │        命中最近的祖先绑定 ───────────────────────────────────────┤
+   │        仍无 ▼                                                    │
+   └─ 3. 兜底：org_id IS NULL 的默认绑定 ─────────────────────────────┤
+                                                                     ▼
+                                              解析出具体子流程定义 <span class="s">bj_fin_review</span>
+                                              → 启动子实例（parent = 主实例）
+    </div>
+    <div class="legend">
+      <span>① <b>精确绑定</b> 本组织直接设置</span>
+      <span>② <b>向上继承</b> 沿 path 找最近祖先（就近）</span>
+      <span>③ <b>默认兜底</b> org_id 为空的全局默认</span>
+    </div>
+    <div class="callout reuse">
+      <b>复用已有资产：</b>组织树 <code class="inl">cmx_org</code>（M4.1 建，含物化 <code class="inl">path</code>）直接支撑「向上继承」——按 path 前缀就能一次查出某组织的所有祖先，选 path 最长（最近）的绑定。无需新建组织体系。
+    </div>
+  </section>
+
+  <!-- 3. 主子实例关系 -->
+  <h2 class="sec">三、主子实例：父子关系 + 同步等待</h2>
+  <section class="panel">
+    <p class="lead">子流程是一个<b>独立的流程实例</b>（有自己的令牌、任务、历史），通过 <code class="inl">parent_instance_id</code> 挂在主实例下。主实例在调用节点<b>阻塞等待</b>，子实例跑完才回主流程。</p>
+    <h3>令牌机制（同步阻塞的关键）</h3>
+    <div class="diagram">
+主实例 M：令牌到 callActivity 节点
+   │
+   ├─ 1. SubflowRouter 解析出子流程定义
+   ├─ 2. 启动子实例 C：parent_instance_id=M，parent_token_id=当前令牌
+   │       把主流程指定的输入变量传给 C（inputVars 映射）
+   ├─ 3. 主令牌置 <span class="s">WAITING_SUBFLOW</span>（新状态，像 userTask 一样挂起等待）
+   │       ——主实例这一段落库提交（「等待态即提交点」，与既有事务模型一致）
+   ▼
+   （子实例 C 独立跑：可含 userTask/会签/定时器…M1~M4 全部能力）
+   ▼
+   子实例 C 到 endEvent → 完成 → 触发回调 <span class="n">complete_subflow(C)</span>
+   │
+   ├─ 4. 把 C 的输出变量回写主实例 M（outputVars 映射）
+   ├─ 5. 主令牌 <span class="s">WAITING_SUBFLOW</span> → Active，离开 callActivity 沿出边前进
+   ▼
+主实例 M 继续：出纳打款 → end
+    </div>
+    <div class="callout new">
+      <b>为什么新增 <code class="inl">WAITING_SUBFLOW</code> 令牌态：</b>它和 <code class="inl">WAITING</code>(userTask)/<code class="inl">JOINING</code>(并行合流) 并列——都是「令牌挂起、等外部信号」。区别是它的唤醒信号来自<b>子实例完成</b>，不是人工办结。子实例完成时按 <code class="inl">parent_token_id</code> 精确唤醒主令牌，天然支持一个主流程里多个 callActivity（甚至并行网关下并发调多个子流程）。
+    </div>
+    <h3>变量映射（主子数据传递）</h3>
+    <p class="note">callActivity 节点配 <code class="inl">inputVars</code>（主→子，启动时拷）与 <code class="inl">outputVars</code>（子→主，回归时拷）。默认全量传递，可配白名单。子实例的组织默认继承主实例组织（也可由 inputVars 覆盖，支持「主总部、子跑分公司」的跨组织场景）。</p>
+  </section>
+
+  <!-- 4. 数据模型 -->
+  <h2 class="sec">四、数据模型：拟新增 / 改动</h2>
+  <section class="panel">
+    <p class="lead">遵循既有约束：<code class="inl">cmx_flow_</code> 前缀、无外键（索引替代）、TIMESTAMPTZ、UUID 主键。下列为<b>方案</b>，评审通过后才落 DDL。</p>
+    <div class="legend" style="margin-bottom:8px">
+      <span><span class="badge b-new">新建</span> 全新表</span>
+      <span><span class="badge b-alter">改动</span> 既有表加列</span>
+      <span><span class="badge b-reuse">复用</span> 现有表</span>
+    </div>
+  </section>
+
+  <!-- 绑定表 -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">flow 定义态 · 核心</span>
+      <div><span class="name">cmx_flow_subflow_binding</span><span class="cn">子流程组织绑定表</span><span class="badge b-new">新建</span></div>
+      <p class="desc">「逻辑 key + 组织 → 具体子流程定义」的绑定。SubflowRouter 的解析数据源。一个 called_key 在不同组织可绑不同子流程；org_id 为 NULL 表示默认兜底。</p>
+    </div>
+    <table>
+      <thead><tr><th>列名</th><th>类型</th><th>可空</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="col-name">id<span class="badge b-pk">PK</span></td><td class="col-type">varchar(64)</td><td><span class="b-notnull">NOT NULL</span></td><td>绑定 id</td></tr>
+        <tr><td class="col-name">called_key<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(128)</td><td><span class="b-notnull">NOT NULL</span></td><td>逻辑子流程 key（主流程 callActivity 上写的名字，如 fin_review）</td></tr>
+        <tr><td class="col-name">org_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-null">NULL</span></td><td>适用组织（NULL=默认兜底绑定）</td></tr>
+        <tr><td class="col-name">target_definition_key</td><td class="col-type">varchar(128)</td><td><span class="b-notnull">NOT NULL</span></td><td>解析到的具体子流程定义 key</td></tr>
+        <tr><td class="col-name">enabled</td><td class="col-type">boolean</td><td><span class="b-notnull">NOT NULL</span></td><td>是否启用（停用不参与解析）</td></tr>
+        <tr><td class="col-name">remark</td><td class="col-type">varchar(500)</td><td><span class="b-null">NULL</span></td><td>说明（如"北京走两级"）</td></tr>
+        <tr><td class="col-name">create_time / update_time …</td><td class="col-type">—</td><td><span class="b-null">NULL</span></td><td>审计列（对齐既有风格）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- instance 改动 -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">flow 运行态 · RU</span>
+      <div><span class="name">cmx_flow_instance</span><span class="cn">流程实例表（既有）</span><span class="badge b-alter">改动 · 加列</span></div>
+      <p class="desc">加列支撑主子父子关系 + 组织路由。幂等 <code class="inl">ADD COLUMN IF NOT EXISTS</code>。既有实例三列全空，行为与 M1~M4 一致（零回归）。</p>
+    </div>
+    <table>
+      <thead><tr><th>新增列</th><th>类型</th><th>可空</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="col-name">org_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-null">NULL</span></td><td>实例所属组织（子流程路由的依据；启动时传入）</td></tr>
+        <tr><td class="col-name">parent_instance_id<span class="badge b-idx">IDX</span></td><td class="col-type">varchar(64)</td><td><span class="b-null">NULL</span></td><td>父实例 id（子实例指向主实例；主实例为 NULL）</td></tr>
+        <tr><td class="col-name">parent_token_id</td><td class="col-type">varchar(64)</td><td><span class="b-null">NULL</span></td><td>父实例中挂起等待的令牌 id（子完成时据此精确唤醒）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- callActivity IR -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">flow 定义态 · IR</span>
+      <div><span class="name">NodeKind::CallActivity</span><span class="cn">调用活动节点（IR 新增变体）</span><span class="badge b-new">新建</span></div>
+      <p class="desc">编译器新识别 <code class="inl">&lt;callActivity&gt;</code>（从「不支持」清单移出）。承载逻辑 key 与变量映射配置。</p>
+    </div>
+    <table>
+      <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="col-name">called_key</td><td class="col-type">String</td><td>逻辑子流程 key（<code class="inl">cmx:calledKey</code>）；也兼容标准 <code class="inl">calledElement</code>（写死时不走路由）</td></tr>
+        <tr><td class="col-name">input_vars</td><td class="col-type">Vec&lt;VarMapping&gt;</td><td>主→子变量映射（空=全量传）</td></tr>
+        <tr><td class="col-name">output_vars</td><td class="col-type">Vec&lt;VarMapping&gt;</td><td>子→主变量映射（空=全量回写）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- token state -->
+  <div class="tbl-card">
+    <div class="tbl-head">
+      <span class="cnt">flow 运行态 · 枚举</span>
+      <div><span class="name">TokenState::WaitingSubflow</span><span class="cn">令牌态新增</span><span class="badge b-new">新建</span></div>
+      <p class="desc">令牌停在 callActivity 等子实例完成。与 WAITING(userTask)/JOINING(并行合流) 并列的「挂起等待」态。落库存 <code class="inl">WAITING_SUBFLOW</code> 文本。</p>
+    </div>
+  </div>
+
+  <!-- 5. 引擎改动点 -->
+  <h2 class="sec">五、引擎改动点（Rust 侧，本次不写）</h2>
+  <section class="panel">
+    <table>
+      <thead><tr><th>模块</th><th>改动</th><th>性质</th></tr></thead>
+      <tbody>
+        <tr><td class="col-name">cmx-flow-model</td><td>NodeKind 加 <code class="inl">CallActivity</code>；TokenState 加 <code class="inl">WaitingSubflow</code>；ProcessInstance 加 org_id/parent_instance_id/parent_token_id；新增 <code class="inl">SubflowRouter</code> trait（called_key + org → 具体定义 key）</td><td><span class="badge b-new">新契约</span></td></tr>
+        <tr><td class="col-name">cmx-flow-bpmn</td><td>compiler 解析 <code class="inl">&lt;callActivity&gt;</code> + <code class="inl">cmx:calledKey</code> + 变量映射子元素；从 is_flow_node_like 不支持清单移出</td><td><span class="badge b-alter">扩展</span></td></tr>
+        <tr><td class="col-name">cmx-flow-engine</td><td>run_to_wait 加 CallActivity 臂：调 router 解析 → 启子实例 → 主令牌置 WaitingSubflow；新增 <code class="inl">complete_subflow</code>（子完成回调：回写变量 + 唤醒父令牌 + 继续推进主实例）；start_process 增 org/parent 参数</td><td><span class="badge b-new">核心</span></td></tr>
+        <tr><td class="col-name">SubflowRouter 实现</td><td><code class="inl">PgSubflowRouter</code>：查 cmx_flow_subflow_binding，精确 → 沿 cmx_org.path 向上 → 默认兜底。引擎经 trait 依赖，不直连表</td><td><span class="badge b-new">适配器</span></td></tr>
+        <tr><td class="col-name">cmx-flow-store-pg</td><td>instance 补列；新增 cmx_flow_subflow_binding 表；新增按 parent_instance_id 查子实例、按父令牌反查等</td><td><span class="badge b-alter">扩展</span></td></tr>
+      </tbody>
+    </table>
+    <div class="callout reuse">
+      <b>架构一致性：</b><code class="inl">SubflowRouter</code> 是继 JavaDelegate（M1）、Clock（M2.5）、AssigneeResolver（M4）之后的<b>第四个「引擎向外的可注入扩展点」</b>——引擎定义 trait，宿主注入实现（生产查 DB、测试用假 router）。子实例复用<b>完整的 Engine 推进内核</b>，无需为子流程另写一套执行逻辑——子流程就是「被一个父令牌等待着的普通实例」。
+    </div>
+  </section>
+
+  <!-- 6. 里程碑 -->
+  <h2 class="sec">六、建议里程碑拆分</h2>
+  <section class="panel">
+    <table>
+      <thead><tr><th>子步</th><th>范围</th><th>产出</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="ms-tag">M5.1</span></td>
+          <td><b>callActivity 同步子流程</b>（先写死 calledElement，不路由）：NodeKind::CallActivity + WaitingSubflow 令牌 + 父子实例 + complete_subflow 回调 + 变量映射</td>
+          <td>子流程能跑通、能回主、变量能传——把最难的「主子实例同步」骨架立住</td>
+        </tr>
+        <tr>
+          <td><span class="ms-tag">M5.2</span></td>
+          <td><b>组织路由</b>：SubflowRouter 契约 + PgSubflowRouter（精确/继承/兜底）+ cmx_flow_subflow_binding 表 + instance.org_id；calledKey 逻辑名解析</td>
+          <td>同一主流程按组织跑不同子流程——兑现核心诉求</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note">先 M5.1 立骨架（子流程机制本身）再 M5.2 叠组织路由（选哪份子流程），把「主子同步」的技术风险和「组织路由」的业务逻辑分开验证。管理台（绑定的增删改查）与 M5.2 并行。</p>
+  </section>
+
+  <!-- 7. 风险 -->
+  <h2 class="sec">七、风险 · 边界 · 非目标</h2>
+  <section class="panel">
+    <h3>关键风险</h3>
+    <ul class="tight">
+      <li><b>递归深度</b>：子流程里还能有 callActivity（孙流程）。需限制最大嵌套深度（如 ≤8）防死循环/爆栈，超限报错。</li>
+      <li><b>子实例失败 / 取消传播</b>：子实例被取消或报错时，主令牌怎么办？M5 先定「子取消 → 主令牌也终止（向上传播）」，可配后续。</li>
+      <li><b>绑定解析歧义</b>：同 called_key + 同 org 有多条启用绑定 → 取最新/报错，需定规则。向上继承时多个祖先都绑 → 取 path 最近（最长前缀）。</li>
+      <li><b>孤儿子实例</b>：主实例被删/终止但子实例还在跑。需级联处理或标记孤儿。</li>
+      <li><b>历史归档</b>：主子实例各自归档，但要能通过 parent_instance_id 串起完整审批链供审计。</li>
+    </ul>
+    <h3>本次非目标（M5 不做，留后续）</h3>
+    <ul class="tight">
+      <li><b>异步子流程</b>（发起后不等）——只做同步阻塞。</li>
+      <li><b>内联 subProcess</b>（嵌入式子流程块）——只做 callActivity 外部调用。</li>
+      <li><b>多实例 callActivity</b>（对一个集合并发调 N 个子流程）——先做单次调用，多实例复用 M3 机制留后续。</li>
+      <li><b>子流程版本化 / 在跑实例迁移</b>——沿用当前「单 key 单定义、部署覆盖」，版本化是独立议题。</li>
+      <li><b>跨引擎 / 跨服务调用</b>——子流程与主流程在同一引擎、同一库。</li>
+    </ul>
+    <div class="callout warn">
+      <b>不动既有：</b>M1~M4 的流程语义、表结构、测试全部不改。M5 全靠加列（幂等）+ 新表 + 新扩展点 + 新 NodeKind 变体接入；既有 44 内存测试须继续全绿作为回归基线。子流程复用现有推进内核，不分叉执行逻辑。
+    </div>
+  </section>
+
+  <footer>
+    <div>本文档为 <b>设计方案</b>，非已实现结构。评审通过后按 M5.1 → M5.2 落地，每步补迁移 + 更新 schema 文档 + demo 演示。</div>
+    <div>cmx-flow 流程引擎 · M5 子流程 · 按组织机构路由 设计方案 · 待评审</div>
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cmx-flow 表单集成 · F2 详细设计 · formKey 绑定 + 我的待办</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --ink:#e6edf3; --muted:#9198a1;
+    --line:#30363d; --brand:#4c8dff; --brand-d:#1f6feb; --ok:#3fb950; --warn:#d29922;
+    --new:#db6d28; --purple:#a371f7; --pink:#f778ba; --cyan:#39c5cf; --red:#f85149;
+    --code-bg:#0b0f16;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 28px 120px}
+  h1{font-size:29px;font-weight:800;letter-spacing:-.5px;margin:0 0 6px;
+    background:linear-gradient(100deg,#a371f7,#4c8dff 55%,#39c5cf);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .sub{color:var(--muted);font-size:15px;margin:0 0 8px}
+  .tag{display:inline-block;font-size:12px;font-weight:700;padding:2px 9px;border-radius:20px;border:1px solid var(--line);color:var(--muted);margin-right:6px}
+  .tag.k{color:var(--ok);border-color:#1f512b}
+  .tag.n{color:var(--new);border-color:#5a3418}
+  .tag.p{color:var(--purple);border-color:#3d2a63}
+  h2{font-size:22px;font-weight:800;margin:50px 0 14px;padding-top:18px;border-top:1px solid var(--line)}
+  h2 .n{font-size:13px;color:var(--muted);font-weight:600;margin-left:8px}
+  h3{font-size:17px;font-weight:700;margin:28px 0 10px;color:#cdd9e5}
+  h4{font-size:14.5px;font-weight:700;margin:18px 0 8px;color:var(--cyan)}
+  p{margin:10px 0}
+  code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:13px;
+    background:var(--code-bg);border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#a5d6ff}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:16px 18px;overflow:auto;margin:14px 0}
+  pre code{background:none;border:0;padding:0;color:#c9d1d9;font-size:12.5px;line-height:1.7;display:block}
+  .kw{color:#ff7b72} .st{color:#a5d6ff} .cm{color:#8b949e;font-style:italic} .fn{color:#d2a8ff} .nm{color:#79c0ff} .pu{color:#ffa657} .ty{color:#7ee787}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:16px 0}
+  .card.ok{border-color:#1f512b;background:linear-gradient(180deg,#12241a,var(--panel))}
+  .card.warn{border-color:#5a4518;background:linear-gradient(180deg,#241f12,var(--panel))}
+  .card.brand{border-color:#1f3d6f;background:linear-gradient(180deg,#111d33,var(--panel))}
+  .card.purple{border-color:#3d2a63;background:linear-gradient(180deg,#1c1230,var(--panel))}
+  .grid{display:grid;gap:14px}
+  .grid.c2{grid-template-columns:1fr 1fr}
+  @media(max-width:820px){.grid.c2{grid-template-columns:1fr}}
+  ul,ol{margin:10px 0;padding-left:22px} li{margin:5px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-weight:700;color:#cdd9e5}
+  td code{font-size:12px}
+  .badge{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:5px}
+  .badge.have{background:#12261a;color:var(--ok);border:1px solid #1f512b}
+  .badge.new{background:#2a1d12;color:var(--new);border:1px solid #5a3418}
+  .badge.thin{background:#221a2e;color:var(--purple);border:1px solid #3d2a63}
+  .step{display:flex;gap:14px;margin:12px 0;align-items:flex-start}
+  .step-n{flex:0 0 28px;height:28px;border-radius:50%;background:var(--purple);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px}
+  .step-b{flex:1}
+  .lead{font-size:16px;color:#cdd9e5;border-left:3px solid var(--purple);padding-left:14px;margin:16px 0}
+  .kv{color:var(--muted);font-size:13px}
+  .hl{color:var(--brand);font-weight:600}
+  .hl2{color:var(--purple);font-weight:600}
+  .hlg{color:var(--ok);font-weight:600}
+  em{color:var(--warn);font-style:normal;font-weight:600}
+  .flow-diagram{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:20px;margin:16px 0;font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.85;color:#c9d1d9;overflow:auto;white-space:pre}
+  .toc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 22px;margin:22px 0}
+  .toc a{color:#a5d6ff;text-decoration:none;font-size:14px;display:inline-block;padding:3px 14px 3px 0}
+  .toc a:hover{color:#fff}
+  .pill{font-size:11px;padding:1px 6px;border-radius:4px;background:#1f2733;color:var(--muted);border:1px solid var(--line);margin-left:6px}
+  .chk{color:var(--ok);font-weight:800}
+  .filename{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--cyan);background:#0e1a1c;border:1px solid #16343a;border-radius:5px;padding:1px 7px}
+  .win{color:var(--ok);font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>F2 · formKey 绑定 + 我的待办</h1>
+<p class="sub">让流程「知道」每个环节该开哪张表单 · 让办理人「看得到」跨所有实例的待办 · 仍是纯后端 + 设计器属性面板一处</p>
+<p><span class="tag p">定义带表单</span><span class="tag k">跨实例待办查询</span><span class="tag">编译器同构扩展</span><span class="tag n">F3 的前置</span></p>
+
+<div class="card brand">
+<b>F2 目标：</b>在 F1 的数据管道之上，让<span class="hl2">流程定义携带「环节→表单」的绑定</span>（userTask 上 <code>cmx:formKey</code>），并提供<span class="hl">「我的待办」跨实例聚合端点</span>——把散落在 N 个实例里的任务，按办理人一次查出，每条带上 formKey + 业务引用。F2 完成后，前端（F3）拿到一条待办就<span class="hlg">立即知道「点开该渲染哪张表单、绑哪张单据」</span>，无需再逐个实例翻查。
+<div style="margin-top:10px;font-size:13px;color:var(--muted)">
+<b>核实结论（已读代码）：</b>三处基础设施<span class="hlg">超预期就绪</span>——① 编译器 <code>local_attr(node,"…")</code> 前缀无关取属性，加 formKey 是 3 行；② 任务表<span class="hlg">已有 <code>idx_cmx_flow_task_open (assignee, completed)</code></span> 和候选表 <code>idx…_candidate_user (resolved_user_id)</code>，「我的待办」查询天然走索引；③ <code>ProcessDefinition::node_by_bpmn(id)</code> 已存在，<span class="hl">formKey 无需冗余进任务表</span>——查询时按 <code>task.node_bpmn_id</code> 反查定义即可。</div>
+</div>
+
+<div class="toc">
+<a href="#s1">1 · 范围边界</a>
+<a href="#s2">2 · 现状精确核实</a>
+<a href="#s3">3 · 改动一：formKey 进 IR + 编译器</a>
+<a href="#s4">4 · 改动二：formKey 外化到任务视图</a>
+<a href="#s5">5 · 改动三：我的待办端点</a>
+<a href="#s6">6 · 改动四：设计器属性面板绑定表单</a>
+<a href="#s7">7 · 关键决策：反查 vs 冗余</a>
+<a href="#s8">8 · curl + 真机验收</a>
+<a href="#s9">9 · 交付物与验收清单</a>
+<a href="#s10">10 · 风险</a>
+</div>
+
+<!-- 1 -->
+<h2 id="s1">1 · 范围边界 <span class="n">F2 做什么、不做什么</span></h2>
+<div class="grid c2">
+<div class="card ok">
+<h4><span class="chk">✓</span> F2 做</h4>
+<ul>
+<li><code>UserTask</code> IR 加 <code>form_key/form_mode/form_fields</code></li>
+<li>编译器解析 <code>cmx:formKey</code> 等（3 行）</li>
+<li>任务外化 JSON 带 <code>formKey/formMode/formFields</code>（反查定义得来）</li>
+<li>新增 <code>GET /flow/tasks/my</code>（跨实例，含直派 + 候选未认领）</li>
+<li>表单注册表 <code>cmx_flow_form_binding</code>（formKey→页/表映射）</li>
+<li>设计器属性面板加「绑定表单」字段（走 <code>$attrs</code>）</li>
+</ul>
+</div>
+<div class="card">
+<h4>✕ F2 不做（留后阶段）</h4>
+<ul>
+<li>待办中心页 / 表单宿主页（F3/F4）</li>
+<li>真正「打开表单」的 openTab（F3）</li>
+<li>审批意见留痕表（F3）</li>
+<li>动态渲染表单字段（F4）</li>
+<li>引擎流转逻辑（永不动）</li>
+<li>formFields 白名单的<b>强制</b>校验（F2 只透传，F4 才用）</li>
+</ul>
+</div>
+</div>
+<div class="card"><b>可验收的一句话：</b>F2 完成后，<span class="hl">curl</span> 能查到「用户 u_2001 的所有待办」，每条带 <code>{taskId, instanceId, businessKey, nodeName, formKey:"pay.review", formMode:"approve", bizTable, bizId}</code>；且在<span class="hl">设计工作台</span>里给 userTask 配的 formKey，发布后能被引擎编译、并出现在该端点返回里。前端此时只差「拿这条数据去 openTab」——那是 F3。</div>
+
+<!-- 2 -->
+<h2 id="s2">2 · 现状精确核实 <span class="n">改动点锚定真实代码</span></h2>
+
+<h3>2.1 编译器：加 formKey 的落点（3 行）</h3>
+<pre><code><span class="cm">// cmx-flow-bpmn/src/compiler.rs:168 —— 现状</span>
+<span class="kw">fn</span> <span class="fn">parse_user_task</span>(node: &<span class="ty">Node</span>) -&gt; <span class="ty">UserTask</span> {
+    <span class="ty">UserTask</span> {
+        assignee: <span class="fn">local_attr</span>(node, <span class="st">"assignee"</span>),
+        candidate_groups: <span class="fn">local_attr</span>(node, <span class="st">"candidateGroups"</span>),
+        multi_instance: <span class="fn">parse_multi_instance</span>(node),
+        candidates: <span class="fn">parse_candidates</span>(node),
+        cc: <span class="fn">parse_cc</span>(node),
+        <span class="cm">// + F2: 加三行，与上面完全同构</span>
+        <span class="nm">form_key</span>:    <span class="fn">local_attr</span>(node, <span class="st">"formKey"</span>),
+        <span class="nm">form_mode</span>:   <span class="fn">local_attr</span>(node, <span class="st">"formMode"</span>),
+        <span class="nm">form_fields</span>: <span class="fn">local_attr_list</span>(node, <span class="st">"formFields"</span>), <span class="cm">// 逗号拆</span>
+    }
+}</code></pre>
+<p class="kv"><code>local_attr</code> 前缀无关——<code>cmx:formKey</code> / <code>flowable:formKey</code> / 裸 <code>formKey</code> 都能读，和 assignee 一样。</p>
+
+<h3>2.2 任务表：已有的索引（超预期就绪）</h3>
+<pre><code><span class="cm">// cmx-flow-store-pg/src/ddl.rs:73-75 —— 已存在！</span>
+<span class="st">"CREATE INDEX … idx_cmx_flow_task_instance  ON cmx_flow_task (instance_id)"</span>,
+<span class="st">"CREATE INDEX … idx_cmx_flow_task_assignee  ON cmx_flow_task (assignee)"</span>,
+<span class="st">"CREATE INDEX … idx_cmx_flow_task_open      ON cmx_flow_task (assignee, completed)"</span>, <span class="cm">// ← 我的待办</span>
+<span class="cm">// ddl.rs:113 候选表</span>
+<span class="st">"CREATE INDEX … idx_cmx_flow_task_candidate_user ON cmx_flow_task_candidate (resolved_user_id)"</span>, <span class="cm">// ← 未认领待办</span></code></pre>
+<div class="card ok"><b>结论：</b>「我的待办」的两条查询路径（直派任务 <code>assignee=我 AND NOT completed</code>、候选未认领 <code>resolved_user_id=我</code>）<span class="hlg">已有现成复合索引</span>。F2 无需加任何索引——原设计（M4 候选人认领）已经把这个查询路径的地基铺好了。</div>
+
+<h3>2.3 定义反查：node_by_bpmn 已存在</h3>
+<pre><code><span class="cm">// cmx-flow-model/src/ir.rs:263</span>
+<span class="kw">pub fn</span> <span class="fn">node_by_bpmn</span>(&<span class="kw">self</span>, bpmn_id: &<span class="ty">str</span>) -&gt; <span class="ty">Option</span>&lt;&<span class="ty">FlowNode</span>&gt;</code></pre>
+<p class="kv">任务持 <code>node_bpmn_id</code> + <code>instance_id</code>(→<code>definition_key</code>)。引擎内存里有已装载的 <code>ProcessDefinition</code>。所以 <span class="hl">formKey 不必冗余存进任务表</span>——查询时反查即可（§7 详论此决策）。</p>
+
+<h3>2.4 设计器属性面板：$attrs 读写先例</h3>
+<pre><code><span class="cm">// design-workbench.js:460 —— cmx:calledKey 的现成写法(自定义命名空间属性)</span>
+<span class="kw">function</span> <span class="fn">setCalledKey</span>(el, value) {
+  <span class="kw">const</span> b = el.businessObject
+  <span class="kw">const</span> attrs = { ...(b.$attrs || {}) }
+  <span class="kw">if</span> (value) attrs[<span class="st">'cmx:calledKey'</span>] = value
+  <span class="kw">else</span> { <span class="kw">delete</span> attrs[<span class="st">'cmx:calledKey'</span>] }
+  state.modeler.<span class="fn">get</span>(<span class="st">'modeling'</span>).<span class="fn">updateProperties</span>(el, { $attrs: attrs })
+}</code></pre>
+<div class="card warn"><b>关键坑（已被 calledKey 踩过）：</b>bpmn-js 未注册 <code>cmx:</code> moddle 扩展，自定义属性落在 <code>businessObject.$attrs</code>，<span class="hl">不是 <code>.get('cmx:formKey')</code></span>。读写都必须走 <code>$attrs</code>，saveXML 时才会序列化进 XML，引擎 compile 才认。formKey 完全复制 calledKey 这套 <code>getFormKey/setFormKey</code>。</div>
+
+<!-- 3 -->
+<h2 id="s3">3 · 改动一：formKey 进 IR + 编译器 <span class="n">定义层</span></h2>
+
+<h3>3.1 UserTask IR 加三字段</h3>
+<pre><code><span class="cm">// cmx-flow-model/src/ir.rs:119 UserTask —— 加在 cc 之后</span>
+<span class="kw">pub struct</span> <span class="ty">UserTask</span> {
+    <span class="cm">// … assignee / candidate_groups / multi_instance / candidates / cc 不动 …</span>
+    <span class="cm">/// 绑定表单逻辑名（F2）。空 = 该环节无表单(纯审批按钮/serviceTask 风格)。</span>
+    #[serde(default, skip_serializing_if = <span class="st">"Option::is_none"</span>)]
+    <span class="kw">pub</span> form_key: <span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;,
+    <span class="cm">/// 表单模式：edit | readonly | approve。空 = 默认 approve(审阅+意见)。</span>
+    #[serde(default, skip_serializing_if = <span class="st">"Option::is_none"</span>)]
+    <span class="kw">pub</span> form_mode: <span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;,
+    <span class="cm">/// 该环节可写字段白名单(F2 仅透传,F4 才据此限制表单可编辑区)。</span>
+    #[serde(default, skip_serializing_if = <span class="st">"Vec::is_empty"</span>)]
+    <span class="kw">pub</span> form_fields: <span class="ty">Vec</span>&lt;<span class="ty">String</span>&gt;,
+}</code></pre>
+<p class="kv"><code>#[serde(default)]</code> 保证旧定义（无这些字段）反序列化不报错——存量已发布版本零回归。</p>
+
+<h3>3.2 起点表单：process 级 startFormKey</h3>
+<p>发起表单绑在流程级而非某个 userTask。落点：<code>ProcessDefinition</code> 加 <code>start_form_key: Option&lt;String&gt;</code>，编译器从 <code>&lt;process&gt;</code> 根元素或 startEvent 上读 <code>cmx:startFormKey</code>。</p>
+<pre><code><span class="kw">&lt;process</span> <span class="nm">id</span>=<span class="st">"pay_approval"</span> <span class="pu">cmx:startFormKey</span>=<span class="st">"pay.create"</span><span class="kw">&gt;</span>
+  <span class="kw">&lt;userTask</span> <span class="nm">id</span>=<span class="st">"review"</span> <span class="pu">cmx:formKey</span>=<span class="st">"pay.review"</span> <span class="pu">cmx:formMode</span>=<span class="st">"approve"</span><span class="kw">/&gt;</span>
+  <span class="kw">&lt;userTask</span> <span class="nm">id</span>=<span class="st">"director"</span> <span class="pu">cmx:formKey</span>=<span class="st">"pay.review"</span> <span class="pu">cmx:formMode</span>=<span class="st">"approve"</span><span class="kw">/&gt;</span>
+<span class="kw">&lt;/process&gt;</span></code></pre>
+
+<h3>3.3 编译器测试</h3>
+<p>对标 <code>cmx-flow-bpmn/src/lib.rs</code> 已有的「userTask review 带 assignee=manager」断言，加一条「带 formKey=pay.review / formMode=approve」的编译断言即可。<span class="kv">纯定义层测试，不碰运行时。</span></p>
+
+<!-- 4 -->
+<h2 id="s4">4 · 改动二：formKey 外化到任务视图 <span class="n">让任务 JSON 带表单信息</span></h2>
+
+<p class="lead">任务外化给前端的 JSON（<code>instance_view</code> 里的 <code>tasks[]</code>，以及 §5 的我的待办）要带 formKey。数据来源是<span class="hl">反查定义</span>，不是任务表新列（§7）。</p>
+
+<h3>4.1 组装辅助函数</h3>
+<pre><code><span class="cm">// cmx-flow-api/src/views.rs 或 handlers.rs 加一个 helper</span>
+<span class="cm">/// 按 (definition_key, node_bpmn_id) 反查该 userTask 的表单绑定。</span>
+<span class="kw">fn</span> <span class="fn">form_of_task</span>(def: &<span class="ty">ProcessDefinition</span>, node_bpmn_id: &<span class="ty">str</span>)
+    -&gt; (<span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;, <span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;, <span class="ty">Vec</span>&lt;<span class="ty">String</span>&gt;) {
+    <span class="kw">match</span> def.<span class="fn">node_by_bpmn</span>(node_bpmn_id).<span class="fn">map</span>(|n| &n.kind) {
+        <span class="ty">Some</span>(<span class="ty">NodeKind</span>::<span class="ty">UserTask</span>(ut)) =&gt;
+            (ut.form_key.clone(), ut.form_mode.clone(), ut.form_fields.clone()),
+        _ =&gt; (<span class="ty">None</span>, <span class="ty">None</span>, vec![]),
+    }
+}</code></pre>
+
+<h3>4.2 任务 JSON 加字段</h3>
+<pre><code><span class="cm">// 现有 instance_view tasks[] 每条 json!({...}) 加：</span>
+<span class="nm">"formKey"</span>:    form_key,
+<span class="nm">"formMode"</span>:   form_mode.unwrap_or(<span class="st">"approve"</span>),
+<span class="nm">"formFields"</span>: form_fields,
+<span class="cm">// bizRef 从实例变量取（F1 已把 bizTable/bizId 塞进 variables）：</span>
+<span class="nm">"bizTable"</span>:   vars.get(<span class="st">"bizTable"</span>),
+<span class="nm">"bizId"</span>:      vars.get(<span class="st">"bizId"</span>),</code></pre>
+<div class="card"><b>bizRef 的来源选择：</b>两条路——(a) 从 F1 塞进变量的 <code>bizTable/bizId</code> 直接取（最简，F2 用这个）；(b) 走 F1 的 <code>cmx_flow_biz_link</code> 关联表 join（更规范，一单多流程时准确）。F2 先用 (a)，(b) 作为 F3 待办中心列表的数据源加固。</div>
+
+<!-- 5 -->
+<h2 id="s5">5 · 改动三：我的待办端点 <span class="n">F2 的核心</span></h2>
+
+<p class="lead">现状：任务只能按实例逐个查（<code>GET /instances/{id}</code>）。待办中心需要「给定用户，跨所有实例，一次拿全部待办」。这是 F2 唯一的<em>新查询能力</em>。</p>
+
+<h3>5.1 端点契约</h3>
+<pre><code><span class="fn">GET</span> /api/flow/tasks/my?assignee=u_2001&amp;kind=todo&amp;limit=50
+
+<span class="cm">// kind: todo(待我办) | claimable(待我认领) | all(两者)</span>
+<span class="cm">// 返回（每条已带 formKey + bizRef，前端拿了就能 openTab）：</span>
+{ <span class="nm">tasks</span>: [ {
+    taskId, instanceId, tokenId,
+    <span class="nm">definitionKey</span>: <span class="st">"pay_approval"</span>,
+    <span class="nm">definitionName</span>: <span class="st">"付款审批"</span>,
+    <span class="nm">businessKey</span>: <span class="st">"PAY-2026-0042"</span>,
+    <span class="nm">nodeName</span>: <span class="st">"财务复核"</span>, nodeBpmnId: <span class="st">"review"</span>,
+    <span class="nm">formKey</span>: <span class="st">"pay.review"</span>, formMode: <span class="st">"approve"</span>,
+    <span class="nm">bizTable</span>: <span class="st">"cf_pay_request"</span>, bizId: <span class="st">"PR8842"</span>,
+    <span class="nm">claimable</span>: <span class="kw">false</span>,          <span class="cm">// true=候选未认领,需先 claim</span>
+    <span class="nm">applicant</span>, amount,        <span class="cm">// 实例变量投影(列表展示)</span>
+    createdAt, urgent
+} ], <span class="nm">total</span>: 12 }</code></pre>
+
+<h3>5.2 查询实现（走已有索引）</h3>
+<pre><code><span class="cm">-- 直派待办：走 idx_cmx_flow_task_open (assignee, completed)</span>
+<span class="kw">SELECT</span> t.*, i.definition_key, i.business_key, i.variables
+<span class="kw">FROM</span> cmx_flow_task t
+<span class="kw">JOIN</span> cmx_flow_instance i <span class="kw">ON</span> i.id = t.instance_id
+<span class="kw">WHERE</span> t.assignee = $1 <span class="kw">AND</span> t.completed = <span class="kw">false</span>
+  <span class="kw">AND</span> i.state = <span class="st">'RUNNING'</span>;               <span class="cm">-- 只活跃实例</span>
+
+<span class="cm">-- 候选未认领：走 idx…_candidate_user (resolved_user_id)</span>
+<span class="kw">SELECT</span> t.*, i.* <span class="kw">FROM</span> cmx_flow_task_candidate c
+<span class="kw">JOIN</span> cmx_flow_task t <span class="kw">ON</span> t.id = c.task_id <span class="kw">AND</span> t.completed = <span class="kw">false</span>
+<span class="kw">JOIN</span> cmx_flow_instance i <span class="kw">ON</span> i.id = t.instance_id
+<span class="kw">WHERE</span> c.resolved_user_id = $1 <span class="kw">AND</span> t.assignee <span class="kw">IS NULL</span>;   <span class="cm">-- 未认领</span></code></pre>
+<p class="kv">store 层加两个查询方法 <code>find_open_tasks_by_assignee</code> / <code>find_claimable_tasks_by_user</code>，返回 <code>(Task, InstanceLite)</code> 元组；handler 层再对每条<span class="hl">按 definition_key 取内存定义、反查 formKey</span>（§4.1）组装。</p>
+
+<h3>5.3 formKey 反查的批处理</h3>
+<div class="card warn"><b>N+1 注意：</b>50 条待办若逐条 <code>node_by_bpmn</code> 反查定义，是 50 次内存查找（不是 DB，可接受）。但定义是内存 <code>HashMap</code>，<code>node_by_bpmn</code> 是 <code>Vec::find</code>——若单定义节点多，可预建 <code>(def_key, bpmn_id)→UserTask</code> 的缓存。F2 先直接反查（内存操作，50 条无压力），<span class="hl">列为可选优化</span>。</div>
+
+<h3>5.4 表单注册表（formKey → 页/表映射）</h3>
+<pre><code><span class="cm">-- migrations/20260801_002_cmx_flow_form_binding.up.sql</span>
+<span class="kw">CREATE TABLE IF NOT EXISTS</span> cmx_flow_form_binding (
+    form_key     <span class="ty">VARCHAR</span>(128) <span class="kw">PRIMARY KEY</span>,       <span class="cm">-- pay.review</span>
+    native_page  <span class="ty">VARCHAR</span>(128) <span class="kw">NOT NULL</span>,          <span class="cm">-- portal.form.runner</span>
+    biz_table    <span class="ty">VARCHAR</span>(128),                     <span class="cm">-- cf_pay_request</span>
+    domain <span class="ty">VARCHAR</span>(32), app <span class="ty">VARCHAR</span>(32), module <span class="ty">VARCHAR</span>(32),
+    title        <span class="ty">VARCHAR</span>(255),
+    created_at   <span class="ty">TIMESTAMPTZ</span> <span class="kw">NOT NULL</span>
+);</code></pre>
+<p><code>GET /api/flow/forms/{formKey}</code> 解析映射。<span class="hl">F2 可先不建表、用进程内 JSON 配置</span>兜底（对标报表函数注册的 inventory 思路）；正式化时切表。待办端点返回的 formKey 是逻辑名，F3 打开时再查这张表解析到具体页——<span class="hl2">解析发生在打开时，不在列表时</span>（列表只需 formKey 本身）。</p>
+
+<!-- 6 -->
+<h2 id="s6">6 · 改动四：设计器属性面板绑定表单 <span class="n">复用 $attrs 先例</span></h2>
+
+<p>在已落地的<b>流程设计工作台</b> property 区，userTask 选中时多三个字段。逐字复制 calledKey 的 <code>$attrs</code> 读写。</p>
+
+<h3>6.1 property 区渲染（design-workbench.js propertyHtml）</h3>
+<pre><code><span class="cm">// userTask 分支里，assignee/candidateGroups 之后加：</span>
+<span class="kw">if</span> (el.type === <span class="st">'bpmn:UserTask'</span>) {
+  h += <span class="fn">sec</span>(<span class="st">'表单绑定'</span>)
+  h += <span class="fn">field</span>(<span class="st">'绑定表单 (cmx:formKey)'</span>, <span class="st">'formKey'</span>, <span class="fn">getFormKey</span>(b),
+             <span class="st">'如 pay.review；办理人点开待办时渲染此表单'</span>)
+  h += <span class="fn">selectField</span>(<span class="st">'表单模式 (formMode)'</span>, <span class="st">'formMode'</span>,
+             [<span class="st">'approve'</span>,<span class="st">'edit'</span>,<span class="st">'readonly'</span>], <span class="fn">getFormMode</span>(b))
+  h += <span class="fn">field</span>(<span class="st">'可写字段 (formFields)'</span>, <span class="st">'formFields'</span>, <span class="fn">getFormFields</span>(b),
+             <span class="st">'逗号分隔；限制本环节可改哪些字段(可空)'</span>)
+}</code></pre>
+
+<h3>6.2 写回（复制 setCalledKey）</h3>
+<pre><code><span class="kw">function</span> <span class="fn">getFormKey</span>(b) {
+  <span class="kw">return</span> (b?.$attrs?.[<span class="st">'cmx:formKey'</span>] || b?.$attrs?.formKey) || <span class="st">''</span>
+}
+<span class="kw">function</span> <span class="fn">setFormKey</span>(el, v) {
+  <span class="kw">const</span> b = el.businessObject
+  <span class="kw">const</span> attrs = { ...(b.$attrs || {}) }
+  <span class="kw">if</span> (v) attrs[<span class="st">'cmx:formKey'</span>] = v; <span class="kw">else delete</span> attrs[<span class="st">'cmx:formKey'</span>]
+  state.modeler.<span class="fn">get</span>(<span class="st">'modeling'</span>).<span class="fn">updateProperties</span>(el, { $attrs: attrs })
+}
+<span class="cm">// applyProp 里加 formKey/formMode/formFields 分派到对应 setter</span></code></pre>
+
+<h3>6.3 进阶：formKey 下拉（选而非填）</h3>
+<div class="card"><b>精致化：</b><code>formKey</code> 字段可从「自由输入」升级为「下拉选择」——选项来自 <code>GET /api/flow/forms</code>（注册表全集），按当前定义的 DAM 归属（F0 已加的 domain/app/module）过滤。这样设计者从已注册表单里选，避免拼错逻辑名。<span class="kv">F2 先做自由输入(与 calledKey 一致)，下拉作为增强。</span></div>
+
+<!-- 7 -->
+<h2 id="s7">7 · 关键决策：反查 vs 冗余 <span class="n">formKey 存哪</span></h2>
+
+<p class="lead">「任务要带 formKey，是把 formKey 冗余进任务表，还是查询时反查定义？」——这决定 schema 改不改、以及改定义后存量任务是否漂移。</p>
+
+<div class="grid c2">
+<div class="card">
+<h4>方案 A：冗余进任务表 <span class="badge new">不选</span></h4>
+<p>令牌到 userTask 建 Task 时，把 formKey 写进任务表新列。</p>
+<ul>
+<li>查询快（无需反查）</li>
+<li>✕ 任务表加列 + 迁移</li>
+<li>✕ <em>改了定义的 formKey，存量在办任务仍是旧值</em>（快照全删重插也不会更新已建任务的语义）</li>
+<li>✕ 会签子任务要各存一份</li>
+</ul>
+</div>
+<div class="card ok">
+<h4>方案 B：查询时反查定义 <span class="badge have">F2 选这个</span></h4>
+<p>任务只存 <code>node_bpmn_id</code>（已有）；要 formKey 时 <code>node_by_bpmn</code> 反查内存定义。</p>
+<ul>
+<li><span class="hlg">任务表零改动</span></li>
+<li><span class="hlg">formKey 永远跟定义走</span>——改了绑定，所有任务立即反映</li>
+<li>反查是内存操作（定义常驻 HashMap），50 条无压力</li>
+<li>会签子任务共享同一 node，天然一致</li>
+</ul>
+</div>
+</div>
+
+<div class="card purple"><b>决策：方案 B。</b>核心理由不是省一列，而是<span class="hl">语义正确性</span>——formKey 是「定义属性」，不是「任务实例状态」。任务实例状态（assignee/completed/element_value）才该落任务表；formKey/formMode 属于定义，随定义版本走。反查让「表单绑定」始终是定义的<span class="hl2">单一事实源</span>，与 F1「变量是单据投影」、版本管理「active_version 指针」一脉相承。<span class="kv">代价——反查依赖「实例的定义仍在引擎内存」。已发布定义启动即装载；万一某历史版本未装载，降级返回 formKey=null，前端走通用只读兜底（不阻断待办打开）。</span></div>
+
+<!-- 8 -->
+<h2 id="s8">8 · curl + 真机验收 <span class="n">两段验证</span></h2>
+
+<h3>8.1 后端 curl（formKey 编译 + 我的待办）</h3>
+<pre><code><span class="cm"># 1) 用带 formKey 的定义发布(设计器存草稿→发布，或直接 curl 存 XML)</span>
+<span class="cm">#    XML 里 &lt;userTask id="review" cmx:formKey="pay.review" cmx:formMode="approve"/&gt;</span>
+
+<span class="cm"># 2) 起实例(F1 通用变量)，令牌停在 review，assignee 解析到 u_2001</span>
+curl -sX POST .../api/flow/instances -d '{"definitionKey":"pay_approval",
+  "businessKey":"PAY-1","variables":{"amount":9000,"bizTable":"cf_pay_request","bizId":"PR1"}}'
+
+<span class="cm"># 3) ★ 我的待办：应返回该任务 + formKey + bizRef</span>
+curl -s ".../api/flow/tasks/my?assignee=u_2001&amp;kind=todo"
+<span class="cm"># → tasks:[{ taskId, nodeName:"财务复核", formKey:"pay.review",</span>
+<span class="cm">#            formMode:"approve", bizTable:"cf_pay_request", bizId:"PR1" }]</span>
+
+<span class="cm"># 4) 反证：查 u_9999(无待办) → tasks:[]，total:0</span>
+<span class="cm"># 5) 候选未认领：配 candidateGroups 的定义，查候选人的 my?kind=claimable</span>
+<span class="cm">#    → 返回 claimable:true 的任务；claim 后再查 kind=todo 应出现</span></code></pre>
+
+<h3>8.2 真机（设计器绑定表单）</h3>
+<p>CDP 驱动门户流程设计工作台（admin/cmxadmin）：选中一个 userTask → property 区出现「表单绑定」三字段 → 填 formKey=pay.review、选 formMode=approve → 保存草稿 → 后端编译校验通过 → <code>GET /flow/definitions/{key}</code> 的 bpmnXml 含 <code>cmx:formKey="pay.review"</code>。<span class="kv">对标 DAM/版本管理已验证过的同套 CDP 手法。</span></p>
+
+<!-- 9 -->
+<h2 id="s9">9 · 交付物与验收清单 <span class="n">Definition of Done</span></h2>
+
+<h3>9.1 代码交付物</h3>
+<table>
+<tr><th>Crate / 文件</th><th>改动</th><th>性质</th></tr>
+<tr><td><span class="filename">cmx-flow-model/ir.rs</span></td><td><code>UserTask</code> +3 字段；<code>ProcessDefinition</code> +<code>start_form_key</code></td><td><span class="badge thin">加字段</span></td></tr>
+<tr><td><span class="filename">cmx-flow-bpmn/compiler.rs</span></td><td><code>parse_user_task</code> +3 行 <code>local_attr</code>；process 级 startFormKey；+编译测试</td><td><span class="badge thin">同构扩展</span></td></tr>
+<tr><td><span class="filename">cmx-flow-api/views.rs</span></td><td><code>form_of_task</code> helper；任务 JSON 带 formKey/formMode/bizRef</td><td><span class="badge new">外化</span></td></tr>
+<tr><td><span class="filename">cmx-flow-api/handlers.rs+lib.rs</span></td><td><code>get_my_tasks</code> handler + <code>/flow/tasks/my</code> 路由；可选 <code>/flow/forms/{key}</code></td><td><span class="badge new">新端点</span></td></tr>
+<tr><td><span class="filename">cmx-flow-store-pg/store.rs</span></td><td><code>find_open_tasks_by_assignee</code>/<code>find_claimable_tasks_by_user</code>（走已有索引）</td><td><span class="badge new">新查询</span></td></tr>
+<tr><td><span class="filename">migrations/…_form_binding.sql</span></td><td>表单注册表（或先 JSON 配置，暂不建表）</td><td><span class="badge new">可选表</span></td></tr>
+<tr><td><span class="filename">design-workbench.js</span></td><td>property 区 +表单绑定三字段；<code>getFormKey/setFormKey</code> 等（复制 calledKey）</td><td><span class="badge new">前端一处</span></td></tr>
+<tr><td>任务表 schema / 引擎内核</td><td><b>零改动</b>（反查方案 + 已有索引）</td><td><span class="badge have">不动</span></td></tr>
+</table>
+
+<h3>9.2 验收清单</h3>
+<ul>
+<li><span class="chk">☐</span> 带 <code>cmx:formKey</code> 的 BPMN 能编译，<code>UserTask.form_key</code> 正确</li>
+<li><span class="chk">☐</span> 旧定义（无 formKey）编译零回归，form_key=None</li>
+<li><span class="chk">☐</span> <code>GET /tasks/my?assignee=X</code> 跨实例返回全部待办，每条带 formKey+bizRef</li>
+<li><span class="chk">☐</span> 候选未认领任务经 <code>kind=claimable</code> 可见；claim 后转入 <code>kind=todo</code></li>
+<li><span class="chk">☐</span> 查询走索引（EXPLAIN 命中 <code>idx_cmx_flow_task_open</code>）</li>
+<li><span class="chk">☐</span> 改定义的 formKey 后，在办任务的 my 端点<em>立即</em>反映新值（方案 B 正确性）</li>
+<li><span class="chk">☐</span> 设计器 property 区能配 formKey，保存后 XML 含 <code>cmx:formKey</code>（真机 CDP）</li>
+<li><span class="chk">☐</span> 定义未装载时 formKey 降级 null，端点不报错</li>
+<li><span class="chk">☐</span> 80+ 引擎测试零回归 + 新增编译/查询测试</li>
+</ul>
+
+<!-- 10 -->
+<h2 id="s10">10 · 风险 <span class="n">F2 特有</span></h2>
+<table>
+<tr><th>风险</th><th>对策</th></tr>
+<tr><td><b>反查依赖定义在内存</b>（方案 B 的软肋）</td><td>已发布定义启动即装载；未装载则 formKey 降级 null，前端走通用只读兜底，待办仍可打开可办结（不阻断流程）。</td></tr>
+<tr><td><b>会签子任务的 formKey</b></td><td>子任务共享同一 <code>node_bpmn_id</code>，反查天然拿到同一 formKey；<code>element_value</code>（各人数据）另走 F1 变量，不影响表单绑定。</td></tr>
+<tr><td><b>my 端点权限</b>：能查别人的待办？</td><td>assignee 参数应来自登录态（<code>CmxSvrContext</code> 里的当前用户），不信任 query 传值；管理员视角另开 <code>?onBehalf=</code> 且校验角色。F2 先绑当前用户。</td></tr>
+<tr><td><b>formKey 拼错/指向不存在的表单</b></td><td>F2 只透传 formKey，不校验存在性；F3 打开时查注册表失败则通用只读兜底。设计器下拉选择（§6.3）从源头减少拼错。</td></tr>
+<tr><td><b>转签/委派任务的归属</b>（M4.3）</td><td>my 端点按 <code>assignee</code> 查——委派后 assignee=代理人，天然出现在代理人待办；<code>owner_user_id</code> 可另作「我委派出去的」视图（F3）。</td></tr>
+<tr><td><b>已办/历史待办</b></td><td>F2 只做未办结（<code>completed=false</code>）；已办走 <code>cmx_flow_hi_task</code>（历史表已有 assignee 索引），F3 待办中心的「已办」页用它。</td></tr>
+</table>
+
+<div class="card brand" style="margin-top:40px">
+<b>F2 一句话：</b>给流程定义装上「环节→表单」的绑定（<code>cmx:formKey</code>，编译器 3 行 + 设计器一处，全复用 calledKey 的 <code>$attrs</code> 先例），并开一个<span class="hl">「我的待办」跨实例端点</span>（走<span class="hlg">已经存在</span>的 <code>(assignee, completed)</code> 复合索引，formKey 靠 <code>node_by_bpmn</code> 反查而非冗余）。F2 完成后，一条待办自带「渲染哪张表单、绑哪张单据」的全部信息——F3 的待办中心拿来即用，只需把这条数据丢进 <code>openTab</code>。地基（F1）+ 绑定（F2）双双就位，人机回路（F3）呼之欲出。</div>
+
+</div>
+</body>
+</html>

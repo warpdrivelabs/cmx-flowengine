@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cmx-flow 流程设计器</title>
+<!-- bpmn-js 官方样式（画布/调色板/上下文菜单）+ 字体图标 -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bpmn-js@17.11.1/dist/assets/diagram-js.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bpmn-js@17.11.1/dist/assets/bpmn-js.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bpmn-js@17.11.1/dist/assets/bpmn-font/css/bpmn.css">
+<style>
+:root{
+  --bg:#f6f8fa; --panel:#fff; --ink:#1f2328; --muted:#656d76; --line:#d0d7de; --line-soft:#eaeef2;
+  --brand:#0969da; --brand-d:#0a4d8c; --brand-soft:#ddf4ff; --ok:#1a7f37; --ok-soft:#e6f6eb;
+  --amber:#9a6700; --new:#bc4c00; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased}
+#app{display:grid;grid-template-rows:auto 1fr;height:100%}
+/* —— 工具条 —— */
+.toolbar{display:flex;align-items:center;gap:8px;padding:9px 14px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.toolbar .brand{font-weight:800;font-size:15px;color:var(--brand-d);margin-right:6px;letter-spacing:-.3px}
+.toolbar .sp{flex:1}
+.btn{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:7px;padding:6px 13px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;font-weight:600;transition:.12s}
+.btn:hover{background:var(--line-soft)}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn.primary:hover{background:var(--brand-d)}
+.btn.ok{background:var(--ok);border-color:var(--ok);color:#fff}
+.btn.ok:hover{filter:brightness(.94)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.field{display:flex;align-items:center;gap:6px;font-size:13px}
+.field input{font:inherit;font-size:13px;border:1px solid var(--line);border-radius:7px;padding:6px 10px;width:190px}
+.field input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+/* —— 主体三区 —— */
+.main{display:grid;grid-template-columns:220px 1fr 320px;height:100%;min-height:0}
+.explorer{background:var(--panel);border-right:1px solid var(--line);overflow-y:auto;padding:14px}
+.canvas-wrap{position:relative;min-width:0;background:
+  radial-gradient(circle,#e5e9ee 1px,transparent 1px) 0 0/22px 22px}
+#canvas{position:absolute;inset:0}
+.props{background:var(--panel);border-left:1px solid var(--line);overflow-y:auto;padding:0}
+/* —— explorer —— */
+.ex-h{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:2px 0 10px}
+.ex-item{padding:8px 10px;border-radius:8px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px;border:1px solid transparent}
+.ex-item:hover{background:var(--line-soft)}
+.ex-item.active{background:var(--brand-soft);border-color:#aacdf5;color:var(--brand-d);font-weight:600}
+.ex-item .st{margin-left:auto;font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px}
+.st.draft{background:#fff3d6;color:var(--amber)}
+.st.pub{background:var(--ok-soft);color:var(--ok)}
+.ex-empty{color:var(--muted);font-size:12.5px;padding:10px;text-align:center}
+.ex-new{margin-top:12px;width:100%;justify-content:center}
+/* —— 属性面板 —— */
+.pp-head{padding:15px 18px 12px;border-bottom:1px solid var(--line-soft)}
+.pp-head .pt{font-weight:750;font-size:15px}
+.pp-head .pk{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:2px}
+.pp-body{padding:14px 18px}
+.pp-empty{color:var(--muted);font-size:13px;text-align:center;padding:40px 20px}
+.pp-field{margin-bottom:14px}
+.pp-field label{display:block;font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px}
+.pp-field input,.pp-field select,.pp-field textarea{width:100%;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:7px;padding:7px 10px;background:var(--panel)}
+.pp-field input:focus,.pp-field select:focus,.pp-field textarea:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+.pp-field .hint{font-size:11.5px;color:var(--muted);margin-top:4px}
+.pp-sec{font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--brand-d);margin:18px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line-soft)}
+/* —— toast —— */
+#toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:99;display:flex;flex-direction:column;gap:8px;align-items:center}
+.tmsg{background:#0d1117;color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.22);animation:tin .2s}
+.tmsg.ok{background:var(--ok)} .tmsg.err{background:var(--new)}
+@keyframes tin{from{opacity:0;transform:translateY(8px)}}
+/* bpmn-js palette 微调位置 */
+.djs-palette{top:14px;left:14px}
+.loading{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-size:14px;background:var(--bg)}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- 工具条 -->
+  <div class="toolbar">
+    <span class="brand">⬡ cmx-flow 设计器</span>
+    <span class="field"><input id="defName" placeholder="流程名称" value="新建流程"></span>
+    <button class="btn" id="btnNew">＋ 新建</button>
+    <span class="sp"></span>
+    <button class="btn" id="btnUndo" title="撤销">↶</button>
+    <button class="btn" id="btnRedo" title="重做">↷</button>
+    <button class="btn" id="btnZoomFit" title="适应画布">⤢ 适应</button>
+    <button class="btn" id="btnValidate">✓ 校验</button>
+    <button class="btn primary" id="btnSave">保存草稿</button>
+    <button class="btn ok" id="btnPublish">发布</button>
+  </div>
+  <!-- 主体三区 -->
+  <div class="main">
+    <div class="explorer">
+      <div class="ex-h">流程定义</div>
+      <div id="defList"><div class="ex-empty">加载中…</div></div>
+      <button class="btn ex-new" id="btnNew2">＋ 新建流程</button>
+    </div>
+    <div class="canvas-wrap">
+      <div id="canvas"></div>
+      <div class="loading" id="loading">正在加载 bpmn-js 画布…</div>
+    </div>
+    <div class="props">
+      <div class="pp-head"><div class="pt" id="ppTitle">属性</div><div class="pk" id="ppKind">未选中元素</div></div>
+      <div class="pp-body" id="ppBody"><div class="pp-empty">点击画布上的节点<br>在此配置属性</div></div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<!-- bpmn-js UMD（挂 window.BpmnJS）。开发版含内联 sourcemap，报错更清晰。 -->
+<script src="https://cdn.jsdelivr.net/npm/bpmn-js@17.11.1/dist/bpmn-modeler.development.js"></script>
+<script>
+// ———————————————————————— 常量 ————————————————————————
+// 空白流程模板：一个 start 事件（BPMNDiagram 带图形坐标，bpmn-js 才能渲染）。
+const EMPTY_DIAGRAM = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:flowable="http://flowable.org/bpmn"
+  xmlns:cmx="http://cmx/flow"
+  id="Definitions_1" targetNamespace="http://cmx/flow">
+  <bpmn:process id="new_process" name="新建流程" isExecutable="true">
+    <bpmn:startEvent id="start" name="开始"/>
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="D1"><bpmndi:BPMNPlane id="P1" bpmnElement="new_process">
+    <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+      <dc:Bounds x="180" y="160" width="36" height="36"/>
+    </bpmndi:BPMNShape>
+  </bpmndi:BPMNPlane></bpmndi:BPMNDiagram>
+</bpmn:definitions>`;
+
+// ———————————————————————— toast ————————————————————————
+function toast(msg, kind){
+  const t=document.createElement('div');
+  t.className='tmsg'+(kind?' '+kind:'');
+  t.textContent=msg;
+  document.getElementById('toast').appendChild(t);
+  setTimeout(()=>t.remove(), kind==='err'?4200:2400);
+}
+
+// ———————————————————————— API ————————————————————————
+async function api(method, url, body){
+  const opt={method, headers:{}};
+  if(body!==undefined){opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body)}
+  const res=await fetch(url, opt);
+  const text=await res.text();
+  let data; try{data=text?JSON.parse(text):{}}catch{data={raw:text}}
+  if(!res.ok) throw new Error(data.error||data.raw||('HTTP '+res.status));
+  return data;
+}
+
+// ———————————————————————— bpmn-js 初始化 ————————————————————————
+let modeler=null, currentKey=null;
+
+function initModeler(){
+  modeler=new window.BpmnJS({
+    container:'#canvas',
+    keyboard:{bindTo:document},
+  });
+  document.getElementById('loading').style.display='none';
+  // 选中元素 → 属性面板
+  modeler.on('selection.changed', e=>{
+    const sel=e.newSelection;
+    renderProps(sel.length===1?sel[0]:null);
+  });
+  // 元素属性变化 → 若正编辑的元素被改，刷新面板
+  modeler.on('element.changed', e=>{
+    const sel=modeler.get('selection').get();
+    if(sel.length===1 && sel[0].id===e.element.id) renderProps(sel[0]);
+  });
+}
+
+async function openDiagram(xml){
+  try{
+    // 内置 BPMN 是给引擎写的纯语义 XML，不含图形坐标（BPMNDiagram/DI）。bpmn-js 渲染需要坐标，
+    // 无坐标时先用 bpmn-auto-layout 排节点位置，再导入。ESM 动态 import（该库只发 ESM）。
+    const noDI = !/BPMNDiagram|BPMNPlane/i.test(xml);
+    let toImport = xml;
+    if(noDI){
+      toImport = await autoLayout(xml);
+      // bpmn-auto-layout 只产 BPMNShape、不产 BPMNEdge → 连接元素根本不被 bpmn-js 实例化，
+      // 画布上只有节点没连线。用节点坐标程序化补出每条 sequenceFlow 的 BPMNEdge，再导入。
+      toImport = injectEdges(toImport);
+    }
+    await modeler.importXML(toImport);
+    // injectEdges 的 waypoint 是粗几何（连到节点中心方向），不裁剪到边框、拐点也糙。导入后连接
+    // 元素已实例化，用 bpmn-js 原生 layoutConnection 逐条精确重布线——端点裁到节点边、正交走线。
+    if(noDI){
+      relayoutConnections();
+    }
+    modeler.get('canvas').zoom('fit-viewport', 'auto');
+  }catch(err){
+    toast('加载失败: '+err.message, 'err');
+    console.error(err);
+  }
+}
+
+// 对所有连接调 bpmn-js 原生 layoutConnection 精确重布线（端点裁剪到节点边框、正交拐点）。
+// 前提：连接元素已被实例化（injectEdges 已注入 BPMNEdge）。
+function relayoutConnections(){
+  try{
+    const er=modeler.get('elementRegistry');
+    const modeling=modeler.get('modeling');
+    er.getAll().forEach(el=>{
+      if(el.type==='bpmn:SequenceFlow' && el.source && el.target){
+        modeling.layoutConnection(el, {});
+      }
+    });
+  }catch(e){ console.warn('精确布线失败:', e); }
+}
+
+// 给 auto-layout 输出的 XML 补 BPMNEdge：解析 BPMNShape 坐标 + sequenceFlow 源/目标，
+// 按几何连出 waypoint（源节点边缘中点 → 目标节点边缘中点）。返回补好 edge 的 XML。
+function injectEdges(xml){
+  try{
+    const doc=new DOMParser().parseFromString(xml,'text/xml');
+    const NS_DI='http://www.omg.org/spec/BPMN/20100524/DI';
+    const NS_DC='http://www.omg.org/spec/DD/20100524/DC';
+    // 收集节点 bounds：bpmnElement -> {x,y,w,h}
+    const bounds={};
+    doc.querySelectorAll('BPMNShape, [*|BPMNShape]').forEach(sh=>{
+      const el=sh.getAttribute('bpmnElement'); if(!el) return;
+      const b=sh.getElementsByTagNameNS(NS_DC,'Bounds')[0]||sh.querySelector('Bounds');
+      if(!b) return;
+      bounds[el]={x:+b.getAttribute('x'),y:+b.getAttribute('y'),w:+b.getAttribute('width'),h:+b.getAttribute('height')};
+    });
+    // 找 plane
+    const plane=doc.querySelector('BPMNPlane, [*|BPMNPlane]');
+    if(!plane) return xml;
+    // 已有的 edge bpmnElement 集合(避免重复)
+    const haveEdge=new Set();
+    doc.querySelectorAll('BPMNEdge, [*|BPMNEdge]').forEach(e=>haveEdge.add(e.getAttribute('bpmnElement')));
+    // 遍历所有 sequenceFlow，补 edge
+    let added=0;
+    doc.querySelectorAll('sequenceFlow, [*|sequenceFlow]').forEach(sf=>{
+      const id=sf.getAttribute('id'); if(!id||haveEdge.has(id)) return;
+      const src=sf.getAttribute('sourceRef'), tgt=sf.getAttribute('targetRef');
+      const a=bounds[src], b=bounds[tgt]; if(!a||!b) return;
+      // 源/目标中心
+      const ac={x:a.x+a.w/2,y:a.y+a.h/2}, bc={x:b.x+b.w/2,y:b.y+b.h/2};
+      // 简单择边：主要看竖直方向(auto-layout 多为纵向)，从源底/顶到目标顶/底
+      let p1,p2;
+      if(Math.abs(bc.y-ac.y)>=Math.abs(bc.x-ac.x)){
+        // 纵向为主
+        p1={x:ac.x, y: bc.y>ac.y ? a.y+a.h : a.y};
+        p2={x:bc.x, y: bc.y>ac.y ? b.y : b.y+b.h};
+      }else{
+        // 横向为主
+        p1={x: bc.x>ac.x ? a.x+a.w : a.x, y:ac.y};
+        p2={x: bc.x>ac.x ? b.x : b.x+b.w, y:bc.y};
+      }
+      const edge=doc.createElementNS(NS_DI,'bpmndi:BPMNEdge');
+      edge.setAttribute('id', id+'_di');
+      edge.setAttribute('bpmnElement', id);
+      for(const p of [p1,p2]){
+        const wp=doc.createElementNS(NS_DI,'di:waypoint');
+        wp.setAttribute('x', Math.round(p.x)); wp.setAttribute('y', Math.round(p.y));
+        edge.appendChild(wp);
+      }
+      plane.appendChild(edge);
+      added++;
+    });
+    if(!added) return xml;
+    return new XMLSerializer().serializeToString(doc);
+  }catch(e){ console.warn('补 edge 失败:', e); return xml; }
+}
+
+// 懒加载 bpmn-auto-layout（ESM），给无坐标的 BPMN 生成布局。失败则原样返回（bpmn-js 再兜底报错）。
+let _autoLayoutFn=null;
+async function autoLayout(xml){
+  try{
+    if(!_autoLayoutFn){
+      const mod=await import('https://cdn.jsdelivr.net/npm/bpmn-auto-layout@0.4.0/+esm');
+      _autoLayoutFn=mod.layoutProcess||mod.default;
+    }
+    return await _autoLayoutFn(xml);
+  }catch(e){
+    console.warn('自动布局失败，原样导入:', e);
+    return xml;
+  }
+}
+
+// ———————————————————————— 属性面板 ————————————————————————
+const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+function bo(el){ return el&&el.businessObject; }
+function typeName(el){
+  const t=(el&&el.type||'').replace('bpmn:','');
+  const map={StartEvent:'开始事件',EndEvent:'结束事件',UserTask:'用户任务',ServiceTask:'服务任务',
+    ExclusiveGateway:'排他网关',ParallelGateway:'并行网关',InclusiveGateway:'包容网关',
+    CallActivity:'子流程调用',SequenceFlow:'顺序流',Process:'流程',ScriptTask:'脚本任务',
+    ManualTask:'手工任务',ReceiveTask:'接收任务',SendTask:'发送任务'};
+  return map[t]||t;
+}
+
+function renderProps(el){
+  const title=document.getElementById('ppTitle');
+  const kind=document.getElementById('ppKind');
+  const body=document.getElementById('ppBody');
+  if(!el || el.type==='bpmn:Process' || el.labelTarget){
+    title.textContent='属性'; kind.textContent='未选中元素';
+    body.innerHTML='<div class="pp-empty">点击画布上的节点<br>在此配置属性</div>';
+    return;
+  }
+  const b=bo(el);
+  title.textContent=typeName(el);
+  kind.textContent=el.type.replace('bpmn:','')+' · '+el.id;
+
+  let h='';
+  // 通用：id / 名称
+  h+=field('名称','name',b.name||'','text');
+  // userTask：办理人 + 候选角色（对标编译器 flowable:assignee / candidateGroups）
+  if(el.type==='bpmn:UserTask'){
+    h+='<div class="pp-sec">办理人</div>';
+    h+=field('指派办理人 (assignee)','assignee',b.get('flowable:assignee')||'','text','单个用户 id，如 mgr');
+    h+=field('候选角色 (candidateGroups)','candidateGroups',b.get('flowable:candidateGroups')||'','text','支持 role(FIN)，多个逗号分隔');
+  }
+  // callActivity：子流程 key / 逻辑 key（对标 calledElement / cmx:calledKey）
+  if(el.type==='bpmn:CallActivity'){
+    h+='<div class="pp-sec">子流程</div>';
+    h+=field('固定子流程 (calledElement)','calledElement',b.get('calledElement')||'','text','写死具体子流程 key');
+    h+=field('逻辑 key (cmx:calledKey)','calledKey',b.get('flowable:calledKey')||b.get('calledKey')||'','text','按组织路由，运行期解析');
+  }
+  // 顺序流：条件表达式
+  if(el.type==='bpmn:SequenceFlow'){
+    const ce=b.conditionExpression;
+    h+='<div class="pp-sec">流转条件</div>';
+    h+=field('条件表达式','condition',ce&&ce.body||'','text','如 ${amount>5000}');
+  }
+  body.innerHTML=h;
+  // 绑定输入 → moddle
+  body.querySelectorAll('[data-prop]').forEach(inp=>{
+    inp.addEventListener('change',()=>applyProp(el, inp.dataset.prop, inp.value));
+  });
+}
+
+function field(label, prop, val, type, hint){
+  return `<div class="pp-field"><label>${esc(label)}</label>`+
+    `<input type="${type||'text'}" data-prop="${prop}" value="${esc(val)}">`+
+    (hint?`<div class="hint">${esc(hint)}</div>`:'')+`</div>`;
+}
+
+function applyProp(el, prop, value){
+  const modeling=modeler.get('modeling');
+  const moddle=modeler.get('moddle');
+  const b=bo(el);
+  try{
+    if(prop==='name'){ modeling.updateProperties(el,{name:value}); }
+    else if(prop==='assignee'){ modeling.updateProperties(el,{'flowable:assignee':value||undefined}); }
+    else if(prop==='candidateGroups'){ modeling.updateProperties(el,{'flowable:candidateGroups':value||undefined}); }
+    else if(prop==='calledElement'){ modeling.updateProperties(el,{'calledElement':value||undefined}); }
+    else if(prop==='calledKey'){ modeling.updateProperties(el,{'flowable:calledKey':value||undefined}); }
+    else if(prop==='condition'){
+      if(value){
+        const ce=moddle.create('bpmn:FormalExpression',{body:value});
+        modeling.updateProperties(el,{conditionExpression:ce});
+      }else{
+        modeling.updateProperties(el,{conditionExpression:undefined});
+      }
+    }
+  }catch(err){ toast('设置失败: '+err.message,'err'); }
+}
+
+// ———————————————————————— 定义列表 ————————————————————————
+async function loadDefList(){
+  const box=document.getElementById('defList');
+  try{
+    const {definitions}=await api('GET','/api/definitions');
+    // 只列可发起的顶层流程（startable），子流程不单列
+    const items=(definitions||[]).filter(d=>d.startable!==false);
+    if(!items.length){ box.innerHTML='<div class="ex-empty">暂无流程<br>点下方新建</div>'; return; }
+    box.innerHTML=items.map(d=>{
+      const active=d.key===currentKey?' active':'';
+      return `<div class="ex-item${active}" data-key="${esc(d.key)}">`+
+        `<span>▤</span><span>${esc(d.name||d.key)}</span></div>`;
+    }).join('');
+    box.querySelectorAll('.ex-item').forEach(it=>{
+      it.addEventListener('click',()=>loadDef(it.dataset.key));
+    });
+  }catch(err){ box.innerHTML='<div class="ex-empty">加载失败</div>'; }
+}
+
+// 加载已存定义（优先取草稿 XML；引擎内置定义无草稿则提示新建覆盖）
+async function loadDef(key){
+  try{
+    const d=await api('GET','/api/definitions/'+encodeURIComponent(key));
+    if(d.bpmnXml){
+      currentKey=key;
+      document.getElementById('defName').value=d.name||key;
+      await openDiagram(d.bpmnXml);
+      loadDefList();
+      toast('已加载: '+(d.name||key));
+    }else{
+      toast('该定义无设计器草稿（内置定义），可新建后另存','err');
+    }
+  }catch(err){ toast('加载失败: '+err.message,'err'); }
+}
+
+// ———————————————————————— 工具条动作 ————————————————————————
+async function newDiagram(){
+  currentKey=null;
+  document.getElementById('defName').value='新建流程';
+  await openDiagram(EMPTY_DIAGRAM);
+  toast('已新建空白流程');
+}
+
+async function getXml(){
+  const {xml}=await modeler.saveXML({format:true});
+  return xml;
+}
+
+async function doValidate(){
+  try{
+    const xml=await getXml();
+    // 借后端 compile 校验：存草稿即试编译。这里单独调一个「干跑」——复用 save 但仅校验？
+    // 简化：直接尝试保存草稿即触发后端 compile；此处仅做前端 XML 完整性提示。
+    if(!/bpmn:process|<process/i.test(xml)){ toast('校验失败: 无 process','err'); return false; }
+    toast('前端结构 OK，点保存触发后端编译校验');
+    return true;
+  }catch(err){ toast('校验失败: '+err.message,'err'); return false; }
+}
+
+async function doSave(){
+  try{
+    const xml=await getXml();
+    const name=document.getElementById('defName').value||'未命名流程';
+    const r=await api('POST','/api/definitions/draft',{name, bpmnXml:xml});
+    currentKey=r.key;
+    toast('草稿已保存: '+r.key+'（后端编译校验通过）','ok');
+    loadDefList();
+  }catch(err){ toast('保存失败: '+err.message,'err'); }
+}
+
+async function doPublish(){
+  if(!currentKey){ toast('请先保存草稿再发布','err'); return; }
+  try{
+    const r=await api('POST','/api/definitions/'+encodeURIComponent(currentKey)+'/publish',{});
+    toast('已发布 '+r.key+' v'+r.version+'（重启服务装载新版）','ok');
+    loadDefList();
+  }catch(err){ toast('发布失败: '+err.message,'err'); }
+}
+
+// ———————————————————————— 启动 ————————————————————————
+function wire(){
+  document.getElementById('btnNew').onclick=newDiagram;
+  document.getElementById('btnNew2').onclick=newDiagram;
+  document.getElementById('btnSave').onclick=doSave;
+  document.getElementById('btnPublish').onclick=doPublish;
+  document.getElementById('btnValidate').onclick=doValidate;
+  document.getElementById('btnUndo').onclick=()=>modeler.get('commandStack').undo();
+  document.getElementById('btnRedo').onclick=()=>modeler.get('commandStack').redo();
+  document.getElementById('btnZoomFit').onclick=()=>modeler.get('canvas').zoom('fit-viewport','auto');
+}
+
+window.addEventListener('DOMContentLoaded', async ()=>{
+  if(!window.BpmnJS){ document.getElementById('loading').textContent='bpmn-js 加载失败（检查网络/CDN）'; return; }
+  initModeler();
+  wire();
+  await newDiagram();
+  loadDefList();
+});
+</script>
+</body>
+</html>

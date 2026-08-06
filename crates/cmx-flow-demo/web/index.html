@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cmx-flow 流程引擎 · 审批演示（M1~M3）</title>
+<style>
+  :root {
+    --bg:#eef2f7; --panel:#fff; --ink:#1f2328; --muted:#5b6470; --line:#dfe4ea;
+    --brand:#0969da; --brand-d:#0a4d8c; --ok:#1a7f37; --ok-soft:#e6f6eb;
+    --warn:#9a6700; --warn-soft:#fff8e6; --active:#0969da; --active-soft:#ddf4ff;
+    --purple:#8250df; --purple-soft:#f3ecff; --danger:#cf222e; --danger-soft:#fbeaea;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.6}
+  .top{background:linear-gradient(135deg,#0969da,#0a4d8c);color:#fff;padding:20px 28px;
+    box-shadow:0 4px 14px rgba(9,105,218,.2)}
+  .top h1{margin:0;font-size:20px;letter-spacing:.3px}
+  .top p{margin:4px 0 0;opacity:.9;font-size:13px}
+  .wrap{max-width:1280px;margin:22px auto;padding:0 20px;display:grid;
+    grid-template-columns:1fr 380px;gap:20px}
+  @media(max-width:980px){.wrap{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:18px 20px;margin-bottom:20px}
+  .card h2{margin:0 0 14px;font-size:15px;display:flex;align-items:center;gap:8px}
+  .card h2 .dot{width:8px;height:8px;border-radius:50%;background:var(--brand)}
+
+  /* 流程图 */
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 0}
+  .node{border:1.5px solid var(--line);border-radius:9px;padding:8px 12px;background:#fbfcfe;
+    min-width:88px;text-align:center;transition:all .25s;position:relative}
+  .node .kd{font-size:10px;color:var(--muted);font-family:var(--mono);display:block;margin-bottom:2px}
+  .node .nm{font-weight:600;font-size:13px}
+  .node .mi{font-size:9px;color:var(--purple);font-family:var(--mono);display:block;margin-top:2px}
+  .node.start,.node.end{border-radius:22px;background:#f0f3f7}
+  .node.gw{background:#fffdf5;border-color:#e6d9a8}
+  .node.svc{background:#f5f0ff;border-color:#d9c8ef}
+  .node.timer{border-radius:50%;background:#fff4ec;border-color:#e0a878;min-width:auto;padding:8px 10px}
+  .node.miTask{border-style:dashed;border-color:var(--purple);background:var(--purple-soft)}
+  .node.callAct{border-color:#0e7c66;background:#eafaf6;border-width:2px}
+  /* callActivity 节点 + 内嵌子流程图 竖向堆叠 */
+  .node-wrap{display:inline-flex;flex-direction:column;align-items:center;gap:0}
+  .subflow-graph{margin-top:6px;border:1.5px dashed #6bc3b0;border-radius:10px;background:#f2fbf9;
+    padding:8px 10px 6px;max-width:100%}
+  .subflow-graph-h{font-size:11px;color:#0e7c66;font-family:var(--mono);font-weight:700;margin-bottom:6px;text-align:left}
+  .flow.sub{gap:4px;padding:0}
+  .flow.sub .node{min-width:64px;padding:5px 8px;font-size:12px}
+  .flow.sub .node .kd{font-size:9px}
+  .flow.sub .node .nm{font-size:11.5px}
+  .flow.sub .arrow{font-size:13px}
+  .node.active{border-color:var(--active);background:var(--active-soft);
+    box-shadow:0 0 0 3px rgba(9,105,218,.15);animation:pulse 1.6s infinite}
+  .node.done{border-color:var(--ok);background:var(--ok-soft)}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 3px rgba(9,105,218,.15)}50%{box-shadow:0 0 0 6px rgba(9,105,218,.05)}}
+  .arrow{color:#aeb7c2;font-size:16px;font-weight:700}
+  .arrow.cond{color:var(--brand)}
+  .arrow-lbl{font-size:10px;color:var(--brand);font-family:var(--mono);max-width:120px}
+
+  /* 表单 */
+  label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
+  input,button,select{font-family:inherit;font-size:14px}
+  input,select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#fff}
+  button{cursor:pointer;border:none;border-radius:8px;padding:9px 16px;font-weight:600;transition:.15s}
+  .btn-primary{background:var(--brand);color:#fff}
+  .btn-primary:hover{background:var(--brand-d)}
+  .btn-sm{padding:5px 12px;font-size:13px}
+  .btn-ok{background:var(--ok);color:#fff}
+  .btn-ghost{background:#eef2f7;color:var(--ink)}
+  .btn-danger{background:var(--danger-soft);color:var(--danger)}
+  .btn-danger:hover{background:#f6d5d5}
+  .row{display:flex;gap:8px;align-items:center}
+  .hint{font-size:12px;color:var(--muted);margin-top:6px}
+
+  /* 实例列表 */
+  .inst{border:1px solid var(--line);border-radius:10px;padding:11px 13px;margin-bottom:10px;cursor:pointer;transition:.15s}
+  .inst:hover{border-color:var(--brand);background:#fbfcff}
+  .inst.sel{border-color:var(--brand);background:var(--active-soft)}
+  .inst .h{display:flex;justify-content:space-between;align-items:center}
+  .inst .who{font-weight:600}
+  .inst .meta{font-size:12px;color:var(--muted);margin-top:3px;font-family:var(--mono)}
+  .tag{font-size:10px;font-family:var(--mono);padding:1px 6px;border-radius:5px;margin-right:5px}
+  .tag.credit{background:var(--active-soft);color:var(--brand)}
+  .tag.cs{background:var(--purple-soft);color:var(--purple)}
+  .tag.timer{background:#fff4ec;color:#c26a2a}
+  .tag.cand{background:#e6f6eb;color:#1a7f37}
+  .tag.sub{background:#e2f7f2;color:#0e7c66}
+  .subflow-card{border:1px solid #a8ddd2;border-radius:9px;padding:10px 12px;background:#f2fbf9;margin-bottom:8px}
+  .subflow-h{font-weight:600;font-size:13px;display:flex;align-items:center;gap:8px}
+  .pill{font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;font-family:var(--mono)}
+  .pill.ACTIVE{background:var(--active-soft);color:var(--brand)}
+  .pill.COMPLETED{background:var(--ok-soft);color:var(--ok)}
+  .pill.TERMINATED{background:var(--danger-soft);color:var(--danger)}
+
+  /* 任务 */
+  .task{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:#fbfcfe}
+  .task.mi{border-color:var(--purple);background:var(--purple-soft)}
+  .task.claimable{border-color:#1a7f37;background:#f2fbf4}
+  .cand-box{margin-top:8px;padding:8px 10px;background:#fff;border:1px dashed #b7e0c1;border-radius:8px}
+  .cand-src{font-size:11px;color:#1a7f37;font-family:var(--mono);margin-bottom:6px}
+  .btn-claim{background:#e6f6eb;color:#1a7f37;margin:3px 4px 0 0}
+  .btn-claim:hover{background:#d3f0da}
+  .btn-xfer{background:#f3ecff;color:#8250df;margin:3px 4px 0 0}
+  .btn-xfer:hover{background:#e8dcff}
+  .xfer-chain{border:1px solid var(--line);border-radius:8px;padding:8px 11px;background:#faf8ff}
+  .xfer-row{font-size:12.5px;padding:3px 0}
+  .xfer-kind{display:inline-block;font-size:10px;font-family:var(--mono);background:#8250df;color:#fff;border-radius:4px;padding:1px 6px;margin-right:6px}
+  .xfer-reason{color:var(--muted);font-size:11px}
+  .cc-item{border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin-bottom:8px}
+  .cc-item.unread{border-color:var(--brand);background:#f5faff}
+  .cc-item.read{opacity:.7}
+  .cc-h{display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:600}
+  .cc-meta{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:4px}
+  .cc-badge{font-size:10px;padding:1px 7px;border-radius:999px}
+  .cc-badge.read{background:#eef1f4;color:var(--muted)}
+  .task .tn{font-weight:600}
+  .task .as{font-size:12px;color:var(--muted);font-family:var(--mono);margin:2px 0 8px}
+  .task .elem{font-size:11px;color:var(--purple);font-family:var(--mono);margin:2px 0 8px}
+  .empty{color:var(--muted);text-align:center;padding:20px;font-size:13px}
+  .kv{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .kv span{font-size:11px;background:#f0f3f7;border-radius:6px;padding:2px 8px;font-family:var(--mono)}
+  .banner{margin-top:16px;padding:14px;border-radius:10px;font-weight:600;text-align:center}
+  .banner.ok{background:var(--ok-soft);color:var(--ok)}
+  .banner.term{background:var(--danger-soft);color:var(--danger)}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1f2328;color:#fff;
+    padding:10px 18px;border-radius:8px;font-size:13px;opacity:0;transition:.3s;pointer-events:none;z-index:99}
+  .toast.show{opacity:1}
+  .toast.err{background:var(--danger)}
+</style>
+</head>
+<body>
+  <div class="top">
+    <h1>cmx-flow 流程引擎 · 审批演示</h1>
+    <p>Rust 令牌执行内核 · 数据实时落 PostgreSQL(fico 库) · M1 分支判断 / M2 并行网关 / M3 多实例会签 · 实例取消</p>
+  </div>
+
+  <div class="wrap">
+    <!-- 左栏：流程图 + 实例详情 -->
+    <div>
+      <div class="card">
+        <h2><span class="dot"></span><span id="flowTitle">流程图</span><span id="flowState" style="margin-left:auto;font-size:12px;font-weight:400;color:var(--muted)"></span></h2>
+        <div class="flow" id="flow"></div>
+        <div style="margin-top:10px;font-size:12px;color:var(--muted)">
+          图例：<span style="color:var(--brand)">● 蓝高亮</span>=令牌当前(待办)　<span style="color:var(--ok)">● 绿</span>=已完成　<span style="color:var(--purple)">⬚ 紫虚线</span>=多实例会签节点
+        </div>
+      </div>
+
+      <div class="card">
+        <h2><span class="dot"></span>实例详情 <span id="detailId" style="font-family:var(--mono);font-size:11px;color:var(--muted);font-weight:400"></span></h2>
+        <div id="detail"><div class="empty">← 从右侧选择或新建一个实例</div></div>
+      </div>
+    </div>
+
+    <!-- 右栏：新建 + 实例列表 -->
+    <div>
+      <div class="card">
+        <h2><span class="dot"></span>发起流程</h2>
+        <label>流程类型</label>
+        <select id="defKey" onchange="onDefChange()">
+          <option value="credit_approval">信用额度审批（M1 分支）</option>
+          <option value="expense_countersign">报销会签审批（M3 会签）</option>
+          <option value="timed_approval">限时审批（M2.5 定时器）</option>
+          <option value="candidate_approval">候选人认领审批（M4.1 角色/岗位）</option>
+          <option value="subflow_main">报销主流程（M5.1 子流程）</option>
+        </select>
+        <label>申请人</label>
+        <input id="applicant" placeholder="如：张三" value="张三"/>
+        <div id="amountRow">
+          <label id="amountLbl">申请额度（元）</label>
+          <input id="amount" type="number" value="80000"/>
+        </div>
+        <div id="approversWrap" style="display:none">
+          <label>会签审批人（逗号分隔）</label>
+          <input id="approvers" value="财务A,财务B,财务C"/>
+          <div class="hint">&gt; 20000 触发财务会签；<b>过半同意即通过</b>，剩余任务自动作废</div>
+        </div>
+        <div id="creditHint" class="hint">&gt; 50000 走风控+行长审批；否则经理审批后直接完成</div>
+        <div id="timedHint" class="hint" style="display:none">
+          经理审批挂两个边界定时器：<b>20 秒</b>发催办（不中断）、<b>30 秒</b>超时升级到总监（中断）。<br>
+          后台每 5 秒自动检查一次；也可点下方「⏰ 立即检查定时器」手动触发。
+        </div>
+        <div id="candHint" class="hint" style="display:none">
+          <b>部门经理初审</b>按岗位 <code>position(df_mgr)</code> 解析（1 人 → 直派）；<br>
+          <b>财务组审批</b>按角色 <code>role(df_finance)</code> 解析（3 人 → 落候选池，需<b>认领</b>后办理）。<br>
+          办理人从 cmx 库 IAM 实时解析。
+        </div>
+        <div id="subHint" class="hint" style="display:none">
+          经理审批后走 <b>callActivity 子流程</b>（逻辑 key <code>fin_review</code>，按发起组织路由）：<br>
+          <b>总部</b> → 总部三级复核（财务初审→财务经理复核）；<b>北京分公司</b> → 沿组织树<b>继承总部</b>；
+          <b>上海分公司</b> → 分公司单签。<b>同一份主流程，不同组织跑不同子流程。</b><br>
+          详情面板会显示解析到的子流程实例，可直接办理。
+        </div>
+        <div id="orgRow" style="display:none">
+          <label>发起组织（决定子流程路由）</label>
+          <select id="orgId">
+            <option value="df_root">演示总部（→ 总部三级复核）</option>
+            <option value="df_bj">北京分公司（未绑定 → 继承总部）</option>
+            <option value="df_sh">上海分公司（→ 分公司单签）</option>
+          </select>
+        </div>
+        <button class="btn-primary" style="width:100%;margin-top:14px" onclick="startInstance()">发起流程</button>
+        <button class="btn-ghost btn-sm" style="width:100%;margin-top:8px" onclick="triggerTimers()">⏰ 立即检查定时器</button>
+      </div>
+
+      <div class="card">
+        <h2><span class="dot"></span>流程实例 <button class="btn-ghost btn-sm" style="margin-left:auto" onclick="loadInstances()">刷新</button></h2>
+        <div id="instances"><div class="empty">暂无实例</div></div>
+      </div>
+
+      <div class="card">
+        <h2><span class="dot"></span>📋 抄送我的（M4.2）</h2>
+        <label>选择用户（看谁的抄送）</label>
+        <select id="ccUser" onchange="loadCc()"></select>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin-top:8px">
+          <input type="checkbox" id="ccUnread" style="width:auto" onchange="loadCc()"> 只看未读
+        </label>
+        <div id="ccList" style="margin-top:10px"><div class="empty">选个用户看抄送</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const API = '';
+let DEFS = {};           // key -> 流程定义
+let SELECTED = null;     // 当前选中实例详情
+
+// —— 工具 —— //
+function toast(msg, err){const t=document.getElementById('toast');t.textContent=msg;
+  t.className='toast show'+(err?' err':'');setTimeout(()=>t.className='toast',2400);}
+async function api(path, opts){
+  const r = await fetch(API+path, {headers:{'Content-Type':'application/json'}, ...opts});
+  const data = await r.json();
+  if(!r.ok) throw new Error(data.error||'请求失败');
+  return data;
+}
+function escapeHtml(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function fmt(n){return n==null?'?':Number(n).toLocaleString('zh-CN');}
+const KIND_CN = {startEvent:'开始',endEvent:'结束',userTask:'用户任务',serviceTask:'服务任务',
+  exclusiveGateway:'排他网关',parallelGateway:'并行网关',boundaryTimerEvent:'边界定时器',callActivity:'调用子流程'};
+const KIND_CLS = {startEvent:'start',endEvent:'end',exclusiveGateway:'gw',parallelGateway:'gw',serviceTask:'svc',boundaryTimerEvent:'timer',callActivity:'callAct'};
+const DEF_CN = {credit_approval:'信用额度审批', expense_countersign:'报销会签审批', timed_approval:'限时审批', candidate_approval:'候选人认领审批', subflow_main:'报销主流程(子流程)', fin_review_hq:'总部财务复核', fin_review_branch:'分公司财务复核'};
+let USER_MAP = {};  // user id → 友好名字（M4.1）
+function uname(id){ return USER_MAP[id] || (id ? id.slice(0,10) : '-'); }
+
+function onDefChange(){
+  const k = document.getElementById('defKey').value;
+  const isCs = k==='expense_countersign';
+  const isTimed = k==='timed_approval';
+  const isCand = k==='candidate_approval';
+  const isSub = k==='subflow_main';
+  document.getElementById('approversWrap').style.display = isCs?'block':'none';
+  document.getElementById('creditHint').style.display = (isCs||isTimed||isCand||isSub)?'none':'block';
+  document.getElementById('timedHint').style.display = isTimed?'block':'none';
+  document.getElementById('candHint').style.display = isCand?'block':'none';
+  document.getElementById('subHint').style.display = isSub?'block':'none';
+  document.getElementById('orgRow').style.display = isSub?'block':'none';
+  document.getElementById('amountRow').style.display = (isTimed||isCand)?'none':'block';
+  if(isCs) document.getElementById('amount').value='50000';
+  else if(isSub) document.getElementById('amount').value='88000';
+  else if(!isTimed && !isCand) document.getElementById('amount').value='80000';
+  renderFlow(k, [], null);
+}
+
+// —— 流程图渲染 —— //
+function renderFlow(defKey, activeNodes, completedState){
+  const flow = document.getElementById('flow');
+  const DEF = DEFS[defKey];
+  document.getElementById('flowTitle').textContent = '流程图 · '+(DEF_CN[defKey]||defKey);
+  if(!DEF){flow.innerHTML='';return;}
+  flow.innerHTML = buildFlowStrip(DEF, new Set(activeNodes||[]), completedState, 0);
+}
+
+// 构建一条流程图 HTML（节点 + 箭头）。callActivity 节点内嵌其子流程路径图。
+// depth 防子流程无限递归（最多下钻 3 层）。
+function buildFlowStrip(DEF, active, completedState, depth){
+  const parts = [];
+  DEF.nodes.forEach((n)=>{
+    let cls = KIND_CLS[n.kind]||'';
+    if(n.multiInstance) cls += ' miTask';
+    if(n.kind==='callActivity') cls += ' callAct';
+    let stateCls = '';
+    if(active.has(n.id)) stateCls='active';
+    else if(completedState==='COMPLETED') stateCls='done';
+    const label = n.name || n.id;
+    const miLbl = n.multiInstance ? (n.multiInstance.sequential?'⋯ 或签':'⇉ 会签') : '';
+    let btLbl = '';
+    if(n.boundaryTimer){
+      const secs = n.boundaryTimer.seconds;
+      const kind = n.boundaryTimer.cancelActivity ? '中断' : '催办';
+      btLbl = `⏰ ${secs}s ${kind}`;
+    }
+    // callActivity：节点 + 内嵌子流程路径图。
+    if(n.kind==='callActivity' && n.calledElement){
+      const subDef = DEFS[n.calledElement];
+      const subActive = (subDef && active.has(n.id)) ? active : new Set(); // 主节点激活时高亮子图
+      const subStrip = (subDef && depth < 3)
+        ? `<div class="subflow-graph">
+             <div class="subflow-graph-h">📂 子流程：${escapeHtml(DEF_CN[n.calledElement]||n.calledElement)}</div>
+             <div class="flow sub">${buildFlowStrip(subDef, subActive, null, depth+1)}</div>
+           </div>`
+        : (subDef?'':`<div class="subflow-graph"><div class="subflow-graph-h">子流程 ${escapeHtml(n.calledElement)}（未部署图）</div></div>`);
+      parts.push(`<div class="node-wrap">
+        <div class="node ${cls} ${stateCls}">
+          <span class="kd">${KIND_CN[n.kind]||n.kind}</span>
+          <span class="nm">${escapeHtml(label)}</span>
+          <span class="mi" style="color:#0e7c66">⤵ 调用 ${escapeHtml(n.calledElement)}</span>
+        </div>
+        ${subStrip}
+      </div>`);
+    } else {
+      parts.push(`<div class="node ${cls} ${stateCls}">
+        <span class="kd">${KIND_CN[n.kind]||n.kind}</span>
+        <span class="nm">${escapeHtml(label)}</span>
+        ${miLbl?`<span class="mi">${miLbl}</span>`:''}
+        ${btLbl?`<span class="mi" style="color:#c26a2a">${btLbl}</span>`:''}</div>`);
+    }
+    const outs = DEF.edges.filter(e=>e.from===n.id);
+    if(outs.length===1){
+      const e=outs[0];
+      parts.push(`<span class="arrow ${e.condition?'cond':''}">→</span>`);
+      if(e.condition) parts.push(`<span class="arrow-lbl">${escapeHtml(e.condition)}</span>`);
+    } else if(outs.length>1){
+      const lbls = outs.map(e=>e.isDefault?'默认':(e.condition||'')).filter(Boolean).join(' / ');
+      parts.push(`<span class="arrow cond">⇉</span><span class="arrow-lbl">${escapeHtml(lbls)}</span>`);
+    }
+  });
+  return parts.join('');
+}
+
+// —— 实例列表 —— //
+async function loadInstances(){
+  const resp = await api('/api/instances');
+  // 隐藏子流程实例（fin_review_hq / fin_review_branch），它们在主实例详情里展示。
+  const instances = resp.instances.filter(it=>it.definitionKey!=='fin_review_hq' && it.definitionKey!=='fin_review_branch');
+  const box = document.getElementById('instances');
+  if(!instances.length){box.innerHTML='<div class="empty">暂无实例</div>';return;}
+  box.innerHTML = instances.map(it=>{
+    const isCs = it.definitionKey==='expense_countersign';
+    const isTimed = it.definitionKey==='timed_approval';
+    const isCand = it.definitionKey==='candidate_approval';
+    const isSub = it.definitionKey==='subflow_main';
+    const tag = isCs?'<span class="tag cs">会签</span>'
+      :isTimed?'<span class="tag timer">限时</span>'
+      :isCand?'<span class="tag cand">候选</span>'
+      :isSub?'<span class="tag sub">子流程</span>'
+      :'<span class="tag credit">信用</span>';
+    const amountPart = (isTimed||isCand)?'':` · ¥${fmt(it.amount)}`;
+    return `
+    <div class="inst ${SELECTED&&SELECTED.id===it.id?'sel':''}" onclick="openInstance('${it.id}')">
+      <div class="h">
+        <span class="who">${tag}${escapeHtml(it.applicant||'?')}${amountPart}</span>
+        <span class="pill ${it.state}">${it.state}</span>
+      </div>
+      <div class="meta">${(isCs||isTimed||isCand)?'':'风险:'+(it.riskLevel||'-')+' · '}待办 ${it.openTaskCount} · ${escapeHtml(it.businessKey||'')}</div>
+    </div>`;}).join('');
+}
+
+// —— 打开实例详情 —— //
+async function openInstance(id){
+  SELECTED = await api('/api/instances/'+id);
+  document.getElementById('detailId').textContent = '#'+id.slice(0,8);
+  renderFlow(SELECTED.definitionKey, SELECTED.activeNodes, SELECTED.state);
+  document.getElementById('flowState').textContent =
+    SELECTED.state==='COMPLETED'?'✅ 已完成':(SELECTED.state==='TERMINATED'?'⛔ 已撤销':'⏳ 进行中');
+  renderDetail();
+  loadInstances();
+}
+
+function renderDetail(){
+  const d = document.getElementById('detail');
+  if(!SELECTED){d.innerHTML='<div class="empty">← 从右侧选择或新建一个实例</div>';return;}
+  const v = SELECTED.variables||{};
+  const isCs = SELECTED.definitionKey==='expense_countersign';
+  const isTimed = SELECTED.definitionKey==='timed_approval';
+  let html = `<div class="kv">
+    <span>类型: ${DEF_CN[SELECTED.definitionKey]||SELECTED.definitionKey}</span>
+    <span>申请人: ${escapeHtml(v.applicant||'-')}</span>
+    ${isTimed?'':`<span>额度: ¥${fmt(v.amount)}</span>`}
+    ${isCs?(v.approvers?`<span>会签人: ${escapeHtml((v.approvers||[]).join('、'))}</span>`:''):(isTimed?'':`<span>风险等级: ${v.riskLevel||'-'}</span>`)}
+    <span>状态: ${SELECTED.state}</span>
+  </div>`;
+
+  // 定时器倒计时（M2.5）。
+  const jobs = SELECTED.jobs||[];
+  if(jobs.length && SELECTED.state==='ACTIVE'){
+    html += `<div style="margin-top:12px">`;
+    html += jobs.map(j=>{
+      const remain = Math.max(0, Math.round((new Date(j.dueAt).getTime()-Date.now())/1000));
+      const kind = j.cancelActivity?'超时升级(中断)':'催办(不中断)';
+      const col = j.cancelActivity?'#cf222e':'#c26a2a';
+      return `<div style="font-size:12px;font-family:var(--mono);color:${col};margin:3px 0">
+        ⏰ ${escapeHtml(j.boundaryBpmnId)} · ${kind} · 剩余 <b>${remain}s</b></div>`;
+    }).join('');
+    html += `</div>`;
+  }
+
+  const open = SELECTED.openTasks||[];
+  if(SELECTED.state==='COMPLETED'){
+    html += `<div class="banner ok">🎉 审批流程已全部完成</div>`;
+  } else if(SELECTED.state==='TERMINATED'){
+    html += `<div class="banner term">⛔ 该流程已被撤销${v._cancelReason?('：'+escapeHtml(v._cancelReason)):''}</div>`;
+  } else if(open.length){
+    const multi = open.length>1;
+    html += `<h3 style="margin:18px 0 10px;font-size:13px">待办任务${multi?`（${open.length} 个并行会签，点击办理）`:'（点击办理）'}</h3>`;
+    html += open.map(t=>{
+      const isMi = t.elementValue!=null;
+      const elem = isMi ? `<div class="elem">会签对象: ${escapeHtml(String(t.elementValue))}</div>` : '';
+      const cands = t.candidates||[];
+      const unclaimed = !t.assignee && cands.length>0;  // 待认领：无 assignee 且有候选池
+      const suspended = t.delegationState==='SUSPENDED';
+      const isAddsign = t.delegationState==='ADDSIGN';
+      const isDelegated = t.delegationState==='DELEGATED';
+      let actions;
+      if(suspended){
+        actions = `<div class="hint" style="color:var(--warn)">⏸ 已加签挂起，待临时审批人办结后恢复</div>`;
+      } else if(unclaimed){
+        // 候选任务：展示候选人 + 认领按钮（M4.1）。
+        const srcTag = cands[0].type==='ROLE' ? `角色 ${cands[0].ref}` : cands[0].type==='POSITION' ? `岗位 ${cands[0].ref}` : cands[0].type;
+        actions = `
+          <div class="cand-box">
+            <div class="cand-src">候选来源：${escapeHtml(srcTag)} · ${cands.length} 人可认领</div>
+            ${cands.map(c=>`<button class="btn-claim btn-sm" onclick="doClaim('${t.id}','${c.userId}')">🙋 ${escapeHtml(uname(c.userId))} 认领</button>`).join('')}
+          </div>`;
+      } else {
+        // 已直派/已认领：可办理 + 转签家族（M4.3）。
+        actions = `
+          <div class="row" style="flex-wrap:wrap">
+            <button class="btn-ok btn-sm" onclick="doComplete('${t.id}','同意')">✓ 同意</button>
+            <button class="btn-ghost btn-sm" onclick="doComplete('${t.id}','驳回')">意见</button>
+            <button class="btn-xfer btn-sm" onclick="doXfer('transfer','${t.id}','${escapeHtml(t.assignee||'')}')">↪ 转办</button>
+            <button class="btn-xfer btn-sm" onclick="doXfer('delegate','${t.id}','${escapeHtml(t.assignee||'')}')">👥 委派</button>
+            <button class="btn-xfer btn-sm" onclick="doXfer('addsign','${t.id}','${escapeHtml(t.assignee||'')}')">➕ 加签</button>
+          </div>`;
+      }
+      let who = unclaimed ? '<span style="color:var(--warn)">待认领</span>' : escapeHtml(uname(t.assignee)||'未指定');
+      let stateTag = '';
+      if(isAddsign) stateTag = '<span class="tag cs" style="margin-left:6px">加签临时</span>';
+      else if(isDelegated) stateTag = `<span class="tag timer" style="margin-left:6px">委派中·主 ${escapeHtml(uname(t.ownerUserId))}</span>`;
+      else if(suspended) stateTag = '<span class="tag" style="margin-left:6px;background:#fff8e6;color:var(--warn)">挂起</span>';
+      return `
+      <div class="task ${isMi?'mi':''} ${unclaimed?'claimable':''}">
+        <div class="tn">${escapeHtml(t.name||t.nodeBpmnId)}${stateTag}</div>
+        <div class="as">办理人: ${who}　节点: ${t.nodeBpmnId}</div>
+        ${elem}
+        ${actions}
+      </div>`;}).join('');
+  } else {
+    html += `<div class="empty">无待办任务</div>`;
+  }
+
+  // 子流程实例（M5.1）：主流程挂起等子时，展示子实例并可直接办理。
+  if(SELECTED.waitingSubflow){
+    html += `<h3 style="margin:18px 0 8px;font-size:13px">🧩 子流程实例（主流程挂起等待中）</h3>
+      <div id="subflowBox"><div class="empty">加载子流程…</div></div>`;
+  }
+
+  // 转签流转链（M4.3）。
+  const dels = SELECTED.delegations||[];
+  if(dels.length){
+    const KIND_CN = {TRANSFER:'转办',ADDSIGN_BEFORE:'向前加签',ADDSIGN_AFTER:'向后加签',DELEGATE:'委派'};
+    html += `<h3 style="margin:18px 0 8px;font-size:13px">🔁 转签流转链</h3>`;
+    html += `<div class="xfer-chain">`+dels.map(x=>`
+      <div class="xfer-row"><span class="xfer-kind">${KIND_CN[x.kind]||x.kind}</span>
+        ${escapeHtml(uname(x.fromUserId))} → <b>${escapeHtml(uname(x.toUserId))}</b>
+        ${x.reason?`<span class="xfer-reason">（${escapeHtml(x.reason)}）</span>`:''}</div>`).join('')+`</div>`;
+  }
+
+  // 撤单按钮：仅进行中实例可撤。
+  if(SELECTED.state==='ACTIVE'){
+    html += `<div style="margin-top:14px;border-top:1px dashed var(--line);padding-top:12px">
+      <button class="btn-danger btn-sm" onclick="doCancel()">⛔ 撤销流程</button>
+      <span class="hint" style="margin-left:8px">撤单后实例终止并归档（TERMINATED）</span>
+    </div>`;
+  }
+  d.innerHTML = html;
+  // 若有子流程，异步载入并渲染到 subflowBox。
+  if(SELECTED.waitingSubflow) loadChildren(SELECTED.id);
+}
+
+// —— M5.1：载入并渲染子流程实例 —— //
+async function loadChildren(mainId){
+  const box = document.getElementById('subflowBox');
+  if(!box) return;
+  try{
+    const {children} = await api('/api/instances/'+mainId+'/children');
+    if(!children.length){ box.innerHTML='<div class="empty">无子流程实例</div>'; return; }
+    box.innerHTML = children.map(c=>{
+      const done = c.state==='COMPLETED';
+      const open = c.openTasks||[];
+      const tasks = open.map(t=>`
+        <div class="task" style="margin-top:6px">
+          <div class="tn">${escapeHtml(t.name||t.nodeBpmnId)}</div>
+          <div class="as">办理人: ${escapeHtml(t.assignee||'-')}　节点: ${t.nodeBpmnId}</div>
+          <div class="row">
+            <button class="btn-ok btn-sm" onclick="doCompleteSub('${c.id}','${t.id}')">✓ 同意</button>
+          </div>
+        </div>`).join('');
+      return `<div class="subflow-card">
+        <div class="subflow-h">🧩 ${escapeHtml(DEF_CN[c.definitionKey]||c.definitionKey)}
+          <span class="pill ${c.state}">${c.state}</span></div>
+        ${done?'<div class="banner ok" style="margin-top:8px">✅ 子流程已完成，主流程已继续</div>':(tasks||'<div class="empty">无待办</div>')}
+      </div>`;
+    }).join('');
+  }catch(e){ box.innerHTML='<div class="empty">子流程加载失败</div>'; }
+}
+
+// 办结子流程任务后，刷新主实例（子完成会唤醒主流程）。
+async function doCompleteSub(subId, taskId){
+  try{
+    await api('/api/tasks/'+taskId+'/complete',
+      {method:'POST',body:JSON.stringify({instance_id:subId, decision:'同意'})});
+    toast('✅ 子流程已办理');
+    // 重新拉主实例（可能已被唤醒推进）。
+    if(SELECTED) await openInstance(SELECTED.id);
+  }catch(e){toast(e.message,true);}
+}
+
+// —— 操作 —— //
+async function startInstance(){
+  const definitionKey = document.getElementById('defKey').value;
+  const applicant = document.getElementById('applicant').value.trim()||'匿名';
+  const amount = parseFloat(document.getElementById('amount').value)||0;
+  const body = {definitionKey, applicant, amount};
+  if(definitionKey==='expense_countersign'){
+    body.approvers = document.getElementById('approvers').value.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
+  }
+  if(definitionKey==='subflow_main'){
+    body.orgId = document.getElementById('orgId').value;
+  }
+  try{
+    const inst = await api('/api/instances',{method:'POST',body:JSON.stringify(body)});
+    toast('✅ 流程已发起');
+    SELECTED = inst;
+    document.getElementById('detailId').textContent = '#'+inst.id.slice(0,8);
+    renderFlow(inst.definitionKey, inst.activeNodes, inst.state);
+    document.getElementById('flowState').textContent='⏳ 进行中';
+    renderDetail();
+    loadInstances();
+  }catch(e){toast(e.message,true);}
+}
+
+async function doComplete(taskId, decision){
+  try{
+    const inst = await api('/api/tasks/'+taskId+'/complete',
+      {method:'POST',body:JSON.stringify({instance_id:SELECTED.id, decision})});
+    toast('✅ 已办理: '+decision);
+    SELECTED = inst;
+    renderFlow(inst.definitionKey, inst.activeNodes, inst.state);
+    document.getElementById('flowState').textContent =
+      inst.state==='COMPLETED'?'✅ 已完成':(inst.state==='TERMINATED'?'⛔ 已撤销':'⏳ 进行中');
+    renderDetail();
+    loadInstances();
+  }catch(e){toast(e.message,true);}
+}
+
+// —— M4.1：认领候选任务 —— //
+async function doClaim(taskId, userId){
+  try{
+    const inst = await api('/api/tasks/'+taskId+'/claim',
+      {method:'POST',body:JSON.stringify({instance_id:SELECTED.id, user_id:userId})});
+    toast('🙋 '+uname(userId)+' 已认领');
+    SELECTED = inst;
+    renderFlow(inst.definitionKey, inst.activeNodes, inst.state);
+    renderDetail();
+    loadInstances();
+  }catch(e){toast(e.message,true);}
+}
+
+// —— M4.3：转办 / 委派 / 加签 —— //
+function pickUser(promptText){
+  // 列出候选用户供选择（简易：编号选择）。
+  const ids = Object.keys(USER_MAP);
+  const list = ids.map((id,i)=>`${i+1}. ${USER_MAP[id]}`).join('\n');
+  const s = prompt(promptText+'\n输入编号选择目标人：\n'+list);
+  if(!s) return null;
+  const idx = parseInt(s,10)-1;
+  return (idx>=0 && idx<ids.length) ? ids[idx] : null;
+}
+async function doXfer(kind, taskId, fromUser){
+  const cn = {transfer:'转办（换人）', delegate:'委派（代办不换主）', addsign:'加签（插临时审批人）'}[kind];
+  const to = pickUser(cn);
+  if(!to){ return; }
+  let path, body;
+  const base = {instance_id:SELECTED.id, from_user:fromUser, to_user:to};
+  if(kind==='transfer'){ path='transfer'; body=base; }
+  else if(kind==='delegate'){ path='delegate'; body=base; }
+  else {
+    const before = confirm('向前加签？（确定=向前，先让他审再回来；取消=向后）');
+    path='addsign'; body={...base, before};
+  }
+  try{
+    const inst = await api('/api/tasks/'+taskId+'/'+path,{method:'POST',body:JSON.stringify(body)});
+    toast('✅ '+cn+' → '+uname(to));
+    SELECTED = inst;
+    renderFlow(inst.definitionKey, inst.activeNodes, inst.state);
+    renderDetail();
+    loadInstances();
+  }catch(e){toast(e.message,true);}
+}
+
+async function doCancel(){
+  if(!confirm('确认撤销该流程？撤单后不可恢复。')) return;
+  try{
+    const inst = await api('/api/instances/'+SELECTED.id+'/cancel',
+      {method:'POST',body:JSON.stringify({reason:'演示：申请人撤回'})});
+    toast('⛔ 流程已撤销');
+    SELECTED = inst;
+    renderFlow(inst.definitionKey, inst.activeNodes, inst.state);
+    document.getElementById('flowState').textContent='⛔ 已撤销';
+    renderDetail();
+    loadInstances();
+  }catch(e){toast(e.message,true);}
+}
+
+// —— M2.5：手动立即检查到期定时器 —— //
+async function triggerTimers(){
+  try{
+    const r = await api('/api/timers/trigger',{method:'POST',body:'{}'});
+    if(r.firedCount>0){
+      toast(`⏰ 触发了 ${r.firedCount} 个定时器`);
+      // 若当前选中实例被触发，刷新它。
+      if(SELECTED && r.fired.some(f=>f.instanceId===SELECTED.id)) await openInstance(SELECTED.id);
+      else loadInstances();
+    } else {
+      toast('暂无到期定时器');
+    }
+  }catch(e){toast(e.message,true);}
+}
+
+// —— M4.2：抄送我的 —— //
+function fillCcUserSelect(){
+  const sel = document.getElementById('ccUser');
+  const ids = Object.keys(USER_MAP);
+  sel.innerHTML = '<option value="">— 选择用户 —</option>' +
+    ids.map(id=>`<option value="${id}">${escapeHtml(USER_MAP[id])}</option>`).join('');
+}
+async function loadCc(){
+  const user = document.getElementById('ccUser').value;
+  const box = document.getElementById('ccList');
+  if(!user){ box.innerHTML='<div class="empty">选个用户看抄送</div>'; return; }
+  const unread = document.getElementById('ccUnread').checked;
+  try{
+    const {cc} = await api('/api/cc?user='+encodeURIComponent(user)+'&unread='+unread);
+    if(!cc.length){ box.innerHTML='<div class="empty">'+(unread?'无未读抄送':'无抄送')+'</div>'; return; }
+    box.innerHTML = cc.map(c=>`
+      <div class="cc-item ${c.read?'read':'unread'}">
+        <div class="cc-h">
+          <span>${c.read?'📭':'📬'} ${escapeHtml(DEF_CN[c.definitionKey]||c.definitionKey)}</span>
+          ${c.read?'<span class="cc-badge read">已读</span>':`<button class="btn-ghost btn-sm" onclick="markCc('${c.id}')">标记已读</button>`}
+        </div>
+        <div class="cc-meta">节点 ${escapeHtml(c.nodeBpmnId||'-')} · ${escapeHtml(c.businessKey||c.instanceId.slice(0,8))}${c.reason?(' · '+escapeHtml(c.reason)):''}</div>
+      </div>`).join('');
+  }catch(e){toast(e.message,true);}
+}
+async function markCc(ccId){
+  try{ await api('/api/cc/'+ccId+'/read',{method:'POST',body:'{}'}); toast('📭 已标记已读'); loadCc(); }
+  catch(e){toast(e.message,true);}
+}
+
+// —— 定时器倒计时：每秒重绘详情（仅当有活动定时器时）—— //
+setInterval(()=>{
+  if(SELECTED && SELECTED.state==='ACTIVE' && (SELECTED.jobs||[]).length){
+    renderDetail();
+  }
+}, 1000);
+
+// —— 自动刷新选中实例：每 6 秒拉一次（后台 poller 5s 触发后能看到变化）—— //
+setInterval(async ()=>{
+  if(SELECTED && SELECTED.state==='ACTIVE'){
+    try{ const fresh = await api('/api/instances/'+SELECTED.id);
+      // 状态或待办数变了才重绘（避免打断操作）。
+      if(fresh.state!==SELECTED.state || (fresh.openTasks||[]).length!==(SELECTED.openTasks||[]).length){
+        SELECTED = fresh;
+        renderFlow(fresh.definitionKey, fresh.activeNodes, fresh.state);
+        document.getElementById('flowState').textContent =
+          fresh.state==='COMPLETED'?'✅ 已完成':(fresh.state==='TERMINATED'?'⛔ 已撤销':'⏳ 进行中');
+        renderDetail(); loadInstances();
+      }
+    }catch(e){/* 忽略轮询错误 */}
+  }
+}, 6000);
+
+// —— 初始化 —— //
+(async function init(){
+  const {definitions} = await api('/api/definitions');
+  definitions.forEach(d=>{DEFS[d.key]=d;});
+  // 拉用户名映射（M4.1 候选人显示友好名字）。
+  try{ const {users} = await api('/api/users'); users.forEach(u=>{USER_MAP[u.id]=u.name;}); }catch(e){}
+  fillCcUserSelect();
+  onDefChange();
+  loadInstances();
+})();
+</script>
+</body>
+</html>

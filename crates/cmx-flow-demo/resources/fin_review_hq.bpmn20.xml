@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  演示子流程：总部财务复核（fin_review_hq）—— M5.2 组织路由目标之一
+  总部走三级：财务初审 → 财务经理复核（两步）。绑定 fin_review@总部 → 本流程。
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:flowable="http://flowable.org/bpmn"
+                  targetNamespace="http://cmx/flow/demo">
+  <bpmn:process id="fin_review_hq" name="总部财务复核" isExecutable="true">
+    <bpmn:startEvent id="start" name="进入复核"/>
+    <bpmn:sequenceFlow id="f0" sourceRef="start" targetRef="fin1"/>
+    <bpmn:userTask id="fin1" name="财务初审" flowable:assignee="财务专员"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="fin1" targetRef="fin2"/>
+    <bpmn:userTask id="fin2" name="财务经理复核" flowable:assignee="财务经理"/>
+    <bpmn:sequenceFlow id="f2" sourceRef="fin2" targetRef="done"/>
+    <bpmn:endEvent id="done" name="复核完成"/>
+  </bpmn:process>
+</bpmn:definitions>

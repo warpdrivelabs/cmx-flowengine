@@ -1,0 +1,26 @@
+[package]
+name = "cmx-flow-model"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# 流程引擎的语义中立内核：编译后的 ProcessDefinition IR（arena + 索引）、运行态
+# DTO（实例/令牌/任务）、变量容器、受控条件表达式求值器，以及驱动无关的
+# RuntimeStore 持久化契约（聚合快照）。参考 Flowable 的运行语义与 OMG BPMN 2.0
+# 规范，但架构按 Rust 习惯重写：不继承、不共享可变指针、不依赖任何数据库驱动。
+
+[dependencies]
+# 序列化框架（IR / 运行态 DTO / 变量的持久化与传输）
+serde = { workspace = true }
+# JSON 序列化（变量容器以 JSON 为交换格式，对齐 PG jsonb 列）
+serde_json = { workspace = true }
+# 错误处理
+thiserror = { workspace = true }
+# 时间处理（实例/任务的时间戳）
+chrono = { workspace = true }
+# 日志追踪
+tracing = { workspace = true }
+# 唯一标识符（实例/令牌/任务 id）
+uuid = { workspace = true, features = ["v4"] }
+# 异步 trait（RuntimeStore 契约）
+async-trait = { workspace = true }

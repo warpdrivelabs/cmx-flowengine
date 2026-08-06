@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cmx-flow 流程引擎 · 阶段性总结（M1 → M5.2）</title>
+<style>
+  :root {
+    --bg:#f6f8fa; --panel:#fff; --ink:#1f2328; --muted:#656d76;
+    --line:#d0d7de; --line-soft:#eaeef2;
+    --brand:#0969da; --brand-d:#0a4d8c; --brand-soft:#ddf4ff;
+    --pk:#8250df; --pk-soft:#fbefff; --ok:#1a7f37; --ok-soft:#e6f6eb;
+    --amber:#9a6700; --amber-soft:#fff8e6; --new:#bc4c00; --new-soft:#fff1e7;
+    --sub:#0e7c66; --sub-soft:#e2f7f2;
+    --code-bg:#f6f8fa; --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    line-height:1.65; font-size:15px; }
+  .wrap { max-width:1100px; margin:0 auto; padding:32px 24px 90px; }
+
+  /* Hero */
+  header.hero { background:linear-gradient(135deg,#0969da 0%,#6639ba 55%,#0e7c66 100%);
+    color:#fff; border-radius:16px; padding:40px 40px 34px; margin-bottom:26px;
+    box-shadow:0 10px 30px rgba(9,105,218,.22); }
+  header.hero .tag { font-size:12.5px; letter-spacing:2.5px; text-transform:uppercase; opacity:.82; margin-bottom:10px; }
+  header.hero h1 { margin:0 0 12px; font-size:30px; letter-spacing:.3px; }
+  header.hero p { margin:0; opacity:.94; font-size:15px; max-width:820px; }
+  .hero-stats { margin-top:24px; display:grid; grid-template-columns:repeat(5,1fr); gap:12px; }
+  @media(max-width:820px){ .hero-stats{ grid-template-columns:repeat(2,1fr); } }
+  .hstat { background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.22);
+    border-radius:11px; padding:12px 14px; }
+  .hstat .n { font-size:24px; font-weight:800; font-family:var(--mono); line-height:1; }
+  .hstat .l { font-size:11.5px; opacity:.85; margin-top:5px; }
+
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:24px 28px; margin-bottom:22px; }
+  .panel h2 { margin:0 0 6px; font-size:20px; display:flex; align-items:center; gap:10px; }
+  .panel h2 .dot { width:10px; height:10px; border-radius:50%; background:var(--brand); display:inline-block; }
+  .panel h3 { font-size:15.5px; margin:22px 0 8px; }
+  .lead { color:var(--muted); font-size:14.5px; margin:6px 0 0; }
+  ul.tight { margin:10px 0 0; padding-left:20px; } ul.tight li { margin:6px 0; }
+  p.note { color:var(--muted); font-size:13.5px; }
+  h2.sec { font-size:21px; margin:36px 0 6px; padding-bottom:7px; border-bottom:2px solid var(--line); }
+  code.inl { font-family:var(--mono); background:var(--code-bg); border:1px solid var(--line-soft); border-radius:5px; padding:1px 6px; font-size:12.7px; }
+
+  /* 里程碑时间线 */
+  .timeline { position:relative; margin:12px 0 0; padding-left:26px; }
+  .timeline::before { content:''; position:absolute; left:7px; top:6px; bottom:6px; width:2px; background:linear-gradient(var(--brand),var(--sub)); }
+  .ms { position:relative; padding:0 0 20px 20px; }
+  .ms::before { content:''; position:absolute; left:-24px; top:4px; width:14px; height:14px; border-radius:50%;
+    background:#fff; border:3px solid var(--brand); }
+  .ms.sub::before { border-color:var(--sub); }
+  .ms .mtag { font-family:var(--mono); font-weight:800; font-size:13px; color:var(--brand-d);
+    background:var(--brand-soft); border-radius:6px; padding:1px 9px; margin-right:8px; }
+  .ms.sub .mtag { color:var(--sub); background:var(--sub-soft); }
+  .ms .mt { font-weight:700; font-size:15px; }
+  .ms .md { color:var(--muted); font-size:13.3px; margin-top:3px; }
+
+  /* 能力矩阵 */
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin-top:6px; }
+  thead th { text-align:left; background:#f9fafb; color:var(--muted); font-weight:600; padding:9px 13px;
+    border-bottom:1px solid var(--line); font-size:12px; text-transform:uppercase; letter-spacing:.4px; white-space:nowrap; }
+  tbody td { padding:9px 13px; border-bottom:1px solid var(--line-soft); vertical-align:top; }
+  tbody tr:last-child td { border-bottom:none; }
+  .k { font-family:var(--mono); font-weight:600; color:var(--brand-d); white-space:nowrap; }
+  .chk { color:var(--ok); font-weight:800; }
+
+  /* 架构层 */
+  .layers { display:flex; flex-direction:column; gap:10px; margin-top:8px; }
+  .layer { border:1px solid var(--line); border-radius:11px; padding:14px 18px; display:flex; align-items:center; gap:16px; background:#fcfdff; }
+  .layer .lnum { font-family:var(--mono); font-weight:800; font-size:20px; color:var(--brand); min-width:34px; }
+  .layer .lbody h4 { margin:0 0 3px; font-size:15px; }
+  .layer .lbody h4 .crate { font-family:var(--mono); font-size:12.5px; color:var(--sub); margin-left:8px; }
+  .layer .lbody p { margin:0; font-size:13px; color:var(--muted); }
+  .layer .lloc { margin-left:auto; font-family:var(--mono); font-size:12px; color:var(--muted); white-space:nowrap; }
+
+  /* 扩展点卡片 */
+  .ext-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; margin-top:8px; }
+  @media(max-width:760px){ .ext-grid{ grid-template-columns:1fr; } }
+  .ext { border:1px solid var(--line); border-radius:11px; padding:16px 18px; background:#fcfdff; }
+  .ext .eh { display:flex; align-items:baseline; gap:9px; }
+  .ext .en { font-family:var(--mono); font-weight:800; font-size:15px; color:var(--pk); }
+  .ext .em { font-size:11.5px; font-family:var(--mono); color:var(--muted); }
+  .ext p { margin:8px 0 0; font-size:12.8px; color:var(--muted); }
+
+  /* 图 */
+  .diagram { font-family:var(--mono); font-size:12.6px; background:var(--code-bg); border:1px solid var(--line);
+    border-radius:10px; padding:18px 20px; overflow-x:auto; line-height:1.55; white-space:pre; margin:10px 0 0; }
+  .diagram .t { color:var(--brand); font-weight:700; } .diagram .n { color:var(--new); font-weight:700; }
+  .diagram .s { color:var(--sub); font-weight:700; } .diagram .note { color:var(--muted); }
+
+  .callout { border-radius:10px; padding:14px 18px; margin:14px 0 0; font-size:13.6px; }
+  .callout.brand { background:var(--brand-soft); border:1px solid #b6e3ff; }
+  .callout.ok { background:var(--ok-soft); border:1px solid #b7e0c1; }
+  .callout.amber { background:var(--amber-soft); border:1px solid #f0dfa8; }
+
+  .badge { display:inline-block; font-size:11px; font-weight:700; padding:1px 8px; border-radius:999px; font-family:var(--mono); }
+  .b-ru { background:var(--brand-soft); color:var(--brand-d); }
+  .b-hi { background:var(--pk-soft); color:var(--pk); }
+  .b-cfg { background:var(--sub-soft); color:var(--sub); }
+
+  /* 质量指标 */
+  .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-top:8px; }
+  @media(max-width:760px){ .metrics{ grid-template-columns:repeat(2,1fr); } }
+  .metric { border:1px solid var(--line); border-radius:11px; padding:16px; text-align:center; background:#fcfdff; }
+  .metric .mn { font-size:28px; font-weight:800; font-family:var(--mono); color:var(--brand); }
+  .metric .ml { font-size:12px; color:var(--muted); margin-top:4px; }
+
+  footer { margin-top:32px; color:var(--muted); font-size:12.5px; text-align:center; line-height:1.9; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="tag">Phase Summary · 阶段性总结</div>
+    <h1>cmx-flow 流程引擎</h1>
+    <p>用 Rust 复刻 Flowable 语义、面向<b>人本审批流</b>的 BPMN 2.0 工作流引擎。历经 9 个里程碑，从最基础的顺序审批一路建成含并行会签、定时器、抄送转签、角色岗位、组织路由子流程的完整引擎——每一步都端到端实测、落 PostgreSQL、附可视化演示。</p>
+    <div class="hero-stats">
+      <div class="hstat"><div class="n">9</div><div class="l">里程碑 M1→M5.2</div></div>
+      <div class="hstat"><div class="n">5</div><div class="l">Rust crate</div></div>
+      <div class="hstat"><div class="n">11</div><div class="l">PG 数据表</div></div>
+      <div class="hstat"><div class="n">88</div><div class="l">测试全绿</div></div>
+      <div class="hstat"><div class="n">4</div><div class="l">可注入扩展点</div></div>
+    </div>
+  </header>
+
+  <!-- 0. 定位与哲学 -->
+  <section class="panel">
+    <h2><span class="dot"></span>定位与设计哲学</h2>
+    <p class="lead">一句话：<b>Flowable 的语义 + Rust 原生的架构</b>。不照抄 Java 引擎的 OOP 继承树，而用 Rust 的表达力重写内核。</p>
+    <ul class="tight">
+      <li><b>arena + 索引，非指针图</b>：所有节点存 <code class="inl">Vec&lt;FlowNode&gt;</code>，节点间用 <code class="inl">NodeId</code>（下标 newtype）引用，杜绝 <code class="inl">Rc&lt;RefCell&gt;</code> 共享可变图。</li>
+      <li><b>enum dispatch，非行为类层级</b>：BPMN 元素类型是 <code class="inl">NodeKind</code> 枚举，编译期穷尽匹配，加一种节点编译器逼你补全所有分支。</li>
+      <li><b>「等待态即提交点」</b>：每个 BPMN 等待态（userTask / callActivity）恰好对应<b>一次数据库事务提交</b>。聚合快照（实例 + 令牌 + 任务 + …）原子读写，无中间态泄漏。</li>
+      <li><b>受控手写解析器，零重依赖</b>：条件表达式、ISO8601 时长、候选人表达式全部手写，不引 rhai / chrono-duration 等第三方，行为可控。</li>
+      <li><b>可注入扩展点，引擎中立可测</b>：委托执行、时钟、候选人解析、子流程路由都是 trait，宿主注入实现。引擎不依赖任何 DB / IAM，内存态测试全程无外部依赖。</li>
+    </ul>
+  </section>
+
+  <!-- 1. 里程碑时间线 -->
+  <h2 class="sec">一、里程碑演进</h2>
+  <section class="panel">
+    <div class="timeline">
+      <div class="ms">
+        <div><span class="mtag">M1</span><span class="mt">顺序审批 · 内核奠基</span></div>
+        <div class="md">令牌执行内核、arena/enum/聚合快照、受控 DSL 表达式求值、serviceTask 委托（JavaDelegate 扩展点）、exclusiveGateway 条件分支。引擎的心脏。</div>
+      </div>
+      <div class="ms">
+        <div><span class="mtag">M2</span><span class="mt">并行网关 · 历史归档</span></div>
+        <div class="md">parallelGateway fork/join（AND 语义、JOINING 态令牌合流）；RU/HI 分离，实例终态同事务归档到历史表（含存续/办理时长）。</div>
+      </div>
+      <div class="ms">
+        <div><span class="mtag">M2.5</span><span class="mt">边界定时器 · 可注入时钟</span></div>
+        <div class="md">中断/非中断型边界定时器（限时未办自动升级/催办）；<b>Clock 扩展点</b>——测试用 TestClock 拨快，定时器确定性可测；手写 ISO8601、find_due_jobs 跨实例扫描。</div>
+      </div>
+      <div class="ms">
+        <div><span class="mtag">M3</span><span class="mt">多实例会签/或签 · 实例取消</span></div>
+        <div class="md">并行会签（N 人齐办）+ 顺序或签（逐个）；completionCondition 提前收口（过半通过/驳回终止）；实例取消激活 TERMINATED 归档。</div>
+      </div>
+      <div class="ms">
+        <div><span class="mtag">M4.1</span><span class="mt">角色 / 岗位候选人</span></div>
+        <div class="md">办理人从裸字符串升级为 <code class="inl">role()/position()/org()/user()</code> 表达式；<b>AssigneeResolver 扩展点</b>接现有 IAM；多人候选落池、claim 认领。补建组织/岗位表。</div>
+      </div>
+      <div class="ms">
+        <div><span class="mtag">M4.2</span><span class="mt">抄送 CC</span></div>
+        <div class="md">只读旁路知会——不阻塞流程、不产生待办、带已读追踪；节点配置抄送 + 手动抄送；「抄送我的」跨实例查询。</div>
+      </div>
+      <div class="ms">
+        <div><span class="mtag">M4.3</span><span class="mt">转签家族</span></div>
+        <div class="md">转办（彻底换人）/ 委派（代办不换主）/ 加签（动态临时任务，可嵌套）；完整流转链台账可追溯。</div>
+      </div>
+      <div class="ms sub">
+        <div><span class="mtag">M5.1</span><span class="mt">子流程 callActivity · 同步等待</span></div>
+        <div class="md">主流程调用独立部署的子流程并同步等待；WAITING_SUBFLOW 令牌、父子实例、complete_subflow 逐层唤醒、变量映射；子流程复用完整内核、可嵌套。</div>
+      </div>
+      <div class="ms sub">
+        <div><span class="mtag">M5.2</span><span class="mt">子流程按组织路由</span></div>
+        <div class="md"><b>同一主流程，不同组织跑不同子流程</b>。callActivity 写逻辑 key，<b>SubflowRouter 扩展点</b>按实例组织解析：精确绑定 → 沿组织树 path 向上继承 → 默认兜底。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. 能力矩阵 -->
+  <h2 class="sec">二、能力矩阵</h2>
+  <section class="panel">
+    <table>
+      <thead><tr><th>BPMN 能力</th><th>里程碑</th><th>关键机制</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td class="k">顺序流 / 用户任务</td><td>M1</td><td>令牌推进、等待态即提交点</td><td class="chk">✔ 实测</td></tr>
+        <tr><td class="k">服务任务 delegate</td><td>M1</td><td>JavaDelegate 注册表（显式注册，非反射）</td><td class="chk">✔ 实测</td></tr>
+        <tr><td class="k">排他网关 + 条件</td><td>M1</td><td>手写表达式求值、default 边</td><td class="chk">✔ 实测</td></tr>
+        <tr><td class="k">并行网关 fork/join</td><td>M2</td><td>AND 语义、JOINING 令牌、incoming_count 计数</td><td class="chk">✔ 实测</td></tr>
+        <tr><td class="k">历史归档 RU/HI</td><td>M2</td><td>终态同事务幂等 upsert，含时长</td><td class="chk">✔ 实测</td></tr>
+        <tr><td class="k">边界定时器</td><td>M2.5</td><td>中断/非中断、可注入时钟、显式推进</td><td class="chk">✔ 实测</td></tr>
+        <tr><td class="k">多实例会签/或签</td><td>M3</td><td>MiScope 账本、completionCondition 收口</td><td class="chk">✔ 实测</td></tr>
+        <tr><td class="k">实例取消</td><td>M3</td><td>硬终止 + Terminated 归档</td><td class="chk">✔ 实测</td></tr>
+        <tr><td class="k">角色/岗位候选人</td><td>M4.1</td><td>AssigneeResolver 接 IAM、候选池、claim</td><td class="chk">✔ 实测</td></tr>
+        <tr><td class="k">抄送 CC</td><td>M4.2</td><td>只读旁路、已读追踪</td><td class="chk">✔ 实测</td></tr>
+        <tr><td class="k">转办/委派/加签</td><td>M4.3</td><td>动态临时任务、可嵌套、流转链台账</td><td class="chk">✔ 实测</td></tr>
+        <tr><td class="k">子流程 callActivity</td><td>M5.1</td><td>同步等待、父子实例、变量映射、嵌套</td><td class="chk">✔ 实测</td></tr>
+        <tr><td class="k">子流程组织路由</td><td>M5.2</td><td>SubflowRouter、绑定表、组织树继承</td><td class="chk">✔ 实测</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 3. 架构分层 -->
+  <h2 class="sec">三、架构：五层 crate</h2>
+  <section class="panel">
+    <p class="lead">分层清晰，依赖单向向下。中立内核（model）不认识任何数据库，可被 wasm / 嵌入式复用。</p>
+    <div class="layers">
+      <div class="layer"><div class="lnum">1</div><div class="lbody"><h4>中立内核<span class="crate">cmx-flow-model</span></h4><p>IR（arena/enum）、运行态 DTO、受控表达式/时长/候选人解析、4 个扩展点契约、RuntimeStore 契约。零 DB 依赖。</p></div><div class="lloc">1965 行</div></div>
+      <div class="layer"><div class="lnum">2</div><div class="lbody"><h4>BPMN 编译器<span class="crate">cmx-flow-bpmn</span></h4><p>BPMN 2.0 XML → ProcessDefinition IR。两趟编译、命名空间/方言无关、不支持元素显式报错。</p></div><div class="lloc">876 行</div></div>
+      <div class="layer"><div class="lnum">3</div><div class="lbody"><h4>令牌执行内核<span class="crate">cmx-flow-engine</span></h4><p>run_to_wait 推进循环、9 类节点执行臂、多实例/定时器/转签/子流程编排、InMemoryStore。引擎心脏。</p></div><div class="lloc">2164 行</div></div>
+      <div class="layer"><div class="lnum">4</div><div class="lbody"><h4>PG 持久化<span class="crate">cmx-flow-store-pg</span></h4><p>RuntimeStore 的 PostgreSQL 实现（接 cmx-database-pg）、聚合快照读写、PgIamAssigneeResolver、PgSubflowRouter。</p></div><div class="lloc">1458 行</div></div>
+      <div class="layer"><div class="lnum">5</div><div class="lbody"><h4>可视化演示<span class="crate">cmx-flow-demo</span></h4><p>内嵌 axum + 单页 HTML。7 个流程定义覆盖全部特性，数据落 fico 库 + IAM 接 cmx 库。端口 8090。</p></div><div class="lloc">892 行</div></div>
+    </div>
+  </section>
+
+  <!-- 4. 四个扩展点 -->
+  <h2 class="sec">四、贯穿设计：四个可注入扩展点</h2>
+  <section class="panel">
+    <p class="lead">这是整个引擎最一致的设计线索——凡是「引擎需要外部世界的东西」，都定义成 trait，宿主注入实现。生产接真实基础设施，测试用假实现，引擎本体永远中立可测。</p>
+    <div class="ext-grid">
+      <div class="ext"><div class="eh"><span class="en">JavaDelegate</span><span class="em">M1</span></div><p>serviceTask 的执行体。Java 靠类加载 + EL 反射；这里用显式注册表，无反射、类型安全。</p></div>
+      <div class="ext"><div class="eh"><span class="en">Clock</span><span class="em">M2.5</span></div><p>「现在几点」。生产 SystemClock，测试 TestClock 手动拨快——定时器逻辑确定性可复现，无需真实等待。</p></div>
+      <div class="ext"><div class="eh"><span class="en">AssigneeResolver</span><span class="em">M4.1</span></div><p>候选人表达式 → 真实用户集。生产接 cmx-iam（角色/岗位/部门反查），测试用固定映射。</p></div>
+      <div class="ext"><div class="eh"><span class="en">SubflowRouter</span><span class="em">M5.2</span></div><p>逻辑子流程 key + 组织 → 具体子流程。生产查绑定表 + 组织树继承，测试用假路由。</p></div>
+    </div>
+    <div class="callout brand"><b>为什么这条线索重要：</b>它让「44 个内存测试完全无外部依赖、毫秒级跑完」成为可能，也让引擎能被 wasm / 嵌入式 / 不同 IAM 体系复用——引擎只认 trait，不认具体实现。</div>
+  </section>
+
+  <!-- 5. 数据模型 -->
+  <h2 class="sec">五、数据模型：11 张表</h2>
+  <section class="panel">
+    <p class="lead">遵循硬约束：<code class="inl">cmx_flow_</code> 前缀、<b>无外键</b>（关联字段 + 索引替代）、UUID 主键、TIMESTAMPTZ、变量 JSONB。运行态 RU 与历史态 HI 分离，对齐 Flowable。</p>
+    <table>
+      <thead><tr><th>表</th><th>组</th><th>职责</th><th>里程碑</th></tr></thead>
+      <tbody>
+        <tr><td class="k">cmx_flow_instance</td><td><span class="badge b-ru">RU</span></td><td>流程实例（聚合根；M5 加父子/组织列）</td><td>M1 / M5</td></tr>
+        <tr><td class="k">cmx_flow_token</td><td><span class="badge b-ru">RU</span></td><td>令牌（执行指针；M2 加 JOINING、M5 加 WAITING_SUBFLOW）</td><td>M1 / M2 / M5</td></tr>
+        <tr><td class="k">cmx_flow_task</td><td><span class="badge b-ru">RU</span></td><td>用户任务（M3 加元素值、M4.3 加 owner/父/转签态）</td><td>M1 / M3 / M4.3</td></tr>
+        <tr><td class="k">cmx_flow_mi_scope</td><td><span class="badge b-ru">RU</span></td><td>多实例执行域（会签/或签账本）</td><td>M3</td></tr>
+        <tr><td class="k">cmx_flow_job</td><td><span class="badge b-ru">RU</span></td><td>定时器作业（边界定时器到期表）</td><td>M2.5</td></tr>
+        <tr><td class="k">cmx_flow_task_candidate</td><td><span class="badge b-ru">RU</span></td><td>任务候选人池（多人候选待认领）</td><td>M4.1</td></tr>
+        <tr><td class="k">cmx_flow_cc</td><td><span class="badge b-ru">RU</span></td><td>抄送记录（知会 + 已读）</td><td>M4.2</td></tr>
+        <tr><td class="k">cmx_flow_task_delegation</td><td><span class="badge b-ru">RU</span></td><td>转签台账（转办/加签/委派流转链）</td><td>M4.3</td></tr>
+        <tr><td class="k">cmx_flow_hi_instance</td><td><span class="badge b-hi">HI</span></td><td>历史实例（终态归档，含存续时长）</td><td>M2</td></tr>
+        <tr><td class="k">cmx_flow_hi_task</td><td><span class="badge b-hi">HI</span></td><td>历史任务（办结归档，含办理时长）</td><td>M2</td></tr>
+        <tr><td class="k">cmx_flow_subflow_binding</td><td><span class="badge b-cfg">配置</span></td><td>子流程组织绑定（路由数据源）</td><td>M5.2</td></tr>
+      </tbody>
+    </table>
+    <p class="note" style="margin-top:12px">另复用 M4.1 建的 IAM 侧表 <code class="inl">cmx_org</code>（组织树，物化 path）/ <code class="inl">cmx_position</code> / <code class="inl">cmx_user_position</code>，及现有 <code class="inl">cmx_user</code>/<code class="inl">cmx_role</code>/<code class="inl">cmx_user_role</code>——不重造身份体系。8 份迁移脚本，全部幂等（<code class="inl">CREATE ... IF NOT EXISTS</code> / <code class="inl">ADD COLUMN IF NOT EXISTS</code>）。</p>
+  </section>
+
+  <!-- 6. 令牌态机 -->
+  <h2 class="sec">六、令牌状态机（引擎心脏）</h2>
+  <section class="panel">
+    <p class="lead">令牌是流经流程图的执行指针。它的状态迁移就是引擎的推进逻辑——每一种「挂起等待」都对应一次事务提交点。</p>
+    <div class="diagram">
+                          ┌──────────────────────────────────────────────┐
+                          ▼                                              │
+   startEvent ──►  <span class="t">Active</span> ──推进──►  ┬─ userTask ────►  <span class="t">Waiting</span> ──办结──┘   <span class="note">（等人办）</span>
+     （可推进）                    ├─ 并行 join ──►  <span class="t">Joining</span> ─兄弟到齐┘   <span class="note">（等兄弟令牌）</span>
+                                  ├─ callActivity ►  <span class="s">WaitingSubflow</span> ─子完成┘ <span class="note">（等子实例·M5）</span>
+                                  └─ endEvent ───►  <span class="t">Ended</span>              <span class="note">（消费令牌）</span>
+
+   所有令牌 Ended → 实例 Completed；实例取消 → 全令牌 Ended + Terminated
+    </div>
+    <div class="callout ok"><b>三种「挂起等待」的统一与区别：</b><code class="inl">Waiting</code> 等人工办结、<code class="inl">Joining</code> 等兄弟令牌到齐（结构性阻塞，同段内消解）、<code class="inl">WaitingSubflow</code> 等子实例完成。它们并列却各有唤醒信号，天然支持「并行网关下并发调多个子流程」这类组合。</div>
+  </section>
+
+  <!-- 7. 质量 -->
+  <h2 class="sec">七、质量与验证</h2>
+  <section class="panel">
+    <div class="metrics">
+      <div class="metric"><div class="mn">88</div><div class="ml">测试全绿<br>（含 11 PG 门控）</div></div>
+      <div class="metric"><div class="mn">0</div><div class="ml">clippy 告警<br>（flow 全家）</div></div>
+      <div class="metric"><div class="mn">~7.4k</div><div class="ml">库代码行<br>（5 crate）</div></div>
+      <div class="metric"><div class="mn">100%</div><div class="ml">里程碑<br>端到端实测</div></div>
+    </div>
+    <h3>三层验证，每个里程碑都走完</h3>
+    <ul class="tight">
+      <li><b>内存态测试</b>（InMemoryStore + 假扩展点）：毫秒级、零外部依赖、每次改动全回归。含单元测试 29（model 14 + bpmn 15）+ 集成 48。</li>
+      <li><b>PG 门控测试</b>（<code class="inl">#[ignore]</code> + TEST_PG_URL）：真连 PostgreSQL 验证落库、<b>重启恢复</b>（全新 Engine 从库继续推进）、组织路由查询。11 个。</li>
+      <li><b>Demo 端到端</b>：内嵌 axum + 前端可视化，每个特性都在真实浏览器 + fico/cmx 库跑通并 curl 验证。</li>
+    </ul>
+    <div class="callout amber"><b>「重启恢复」是引擎可靠性的试金石。</b>多次用<b>全新 Engine 实例</b>加载 PG 里的半成品流程继续推进——会签计数、定时器到期、子流程父子唤醒都能从库精确恢复，证明状态全落库、无进程内隐藏态。</div>
+  </section>
+
+  <!-- 8. 关键设计决策 -->
+  <h2 class="sec">八、关键设计决策 & 踩过的坑</h2>
+  <section class="panel">
+    <h3>决策</h3>
+    <ul class="tight">
+      <li><b>快照式候选人解析</b>（M4.1）：令牌到达时解析一次落库，不实时算——避免「审批中角色变更导致待办凭空消失」，可审计可复现。</li>
+      <li><b>可注入时钟先重构再加功能</b>（M2.5）：把散落的 <code class="inl">now()</code> 改为参数传值，先跑全回归证明无损，再叠定时器——隔离重构风险与新功能风险。</li>
+      <li><b>加签共享父令牌</b>（M4.3）：临时任务与原任务共用令牌（令牌不动），父任务挂起 SUSPENDED，临时办结后恢复——不产生游离令牌，可嵌套。</li>
+      <li><b>子流程复用完整内核</b>（M5.1）：子流程就是「被父令牌等待着的普通实例」，不为它另写执行逻辑——所以子流程能用会签/定时器/转签全部能力。</li>
+    </ul>
+    <h3>踩过的坑（已记入项目记忆）</h3>
+    <ul class="tight">
+      <li><b>子完成经 complete_task 须回调唤醒父</b>（M5.1）：子流程走 complete_task 完成时，必须判「已完成 + 有父」再调 complete_subflow，否则子完成但父永久挂起。</li>
+      <li><b>completionCondition 要读实例变量</b>（M3）：过半/驳回条件求值需实例变量做底，用下标定位 scope + 不相交字段借用。</li>
+      <li><b>tokio-postgres 严格类型</b>：可空 TIMESTAMPTZ/BIGINT/JSONB 绑 NULL 必须带类型标记（NullTyped），裸 Null 会 WrongType。</li>
+      <li><b>迁移编号冲突</b>（M5.1/M4.3 都占 003）：M5.1 重编号 004 避冲突。</li>
+    </ul>
+  </section>
+
+  <!-- 9. Demo 全景 + 展望 -->
+  <h2 class="sec">九、演示全景 & 后续可选方向</h2>
+  <section class="panel">
+    <h3>Demo 覆盖（http://127.0.0.1:8090，7 份流程定义）</h3>
+    <table>
+      <thead><tr><th>流程</th><th>演示的能力</th></tr></thead>
+      <tbody>
+        <tr><td class="k">信用额度审批</td><td>M1 分支判断 + serviceTask 算风险等级</td></tr>
+        <tr><td class="k">报销会签审批</td><td>M3 并行会签、过半即通过、剩余作废</td></tr>
+        <tr><td class="k">限时审批</td><td>M2.5 边界定时器（20s 催办 / 30s 升级），真实时间触发</td></tr>
+        <tr><td class="k">候选人认领审批</td><td>M4.1 岗位直派 + 角色候选池 claim 认领（接 cmx 库 IAM）</td></tr>
+        <tr><td class="k">报销主流程（+2 子流程）</td><td>M5.1 子流程同步等待 + M5.2 按组织路由（总部/北京继承/上海各跑不同子）</td></tr>
+      </tbody>
+    </table>
+    <p class="note" style="margin-top:8px">另有转办/委派/加签的流转链、「抄送我的」列表、子流程内嵌路径图等交互。</p>
+    <h3>后续可选方向（未实现，非本阶段目标）</h3>
+    <ul class="tight">
+      <li><b>定时器 timeCycle</b>：循环重复触发（当前只做相对时长单次）。</li>
+      <li><b>子流程多实例</b>：对一个集合并发调 N 个子流程（复用 M3 机制）。</li>
+      <li><b>流程版本化 + 在跑实例迁移</b>：部署产生版本、老实例钉版本、支持迁移。</li>
+      <li><b>委派办结回 owner 二次确认</b>、<b>抄送站内信/邮件推送</b>、<b>基于岗位职级的自动逐级升级</b>。</li>
+    </ul>
+  </section>
+
+  <footer>
+    <div><b>cmx-flow 流程引擎</b> · 用 Rust 复刻 Flowable 语义的人本审批流引擎</div>
+    <div>M1 顺序 · M2 并行/历史 · M2.5 定时器 · M3 多实例/取消 · M4.1 候选人 · M4.2 抄送 · M4.3 转签 · M5.1 子流程 · M5.2 组织路由</div>
+    <div>阶段性总结 · 生成于 2026-07-18 · 9 里程碑全部落地实测</div>
+  </footer>
+
+</div>
+</body>
+</html>

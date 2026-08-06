@@ -1,0 +1,48 @@
+[package]
+name = "cmx-flow-demo"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# cmx-flow 流程引擎的自包含可交互演示（独立可执行程序，不接入生产 web-server）。
+# 内嵌 axum：提供启动流程/列任务/办结任务/查实例的 REST API，前端单页 HTML 可视化。
+# 数据落 PG（默认 fico 库）。用法：
+#   cargo run -p cmx-flow-demo
+#   浏览器打开 http://127.0.0.1:8080
+
+[[bin]]
+name = "cmx-flow-demo"
+path = "src/main.rs"
+
+[dependencies]
+# 内部依赖 - 流程引擎中立模型（变量/运行态类型）
+cmx-flow-model = { workspace = true }
+# 内部依赖 - BPMN 编译器
+cmx-flow-bpmn = { workspace = true }
+# 内部依赖 - 令牌执行内核
+cmx-flow-engine = { workspace = true }
+# 内部依赖 - PG 持久化
+cmx-flow-store-pg = { workspace = true }
+# 内部依赖 - 流程定义持久化（设计器：草稿/发布/装载）
+cmx-flow-def = { workspace = true }
+# 内部依赖 - tokio-postgres DB 层（注册数据源）
+cmx-database-pg = { workspace = true }
+# 内部依赖 - DataValue（播种 IAM 时读查询结果）
+cmx-core = { workspace = true }
+
+# Web 框架
+axum = { workspace = true }
+# HTTP 中间件（静态资源/CORS）
+tower-http = { workspace = true }
+# 异步运行时
+tokio = { workspace = true }
+# 序列化框架
+serde = { workspace = true }
+# JSON
+serde_json = { workspace = true }
+# 日志追踪
+tracing = { workspace = true }
+# 日志订阅器（demo 自带 tracing 输出）
+tracing-subscriber = { workspace = true }
+# 异步 trait（实现 JavaDelegate）
+async-trait = { workspace = true }

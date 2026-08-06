@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  演示流程：信用额度审批（credit_approval）
+  拓扑（带金额分支判断）：
+    start ─► 计算风险等级(serviceTask) ─► 客户经理初审(userTask)
+      ─► 金额判断(exclusiveGateway)
+            ├─ ${amount > 50000}  ─► 风控审批(userTask) ─► 分行行长审批(userTask) ─► 结束
+            └─ default(小额)      ─────────────────────────────────────────────► 结束
+  分支要素：serviceTask(delegate 算 riskLevel) + exclusiveGateway + 条件边 + default。
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:flowable="http://flowable.org/bpmn"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  targetNamespace="http://cmx/flow/demo">
+  <bpmn:process id="credit_approval" name="信用额度审批" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="提交申请"/>
+    <bpmn:sequenceFlow id="f0" sourceRef="start" targetRef="calc_risk"/>
+
+    <bpmn:serviceTask id="calc_risk" name="计算风险等级"
+                      flowable:delegateExpression="${riskDelegate}"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="calc_risk" targetRef="manager"/>
+
+    <bpmn:userTask id="manager" name="客户经理初审" flowable:assignee="经理"/>
+    <bpmn:sequenceFlow id="f2" sourceRef="manager" targetRef="gw_amount"/>
+
+    <bpmn:exclusiveGateway id="gw_amount" name="金额判断" default="f_small"/>
+
+    <bpmn:sequenceFlow id="f_big" sourceRef="gw_amount" targetRef="risk">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${amount &gt; 50000}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f_small" sourceRef="gw_amount" targetRef="done"/>
+
+    <bpmn:userTask id="risk" name="风控审批" flowable:assignee="风控专员"/>
+    <bpmn:sequenceFlow id="f3" sourceRef="risk" targetRef="director"/>
+
+    <bpmn:userTask id="director" name="分行行长审批" flowable:assignee="行长"/>
+    <bpmn:sequenceFlow id="f4" sourceRef="director" targetRef="done"/>
+
+    <bpmn:endEvent id="done" name="审批完成"/>
+
+  </bpmn:process>
+</bpmn:definitions>

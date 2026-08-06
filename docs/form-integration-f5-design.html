@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cmx-flow 表单集成 · F5 详细设计 · 通用表单宿主真单据</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --ink:#e6edf3; --muted:#9198a1;
+    --line:#30363d; --brand:#4c8dff; --brand-d:#1f6feb; --ok:#3fb950; --warn:#d29922;
+    --new:#db6d28; --purple:#a371f7; --pink:#f778ba; --cyan:#39c5cf; --red:#f85149;
+    --code-bg:#0b0f16;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 28px 120px}
+  h1{font-size:29px;font-weight:800;letter-spacing:-.5px;margin:0 0 6px;
+    background:linear-gradient(100deg,#f778ba,#a371f7 50%,#4c8dff);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .sub{color:var(--muted);font-size:15px;margin:0 0 8px}
+  .tag{display:inline-block;font-size:12px;font-weight:700;padding:2px 9px;border-radius:20px;border:1px solid var(--line);color:var(--muted);margin-right:6px}
+  .tag.k{color:var(--ok);border-color:#1f512b}
+  .tag.n{color:var(--new);border-color:#5a3418}
+  .tag.p{color:var(--purple);border-color:#3d2a63}
+  h2{font-size:22px;font-weight:800;margin:50px 0 14px;padding-top:18px;border-top:1px solid var(--line)}
+  h2 .n{font-size:13px;color:var(--muted);font-weight:600;margin-left:8px}
+  h3{font-size:17px;font-weight:700;margin:28px 0 10px;color:#cdd9e5}
+  h4{font-size:14.5px;font-weight:700;margin:18px 0 8px;color:var(--cyan)}
+  p{margin:10px 0}
+  code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:13px;
+    background:var(--code-bg);border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#a5d6ff}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:16px 18px;overflow:auto;margin:14px 0}
+  pre code{background:none;border:0;padding:0;color:#c9d1d9;font-size:12.5px;line-height:1.7;display:block}
+  .kw{color:#ff7b72} .st{color:#a5d6ff} .cm{color:#8b949e;font-style:italic} .fn{color:#d2a8ff} .nm{color:#79c0ff} .pu{color:#ffa657} .ty{color:#7ee787}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:16px 0}
+  .card.ok{border-color:#1f512b;background:linear-gradient(180deg,#12241a,var(--panel))}
+  .card.warn{border-color:#5a4518;background:linear-gradient(180deg,#241f12,var(--panel))}
+  .card.brand{border-color:#1f3d6f;background:linear-gradient(180deg,#111d33,var(--panel))}
+  .card.pink{border-color:#5a2848;background:linear-gradient(180deg,#2a1220,var(--panel))}
+  .grid{display:grid;gap:14px}
+  .grid.c2{grid-template-columns:1fr 1fr}
+  @media(max-width:820px){.grid.c2{grid-template-columns:1fr}}
+  ul,ol{margin:10px 0;padding-left:22px} li{margin:5px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-weight:700;color:#cdd9e5}
+  td code{font-size:12px}
+  .badge{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:5px}
+  .badge.have{background:#12261a;color:var(--ok);border:1px solid #1f512b}
+  .badge.new{background:#2a1d12;color:var(--new);border:1px solid #5a3418}
+  .badge.reuse{background:#221a2e;color:var(--purple);border:1px solid #3d2a63}
+  .step{display:flex;gap:14px;margin:12px 0;align-items:flex-start}
+  .step-n{flex:0 0 28px;height:28px;border-radius:50%;background:var(--pink);color:#2a0a1c;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px}
+  .step-b{flex:1}
+  .lead{font-size:16px;color:#cdd9e5;border-left:3px solid var(--pink);padding-left:14px;margin:16px 0}
+  .kv{color:var(--muted);font-size:13px}
+  .hl{color:var(--brand);font-weight:600}
+  .hl2{color:var(--purple);font-weight:600}
+  .hlg{color:var(--ok);font-weight:600}
+  .hlp{color:var(--pink);font-weight:600}
+  em{color:var(--warn);font-style:normal;font-weight:600}
+  .flow-diagram{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:20px;margin:16px 0;font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.85;color:#c9d1d9;overflow:auto;white-space:pre}
+  .toc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 22px;margin:22px 0}
+  .toc a{color:#a5d6ff;text-decoration:none;font-size:14px;display:inline-block;padding:3px 14px 3px 0}
+  .toc a:hover{color:#fff}
+  .pill{font-size:11px;padding:1px 6px;border-radius:4px;background:#1f2733;color:var(--muted);border:1px solid var(--line);margin-left:6px}
+  .chk{color:var(--ok);font-weight:800}
+  .filename{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--cyan);background:#0e1a1c;border:1px solid #16343a;border-radius:5px;padding:1px 7px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>F5 · 通用表单宿主真单据</h1>
+<p class="sub">补上 F3/F4 刻意留的最大占位：办理表单从「变量投影只读」升级为元数据驱动的真实业务单据（拉真 cf_*、动态字段、可改可存、按环节收紧可写字段）</p>
+<p><span class="tag p">补占位</span><span class="tag k">复用 doc 契约</span><span class="tag">零引擎改动</span><span class="tag n">纯前端为主</span></p>
+
+<div class="card brand">
+<b>F5 目标：</b>把 task-form 的业务单据区，从 F3/F4 的<span class="hl">「实例变量只读投影」</span>兜底，升级为<span class="hlp">元数据驱动渲染真实业务单据</span>——按 formKey 绑定的单据坐标 + bizId 拉真实 cf_* 单据（含 N 层主从明细）、动态生成字段/表格、`formMode=edit` 可改并真存回业务表、`formFields` 白名单收紧可写字段。<span class="hlg">复用 doc-loader 已验证的 <code>CmxMasterSlave.loadDoc</code> + <code>ChangeSetCollector</code> 契约</span>，不重造取数/渲染/存数。
+<div style="margin-top:10px;font-size:13px;color:var(--muted)">
+<b>核实结论（已读代码）：</b>doc 的通用契约<span class="hlg">全部现成可复用</span>——① 载一条单据 = <code>ms.loadDoc({domain,application,module,file, filter:'字段:值'})</code>（voucher-detail.html 实证：<code>filter:'doc_no:'+docNo</code>）；② 存改动 = <code>new ChangeSetCollector(ms).attach()</code> → <code>.export()</code> → <code>saveDocData(null, def, {saveMode:'merge', changes})</code>；③ readDef 坐标 = <code>{domain, application, module, file, dbId?, apiPath?, binary?}</code>；④ 真实可绑单据 = 会计凭证（<code>cmxfico_doc_meta</code>，主从多层）。F5 = 把这套接进 task-form 的 content，按任务上下文（bizId + formMode + formFields）参数化。</div>
+</div>
+
+<div class="toc">
+<a href="#s1">1 · 范围边界</a>
+<a href="#s2">2 · 现状：占位与真契约</a>
+<a href="#s3">3 · 架构决策：内联 vs 委托</a>
+<a href="#s4">4 · 载入：按 bizId 拉真单据</a>
+<a href="#s5">5 · 渲染：元数据驱动字段</a>
+<a href="#s6">6 · 可写收紧：formMode + formFields</a>
+<a href="#s7">7 · 存回：改动收集 + 保存</a>
+<a href="#s8">8 · 发起态：新建真单据</a>
+<a href="#s9">9 · 注册表扩展 + 验收</a>
+<a href="#s10">10 · 交付物 · 风险</a>
+</div>
+
+<!-- 1 -->
+<h2 id="s1">1 · 范围边界 <span class="n">F5 做什么、不做什么</span></h2>
+<div class="grid c2">
+<div class="card ok">
+<h4><span class="chk">✓</span> F5 做</h4>
+<ul>
+<li>task-form content 区接 <code>CmxMasterSlave.loadDoc</code> 拉真单据</li>
+<li>元数据驱动渲染字段/主从表格（复用 doc 的 meta）</li>
+<li><code>formMode=readonly/approve</code> 只读审阅、<code>edit</code> 可改</li>
+<li><code>formFields</code> 白名单：只允许改指定字段</li>
+<li>edit 存回 = ChangeSetCollector → saveDocData（真存 cf_*）</li>
+<li>发起态：新建真单据（loadDoc 空记录 → 填 → 存 → 起流程）</li>
+<li>注册表加单据坐标字段（domain/app/module/file）</li>
+</ul>
+</div>
+<div class="card">
+<h4>✕ F5 不做（够用即止）</h4>
+<ul>
+<li>doc-loader 的全部高级特性（懒加载深层树、二进制通道调优）——够用即接</li>
+<li>字段级权限（超 formFields 的细粒度）——留后续</li>
+<li>单据自身的业务校验规则引擎——复用 doc 既有校验</li>
+<li>引擎 / 编译器 / F1-F4 已定的后端——不碰</li>
+<li>html-pages 类表单的单据渲染——它本就由页自己管（F3 已通）</li>
+</ul>
+</div>
+</div>
+<div class="card"><b>可验收的一句话：</b>F5 完成后，点开一条绑了真实凭证的待办 → content 区显示<span class="hl">完整的会计凭证（表头 + N 行分录明细，真实 cf_* 数据）</span>，只读环节不可改、可编辑环节能改指定字段并「保存」真写回业务表，审批照旧在 property 办结。发起态能<span class="hl">新建一张空白凭证填完提交起流程</span>。</div>
+
+<!-- 2 -->
+<h2 id="s2">2 · 现状：占位与真契约 <span class="n">要替换什么、复用什么</span></h2>
+
+<h3>2.1 要替换的占位（task-form.js:222-259）</h3>
+<pre><code><span class="cm">// 现状：把实例变量当"业务字段"平铺只读——不是真单据</span>
+<span class="kw">const</span> bizRows = <span class="ty">Object</span>.entries(vars)
+  .filter(([k]) =&gt; !['bizTable','bizId'].includes(k))
+  .map(([k,v]) =&gt; <span class="st">`&lt;div class="tf-kv"&gt;&lt;span&gt;${k}&lt;/span&gt;&lt;b&gt;${v}&lt;/b&gt;&lt;/div&gt;`</span>)  <span class="cm">// ← 占位</span></code></pre>
+<p class="kv">这只展示了塞进流程变量的几个决策字段，不是业务单据本体。F5 用真单据渲染替换这块。</p>
+
+<h3>2.2 可复用的真契约（doc-loader / voucher-detail 实证）</h3>
+<table>
+<tr><th>能力</th><th>调用</th><th>出处</th></tr>
+<tr><td>载一条单据</td><td><code>ms.loadDoc({domain,application,module,file, filter:'doc_no:'+id})</code></td><td>voucher-detail.html initPage</td></tr>
+<tr><td>元数据 → 模型</td><td><code>loadDoc</code> 内部拉 <code>/api/doc/meta</code> 建 CmxMasterSlave（N 层 + 列）</td><td>doc-loader loadMeta</td></tr>
+<tr><td>改动收集</td><td><code>new C.ChangeSetCollector(ms).attach()</code></td><td>doc-loader:336</td></tr>
+<tr><td>存回</td><td><code>collector.export()</code> → <code>saveDocData(null, def, {saveMode:'merge', changes})</code></td><td>doc-loader:360-375</td></tr>
+<tr><td>坐标</td><td><code>{domain, application, module, file, dbId?, apiPath?, binary?}</code></td><td>doc-loader readDef:413</td></tr>
+<tr><td>类库来源</td><td><code>globalThis.__cmxDataComp</code>（CmxMasterSlave / ChangeSetCollector / saveDocData）</td><td>门户 import-ui5-and-app</td></tr>
+</table>
+<div class="card ok"><b>结论：</b>取数、建模、渲染、收集、存回<span class="hl">五个环节全部现成</span>。F5 不写任何 SQL、不新增后端端点（doc 端点已在），纯粹是<span class="hlp">把 doc-loader 的载入/存回能力，按任务上下文参数化后接进 task-form 的 content 区</span>。</div>
+
+<!-- 3 -->
+<h2 id="s3">3 · 架构决策：内联 vs 委托 <span class="n">F5 最关键的选择</span></h2>
+
+<p class="lead">task-form 的 content 要渲染真单据，有两条路。这个选择决定代码量、隔离性、与 F3 html 路径的一致性。</p>
+
+<div class="grid c2">
+<div class="card">
+<h4>方案 A：内联渲染 <span class="badge new">不选</span></h4>
+<p>把 doc-loader 的 loadMeta/渲染/collector 代码 fork 进 task-form.js，content 自己建 CmxMasterSlave + grid。</p>
+<ul>
+<li>✕ 复制几百行 doc 渲染逻辑，双份维护</li>
+<li>✕ 与 doc-loader 演进漂移</li>
+<li>✓ 单页自包含</li>
+</ul>
+</div>
+<div class="card pink">
+<h4>方案 B：委托 doc-loader 作 content 视图 <span class="badge have">F5 选这个</span></h4>
+<p>content 视图直接指向<span class="hl">现有 <code>portal.doc.doc-loader</code></span>（native_pages），props 传单据坐标 + <code>filter</code>；审批控制台仍在 property（task-form）。</p>
+<ul>
+<li>✓ <span class="hlg">零复制</span>——doc-loader 原样复用，它已实证</li>
+<li>✓ 与 F3 的 <b>html-pages 路径同构</b>（content 换页，property 办理）</li>
+<li>✓ doc-loader 升级自动惠及流程</li>
+<li>△ 需给 doc-loader 补一个「单记录 + formMode/formFields」参数入口</li>
+</ul>
+</div>
+</div>
+
+<div class="card brand"><b>决策：方案 B（委托），与 F3 html 路径完全同构。</b>回顾 F3 的统一架构——<span class="hl">审批控制台永远在 property（task-form），content 区按表单类型换不同页</span>：native 简单展示走 task-form content、html 表单走 html_pages、<span class="hlp">真单据走 doc-loader</span>。三类表单一个骨架。F5 只需：① 待办中心的 <code>FORM_MAP.kind</code> 增加 <code>'doc'</code> 类型，content 视图指 <code>portal.doc.doc-loader</code> 并传坐标 + <code>filter:'主键:bizId'</code>；② 给 doc-loader 补 <code>formMode</code>（只读/可编辑）与 <code>formFields</code>（白名单）两个 props 的消费（薄改）。审批、办结、意见留痕全部不动（property 侧 F3 已成）。</div>
+
+<h3>3.1 三类表单的统一分派（FORM_MAP.kind）</h3>
+<table>
+<tr><th>kind</th><th>content 视图</th><th>property（不变）</th><th>适用</th></tr>
+<tr><td><code>native</code></td><td>task-form content（变量投影/简单展示）</td><td rowspan="3">task-form property：审批控制台 + 轨迹 + 意见（F3 已成）</td><td>轻量/无正式单据</td></tr>
+<tr><td><code>html</code></td><td>html_pages 业务表单（F3 已成）</td><td>特殊交互表单</td></tr>
+<tr><td><code>doc</code> <span class="badge new">F5 新增</span></td><td><b>doc-loader</b>（元数据驱动真单据）</td><td>标准主从单据（凭证/请款/报销）</td></tr>
+</table>
+
+<!-- 4 -->
+<h2 id="s4">4 · 载入：按 bizId 拉真单据 <span class="n">单记录 recipe</span></h2>
+
+<p class="lead">doc-loader 原本载「整个单据集」，F5 要它载「一条指定单据」。关键是 <code>filter</code> 参数——voucher-detail 已实证。</p>
+
+<h3>4.1 待办中心分派 doc 类型</h3>
+<pre><code><span class="cm">// todo-center.js openTaskForm：kind==='doc' 分支（对标现有 html 分支）</span>
+<span class="kw">if</span> (f.kind === <span class="st">'doc'</span>) {
+  <span class="kw">const</span> docProps = {
+    domain: f.domain, application: f.application, module: f.module, file: f.file,
+    <span class="nm">filter</span>: <span class="st">`${f.pkField || 'id'}:${t.bizId}`</span>,   <span class="cm">// ← 单记录定位</span>
+    <span class="nm">formMode</span>: t.formMode,                        <span class="cm">// readonly|approve→只读, edit→可改</span>
+    <span class="nm">formFields</span>: (t.formFields || []).join(','),  <span class="cm">// 可写白名单</span>
+    <span class="nm">dbId</span>: f.dbId || '', apiPath: f.apiPath || '',
+  }
+  contentRegion = { caption: <span class="st">'业务单据'</span>, icon: <span class="st">'document'</span>,
+    views: [{ id: ..., type: <span class="st">'native_pages'</span>, native_page: <span class="st">'portal.doc.doc-loader'</span>,
+              view: <span class="st">'content'</span>, props: docProps }] }
+}
+<span class="cm">// property 仍是 task-form 审批控制台（不变）</span></code></pre>
+
+<h3>4.2 doc-loader 侧：filter 已支持，formMode 待补</h3>
+<p>doc-loader 的 <code>readDef</code> 已读 domain/app/module/file/dbId/apiPath。F5 给它补读 <code>filter</code>（若未透传给 loadDoc 则补一行）+ <code>formMode</code>/<code>formFields</code>（§6 消费）。<code>loadDoc</code> 带 filter 载一条已由 voucher-detail 证明可行。</p>
+
+<div class="card warn"><b>已核实（研究确认）：</b>① doc-loader 内部实为 <code>ms.setDataSet(dsMap)</code> + 显式 <code>new ChangeSetCollector(ms).attach()</code> 两步；但 voucher-detail.html 用的 <code>ms.loadDoc(def)</code> 是「载入+建集器」一步到位的便捷入口，F5 优先用它。② 主键字段名随单据不同（凭证根层 <code>cv_batch</code> 的 <code>id</code>）——注册表存 <code>pkField</code> 显式指定，filter 用它拼 <code>id:&lt;bizId&gt;</code>，不猜。③ <b>真实可绑单据是会计凭证</b>（<code>{fi, cmxfico, gl, cmxfico_doc_meta_v2.json}</code>，dbId=fico-db，根层 cv_batch，4 层主从），<code>cf_pay_request</code> 只是 F3 假想夹具、并非已发布定义——F5 验收改用真凭证。</div>
+
+<h3>4.3 一步载入 recipe（voucher-detail 实证）</h3>
+<pre><code><span class="cm">// 载一条指定单据：filter='主键:值' + limit:1 + depth:50（全层）</span>
+<span class="kw">const</span> loadDef = {
+  domain: <span class="st">'fi'</span>, application: <span class="st">'cmxfico'</span>, module: <span class="st">'gl'</span>,
+  doc: <span class="st">'cmxfico'</span>, dbId: <span class="st">'fico-db'</span>, binary: <span class="kw">true</span>,
+  apiPath: <span class="st">'/api/doc/data/sqlx-zmc-msgpack'</span>, limit: 1, depth: 50,
+  filter: <span class="st">`${pkField || 'id'}:${bizId}`</span>,      <span class="cm">// ← 单记录定位</span>
+}
+<span class="kw">await</span> ms.<span class="fn">loadDoc</span>(loadDef)   <span class="cm">// 拉 meta + 拉那一条各层行 + 建 collector，一步到位</span></code></pre>
+
+<!-- 5 -->
+<h2 id="s5">5 · 渲染：元数据驱动字段 <span class="n">零渲染代码</span></h2>
+
+<p class="lead">这一步 F5 <em>不写任何渲染代码</em>——doc-loader 已经做完了：拉 <code>/api/doc/meta</code> → 得到 N 层 + 每层列定义（id/caption/type/editMode/width）→ 建 CmxMasterSlave + 每层一个 grid → <code>setFlatData</code> 灌数。</p>
+
+<div class="flow-diagram">
+  doc-loader content(ctx)  ← props: {坐标 + filter + formMode + formFields}
+    │
+    ├─ readDef(ctx) → {domain,application,module,file,filter,formMode,formFields}
+    │
+    ├─ ms.loadDoc({...def})           ← 一次调用完成：
+    │    ├─ GET /api/doc/meta          → 层数 N、各层列、主从键
+    │    ├─ POST /api/doc/data/*       → 按 filter 载"那一条"单据的各层行
+    │    └─ 建 CmxMasterSlave + 逐层 grid + setFlatData
+    │
+    └─ 渲染：表头表单 + N 个明细 grid（编辑态由 §6 的 formMode/formFields 决定）
+       —— 全部现成，F5 不碰渲染逻辑
+</div>
+
+<p class="kv">会计凭证例：表头（凭证号/日期/摘要/制单人）+ 分录明细 grid（科目/借方/贷方/辅助核算）。这些字段和主从关系全从 <code>cmxfico_doc_meta</code> 来，doc-loader 自动渲染。</p>
+
+<!-- 6 -->
+<h2 id="s6">6 · 可写收紧：formMode + formFields <span class="n">F5 给 doc-loader 补的薄改</span></h2>
+
+<p class="lead">这是 F5 对 doc-loader 唯一实质性的功能补充：让它按流程任务的上下文，控制"能不能改、能改哪些字段"。</p>
+
+<h3>6.1 formMode → 整体读写</h3>
+<table>
+<tr><th>formMode</th><th>doc-loader 行为</th></tr>
+<tr><td><code>readonly</code> / <code>approve</code></td><td>所有 grid <code>editable=false</code>、表单只读（审阅态，绝大多数审批环节）</td></tr>
+<tr><td><code>edit</code></td><td>允许编辑，但受 formFields 白名单收紧（§6.2）</td></tr>
+</table>
+<p class="kv">doc-loader 的 grid 已有 editable 选项（InteractionController 的 editable 开关）；表单区列的 editMode 同理。F5 加一个「按 formMode 统一压只读」的开关。</p>
+
+<h3>6.2 formFields → 字段级白名单</h3>
+<pre><code><span class="cm">// doc-loader 建列模型时，若有 formFields 白名单：不在名单内的列强制 editMode='readonly'</span>
+<span class="kw">function</span> <span class="fn">applyFieldWhitelist</span>(colModel, formFields) {
+  <span class="kw">if</span> (!formFields || !formFields.length) <span class="kw">return</span>   <span class="cm">// 空 = 不限制(edit 下全可改)</span>
+  <span class="kw">const</span> allow = <span class="kw">new</span> <span class="ty">Set</span>(formFields)
+  colModel.members.forEach((col) =&gt; {
+    <span class="kw">if</span> (!allow.has(col.id)) col.editMode = <span class="st">'readonly'</span>   <span class="cm">// 白名单外只读</span>
+  })
+}</code></pre>
+<p><code>formFields</code> 来自 userTask 的 <code>cmx:formFields</code>（F2 已解析进 IR、经 /tasks/my 带到待办）。例：某环节只允许改「摘要」和「审批金额」，其余分录只读——白名单 <code>summary,approve_amount</code>。</p>
+
+<div class="card"><b>为什么放 doc-loader 而非 task-form：</b>字段可写性是<span class="hl">渲染层的事</span>，必须在建列模型时施加。task-form 的 property 审批控制台够不着 content 里的 grid 列。所以 formMode/formFields 作为 props 传给 doc-loader，由它在建模时消费。这也保持了「content 自管渲染、property 自管审批」的干净分层。</div>
+
+<!-- 7 -->
+<h2 id="s7">7 · 存回：改动收集 + 保存 <span class="n">edit 环节真写 cf_*</span></h2>
+
+<p class="lead">可编辑环节办结前，若单据被改了，要真存回业务表。复用 doc-loader 的 ChangeSetCollector（doc-loader:336/360 实证）。</p>
+
+<h3>7.1 存回时机：办结前自动存</h3>
+<div class="step"><div class="step-n">1</div><div class="step-b">
+<b>办理人在可编辑单据上改了字段</b>（doc-loader 的 ChangeSetCollector 自动追踪脏数据）。</div></div>
+<div class="step"><div class="step-n">2</div><div class="step-b">
+<b>点 property 区「同意」办结。</b>task-form 的 complete 先<span class="hl">通知 content 的 doc-loader 存单据</span>，再调 flow complete。</div></div>
+<div class="step"><div class="step-n">3</div><div class="step-b">
+<b>跨页存单据的桥</b>：complete 前广播一个 <code>cmx-flow-before-complete</code> 事件；doc-loader 监听 → 若脏则 <code>collector.export()</code> → <code>saveDocData(...)</code> → 回执。task-form 等存完再 flow complete。</div></div>
+
+<pre><code><span class="cm">// doc-loader 侧：监听办结前事件，脏则先存单据（409冲突/422校验要处理）</span>
+window.addEventListener(<span class="st">'cmx-flow-before-complete'</span>, <span class="kw">async</span> (e) =&gt; {
+  <span class="kw">if</span> (!state.collector || !state.collector.<span class="fn">isDirty</span>()) <span class="kw">return</span> ack(e, {saved:<span class="kw">false</span>})
+  <span class="kw">const</span> changes = state.collector.<span class="fn">export</span>()
+  <span class="kw">try</span> {
+    <span class="kw">const</span> r = <span class="kw">await</span> <span class="fn">saveDocData</span>(<span class="kw">null</span>, def, {saveMode:<span class="st">'merge'</span>, changes})
+    state.collector.<span class="fn">refreshBaselines</span>(r.updatedAt); state.collector.<span class="fn">reset</span>()
+    ack(e, {saved:<span class="kw">true</span>})
+  } <span class="kw">catch</span> (err) {
+    <span class="kw">if</span> (err.conflict) ack(e, {saved:<span class="kw">false</span>, error:<span class="st">'单据已被他人修改，请刷新'</span>})  <span class="cm">// 409</span>
+    <span class="kw">else if</span> (err.violations) ack(e, {saved:<span class="kw">false</span>, error:<span class="fn">formatViolations</span>(err.violations)})  <span class="cm">// 422</span>
+    <span class="kw">else</span> ack(e, {saved:<span class="kw">false</span>, error:err.message})
+  }
+})</code></pre>
+
+<div class="card warn"><b>时序细节：</b>「先存单据再办结」的顺序保证——单据存失败则中止办结（否则流程走了但数据没存，不一致）。用一个带 Promise 的事件（或直接调 doc-loader 暴露的 <code>getPageApi().saveIfDirty()</code>）等存回结果。<span class="hl">这是 F5 唯一的跨页协调点</span>，其余全是各自现成能力。备选：doc-loader 暴露 <code>saveIfDirty()</code> 到 <code>host.workspace.pageview</code>，task-form 直接调（比事件更可靠）。</div>
+
+<!-- 8 -->
+<h2 id="s8">8 · 发起态：新建真单据 <span class="n">F4 发起态的升级</span></h2>
+
+<p class="lead">F4 的发起态是「通用字段录入」占位。F5 让它也能<span class="hl">渲染真实空白单据</span>让用户填。同一 doc-loader，filter 为空 = 新建模式。</p>
+
+<table>
+<tr><th></th><th>F4 发起态（占位）</th><th>F5 发起态（真单据）</th></tr>
+<tr><td>content</td><td>task-form 的几个通用字段</td><td><b>doc-loader</b>（filter 空 = 新空白单据，按 meta 渲染全字段可填）</td></tr>
+<tr><td>提交</td><td>字段 → variables → 起流程</td><td>saveDocData 存新单据得 bizId → 起流程带 bizLink</td></tr>
+<tr><td>property</td><td>发起按钮</td><td>发起按钮（不变，办结前桥先存单据拿 bizId）</td></tr>
+</table>
+<p class="kv"><code>mode:'start'</code> + <code>kind:'doc'</code> 时，content 指 doc-loader 空记录，property 的「提交并发起」先触发 doc-loader 存新单据、拿回主键作 bizId、再起流程带 bizLink——与 §7 的存回桥同机制。</p>
+
+<!-- 9 -->
+<h2 id="s9">9 · 注册表扩展 + 验收 <span class="n">配一行接一张真单据</span></h2>
+
+<h3>9.1 表单注册表加坐标字段</h3>
+<p>F4 的 <code>cmx_flow_form_binding</code> 已有 kind/native_page/html_page/biz_table/domain/app/module/title。F5 加 <code>file</code>（doc 定义文件名）+ <code>pk_field</code>（主键字段名，默认 id）。<code>kind='doc'</code> 时用这些坐标。</p>
+<pre><code><span class="cm">-- 迁移：给注册表补两列（幂等 ADD COLUMN IF NOT EXISTS）</span>
+<span class="kw">ALTER TABLE</span> cmx_flow_form_binding <span class="kw">ADD COLUMN IF NOT EXISTS</span> file VARCHAR(128);
+<span class="kw">ALTER TABLE</span> cmx_flow_form_binding <span class="kw">ADD COLUMN IF NOT EXISTS</span> pk_field VARCHAR(64);</code></pre>
+<p class="kv">接一张新的真单据流程 = 往注册表 insert 一行 <code>{formKey, kind:'doc', domain,app,module,file, biz_table, pk_field}</code>——<span class="hl">零前端、零后端代码</span>，配置即接入。这正是 F4「配一张表单」承诺的兑现，且是真单据级。</p>
+
+<h3>9.2 真机验收剧本（用真实会计凭证）</h3>
+<div class="card"><b>验收单据 = 会计凭证</b>（真实、有 fico-db 数据）：坐标 <code>{fi, cmxfico, gl, cmxfico_doc_meta_v2.json}</code>、根层 <code>cv_batch</code>、<code>pkField=id</code>、取一条真实 <code>cv_batch.id</code> 作 bizId。<span class="kv">注册表配一行 <code>{formKey:'gl.voucher.review', kind:'doc', domain:'fi', application:'cmxfico', module:'gl', file:'cmxfico_doc_meta_v2.json', pk_field:'id'}</code>。</span></div>
+<div class="step"><div class="step-n">1</div><div class="step-b"><b>注册表配</b> doc 类 formKey 指向凭证坐标；确认 fico-db 有真凭证行。</div></div>
+<div class="step"><div class="step-n">2</div><div class="step-b"><b>发布</b> userTask 绑该 formKey、formMode=approve 的定义；起实例（bizId=真凭证 id）。</div></div>
+<div class="step"><div class="step-n">3</div><div class="step-b"><b>待办中心点办理</b> → content 出现<span class="hl">完整凭证（凭证批表头 + 分录明细 grid 真数据）</span>、只读；property 审批控制台。</div></div>
+<div class="step"><div class="step-n">4</div><div class="step-b"><b>另一环节 formMode=edit + formFields=batch_name</b> → 只有凭证批名可改，其余只读，改完点同意 → 单据真存回（DB 查得到新值）+ 流程流转。</div></div>
+<div class="step"><div class="step-n">5</div><div class="step-b"><b>发起态</b>选该流程 → content <code>filter:'id:-1'</code> 空白凭证 → 填 → 提交 → 新凭证入库（idMap 回真号）+ 实例起。</div></div>
+<p class="kv">判据：content 显示真 cf_*/cv_* 数据（非变量投影）、edit 白名单外不可改、改动真落库、发起建真单据。CDP 手法同 F3/F4。</p>
+
+<!-- 10 -->
+<h2 id="s10">10 · 交付物 · 风险 <span class="n">Definition of Done</span></h2>
+
+<h3>10.1 代码交付物</h3>
+<table>
+<tr><th>文件</th><th>改动</th><th>性质</th></tr>
+<tr><td><span class="filename">todo-center.js</span></td><td>openTaskForm/openStartForm 加 <code>kind==='doc'</code> 分支：content 指 doc-loader，传坐标+filter+formMode+formFields</td><td><span class="badge new">分派</span></td></tr>
+<tr><td><span class="filename">doc-loader.js</span></td><td>readDef 补 filter/formMode/formFields；建列模型时按 formMode 压只读 + formFields 白名单；暴露 <code>saveIfDirty()</code> 供 task-form 办结前调</td><td><span class="badge new">薄改</span></td></tr>
+<tr><td><span class="filename">task-form.js</span></td><td>complete/submitStart 前调 content 的 <code>saveIfDirty()</code>（跨页桥）；kind=doc 时 content 不由 task-form 渲染</td><td><span class="badge new">桥</span></td></tr>
+<tr><td><span class="filename">biz_link.rs + 迁移</span></td><td>form_binding 加 file/pk_field 列 + 查询带出</td><td><span class="badge new">列</span></td></tr>
+<tr><td>doc 端点 / 引擎 / F1-F4 后端</td><td><b>零改动</b>（doc 契约、审批链全现成）</td><td><span class="badge have">不动</span></td></tr>
+</table>
+
+<h3>10.2 风险</h3>
+<table>
+<tr><th>风险</th><th>对策</th></tr>
+<tr><td><b>doc-loader 被流程改动影响字典维护等其他消费者</b></td><td>formMode/formFields 是<b>新增可选 props</b>，不传则 doc-loader 行为完全不变（默认可编辑、无白名单）——现有消费者零回归。</td></tr>
+<tr><td><b>跨页存回时序</b>（先存单据再办结）</td><td>用 <code>saveIfDirty()</code> 返 Promise，task-form await 存回成功再 flow complete；存失败中止办结并提示。比事件更可靠。</td></tr>
+<tr><td><b>主键字段名各单据不同</b></td><td>注册表 <code>pk_field</code> 显式存（默认 id）；filter 用它拼，不猜。</td></tr>
+<tr><td><b>doc-loader 找不到 saveIfDirty（老版本）</b></td><td>task-form 探测 <code>pageview[view].saveIfDirty</code>，无则跳过存回（只读环节本就不需要），不阻断办结。</td></tr>
+<tr><td><b>单据定义坐标配错 → content 空白</b></td><td>doc-loader 已有「坐标缺失提示」；F5 再加「单据不存在/坐标无效」的兜底提示，不白屏。</td></tr>
+<tr><td><b>formFields 白名单与单据实际列不匹配</b></td><td>白名单是"允许改"的集合，列不存在则该项无效（不报错）；施加时按列 id 匹配，多余项忽略。</td></tr>
+</table>
+
+<div class="card brand" style="margin-top:40px">
+<b>F5 一句话：</b>把 task-form 的业务单据区从「变量投影占位」升级为<span class="hlp">元数据驱动的真实单据</span>——<span class="hl">不重造，委托 doc-loader</span>（loadDoc 载真 cf_*、ChangeSetCollector 存回，全现成实证），与 F3 的 html 路径完全同构（content 换页、property 办理）。F5 对 doc-loader 唯一实质补充是 <code>formMode</code>/<code>formFields</code> 两个可选 props（整体只读 + 字段白名单），加一个办结前 <code>saveIfDirty()</code> 跨页桥。注册表加 file/pk_field 两列后，<span class="hlg">接一张新的真单据流程 = 配一行注册表</span>——F4「配一张表单」的承诺，到 F5 兑现到真单据级。引擎、doc 端点、F1-F4 后端一律不动。</div>
+
+</div>
+</body>
+</html>
