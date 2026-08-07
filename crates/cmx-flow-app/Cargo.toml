@@ -1,0 +1,44 @@
+[package]
+name = "cmx-flow-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# cmx-flow 的**平台中立应用层**：引擎单例（OnceCell FlowRuntime）+ 业务集成表（biz_link）+
+# 视图组装（views）+ 全部 axum handler + 路由表 flow_routes::<S>()。
+#
+# 抽核动机（方案 standalone-microservice-design.html §5「一芯」）：原 cmx-flow-api 把
+# handler + 路由 + cmx-api 装配（CmxAppState/ApiResp/Error）耦在一起。抽出后本 crate 只依赖
+# axum + 引擎 + infra，**不依赖 cmx-api/cmx-biz/cmx-api-types**——响应信封在 resp.rs 自持
+# （字节对齐 cmx-api-types 的 {code,msg,data}，故平台侧输出零变化）。
+#
+# 两壳复用同一核：
+#   - 平台壳 cmx-flow-api（留 cmx-container）：FlowModule::routes() 调 flow_routes::<CmxAppState>()。
+#   - 独立壳 cmx-flow-server（本 workspace）：main 里 merge flow_routes::<()>()。
+# handler 丢弃原来绑定不用的 State(_s)/CmxSvrContext(_ctx) 两提取器 → 与 AppState 类型无关，
+# 故路由对任意 state 泛型 S 成立，两壳零 handler 漂移。
+
+[dependencies]
+# 引擎各层（跨 workspace 同库）
+cmx-flow-model = { workspace = true }
+cmx-flow-bpmn = { workspace = true }
+cmx-flow-engine = { workspace = true }
+cmx-flow-store-pg = { workspace = true }
+cmx-flow-def = { workspace = true }
+# 外部服务适配器（HttpAssigneeResolver/SubflowRouter/Delegate + Mock + AdapterConfig）
+cmx-flow-adapters = { workspace = true }
+# infra（跨 workspace path 进 cmx-container）
+cmx-database-pg = { workspace = true }
+cmx-core = { workspace = true }
+
+# Web 框架（handler 提取器 + Router；信封自持不借 cmx-api）
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+# JWT 验签中间件（S2 认证）
+jsonwebtoken = { workspace = true }

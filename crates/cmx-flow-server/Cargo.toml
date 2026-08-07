@@ -1,0 +1,32 @@
+[package]
+name = "cmx-flow-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# cmx-flow 独立流程微服务的 **HTTP 服务器**（方案 standalone-microservice-design.html §2/§10 S0）。
+#
+# 采用通用骨架 cmx-web-chassis（与 report-server / mdm-server 同一套启动/日志/中间件/优雅关闭/
+# banner），只提供 flow 相关 API。main 只填一个 ServiceSpec：flow_routes 路由 + 数据源注册钩子 +
+# 引擎定时器 poller 钩子 + flow 专属 banner/配色，交 chassis::run 统一装配。零 cmx-api / 零平台依赖。
+
+[[bin]]
+name = "cmx-flow-server"
+path = "src/main.rs"
+
+[dependencies]
+# 平台中立核（引擎单例 + 全部 handler + flow_routes::<S>() + 信封）
+cmx-flow-app = { workspace = true }
+# 通用 HTTP 服务骨架（配置/日志/中间件/优雅关闭/banner + ServiceSpec/run）
+cmx-web-chassis = { workspace = true }
+# tokio-postgres DB 层（注册数据源）
+cmx-database-pg = { workspace = true }
+
+# Web 框架（Router 类型；服务栈由 chassis 提供）
+axum = { workspace = true }
+# 异步运行时（#[tokio::main]）
+tokio = { workspace = true }
+# 启动钩子错误通道
+anyhow = { workspace = true }
+# 日志（钩子内 tracing::info）
+tracing = { workspace = true }

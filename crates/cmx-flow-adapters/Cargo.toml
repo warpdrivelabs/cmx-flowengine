@@ -1,0 +1,44 @@
+[package]
+name = "cmx-flow-adapters"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# cmx-flow 外部服务适配器（方案 standalone-microservice-design.html §4/S1）。
+#
+# 把引擎的三个注入 trait 从「直连平台库」升级为「可接外部 HTTP 服务」，兑现「身份/组织/
+# 表单外部化」：
+#   - HttpAssigneeResolver  实现 AssigneeResolver —— 候选人解析走外部身份服务
+#   - HttpSubflowRouter     实现 SubflowRouter    —— 子流程组织路由走外部组织服务
+#   - HttpDelegate          实现 JavaDelegate     —— serviceTask 逻辑外包给外部 URL
+# 每个都配一个 Mock 默认实现（脱外部可单跑/单测锚点）。选择由 config.rs 的 mode(mock|http|pg)
+# 从环境变量决定（pg 实现在 cmx-flow-store-pg，本 crate 不含 pg，选择逻辑在 cmx-flow-app）。
+#
+# 本 crate 只依赖引擎 trait 层 + reqwest，不依赖平台/DB——与引擎核一样中立可测。
+
+[dependencies]
+# 引擎 trait/类型层（AssigneeResolver/SubflowRouter/JavaDelegate/DelegateContext/Variables/
+# CandidateRef/CandidateKind/ResolveError/RouteError 全从 cmx-flow-engine 再导出）
+cmx-flow-engine = { workspace = true }
+
+# 外部服务 HTTP 客户端（版本/特性对齐 cmx-container 根；rustls 免 openssl 系统依赖）
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# 异步 trait 实现
+async-trait = { workspace = true }
+# 请求/响应 DTO
+serde = { workspace = true }
+serde_json = { workspace = true }
+# 日志
+tracing = { workspace = true }
+# 出站 webhook：后台队列 + 定时退避（tokio spawn/mpsc/time）
+tokio = { workspace = true }
+# webhook 签名 HMAC-SHA256 + hex
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+# 集成测试：进程内 axum 桩服务 + 引擎跑候选池
+tokio = { workspace = true }
+axum = { workspace = true }

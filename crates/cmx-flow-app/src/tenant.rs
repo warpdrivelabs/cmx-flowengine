@@ -1,0 +1,110 @@
+//! 请求级租户上下文（多租户 db-per-tenant，S2）。
+//!
+//! 镜像平台 `cmx-traits::auth::context_scope` 的 `task_local!` 模式：认证中间件在请求入口建
+//! scope，请求生命周期内任意 `.await` 点都能无参读当前租户/用户/角色，无需层层透传。
+//!
+//! ⚠️ **task_local 不跨 `tokio::spawn`**：后台任务（webhook worker / timer poller）读不到，
+//! 须显式捕获租户。故 poller 遍历运行时缓存、webhook emit 只在 handler（有 scope）内做。
+//!
+//! **单租户零回归**：无 scope（未装认证中间件 / 后台任务 / 默认部署）时 `current_tenant()`
+//! 回退 [`DEFAULT_TENANT`]，其 db_id = 原 `FLOW_DB_ID`——行为完全等价 S1 之前的单库形态。
+
+use tokio::task_local;
+
+/// 默认租户名（无租户上下文时的回退；其 db_id 映射到既有 FLOW_DB_ID，保单租户零回归）。
+pub const DEFAULT_TENANT: &str = "default";
+
+task_local! {
+    /// 当前请求的租户上下文。仅在认证中间件 [`scope`] 作用域内有值。
+    static TENANT: TenantCtx;
+}
+
+/// 请求级租户上下文快照（认证中间件一次性填充，请求内只读）。
+#[derive(Debug, Clone)]
+pub struct TenantCtx {
+    /// 租户标识（决定用哪个租户库）。
+    pub tenant: String,
+    /// 当前用户 id（JWT sub；可空——auth off 时无）。
+    pub user: Option<String>,
+    /// 当前用户角色（JWT roles；可空）。
+    pub roles: Vec<String>,
+}
+
+impl TenantCtx {
+    /// 用租户名构建（user/roles 空）。
+    pub fn new(tenant: impl Into<String>) -> Self {
+        Self {
+            tenant: tenant.into(),
+            user: None,
+            roles: Vec::new(),
+        }
+    }
+    pub fn with_user(mut self, user: Option<String>) -> Self {
+        self.user = user;
+        self
+    }
+    pub fn with_roles(mut self, roles: Vec<String>) -> Self {
+        self.roles = roles;
+        self
+    }
+}
+
+/// 在给定租户上下文的作用域内执行 future（认证中间件在请求入口调用）。
+pub async fn scope<F, R>(ctx: TenantCtx, fut: F) -> R
+where
+    F: std::future::Future<Output = R>,
+{
+    TENANT.scope(ctx, fut).await
+}
+
+/// 当前租户名。无 scope 时回退 [`DEFAULT_TENANT`]（单租户零回归）。
+pub fn current_tenant() -> String {
+    TENANT
+        .try_with(|c| c.tenant.clone())
+        .unwrap_or_else(|_| DEFAULT_TENANT.to_string())
+}
+
+/// 当前用户 id（无 scope / 未认证时 None）。
+pub fn current_user() -> Option<String> {
+    TENANT.try_with(|c| c.user.clone()).ok().flatten()
+}
+
+/// 当前用户角色（无 scope 时空）。
+pub fn current_roles() -> Vec<String> {
+    TENANT.try_with(|c| c.roles.clone()).unwrap_or_default()
+}
+
+/// 是否处于租户 scope 内（认证中间件已建立）。
+pub fn in_scope() -> bool {
+    TENANT.try_with(|_| ()).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn no_scope_falls_back_to_default() {
+        // 无 scope：回退默认租户（单租户零回归的核心保证）。
+        assert_eq!(current_tenant(), DEFAULT_TENANT);
+        assert_eq!(current_user(), None);
+        assert!(current_roles().is_empty());
+        assert!(!in_scope());
+    }
+
+    #[tokio::test]
+    async fn scope_threads_tenant() {
+        let ctx = TenantCtx::new("acme")
+            .with_user(Some("u_1".into()))
+            .with_roles(vec!["approver".into()]);
+        scope(ctx, async {
+            assert!(in_scope());
+            assert_eq!(current_tenant(), "acme");
+            assert_eq!(current_user(), Some("u_1".to_string()));
+            assert_eq!(current_roles(), vec!["approver".to_string()]);
+        })
+        .await;
+        // 出 scope 后回退默认。
+        assert_eq!(current_tenant(), DEFAULT_TENANT);
+    }
+}

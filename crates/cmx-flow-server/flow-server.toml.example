@@ -1,0 +1,38 @@
+# cmx-flow-server 配置示例（可选）。
+#
+# 加载顺序：本文件（路径由 FLOW_CONFIG 指定，或默认 ./flow-server.toml）→ 环境变量覆盖。
+# 环境变量优先级最高。仅列出 chassis 框架级配置；flow 专属配置（数据源/适配器）见下方注释。
+
+# —— chassis 框架级（FLOW_ 前缀环境变量可覆盖：FLOW_HOST/FLOW_PORT/FLOW_LOG_DIR/…）——
+host = "0.0.0.0"
+port = 8091
+log_dir = "logs"
+log_level = "info"                 # RUST_LOG 未设时用
+graceful_timeout_secs = 10
+
+# —— flow 专属（不在 toml 里，用环境变量）——
+# FLOW_PG_URL   = "postgres://postgres:postgres@127.0.0.1:5432/fico"   # 运行态 + 定义库
+# IAM_PG_URL    = "postgres://postgres:postgres@127.0.0.1:5432/cmx"    # 候选人/组织库（pg 模式）
+# 适配器选择（S1，默认全 pg=回连库；独立部署常用 http/mock）：
+# FLOW_IDENTITY_MODE = "mock" | "http" | "pg"   （+ FLOW_IDENTITY_URL）
+# FLOW_SUBFLOW_MODE  = "mock" | "http" | "pg"   （+ FLOW_SUBFLOW_URL）
+# FLOW_DELEGATE_MODE = "mock" | "http" | "pg"   （+ FLOW_DELEGATE_URL）
+# 出站生命周期 webhook（S1，实例/任务事件通知第三方；空 URL = 关闭）：
+# FLOW_WEBHOOK_URLS        = "https://third-party/hook,https://another/hook"  # 逗号分隔
+# FLOW_WEBHOOK_SIGNING_KEY = "shared-secret"   # HMAC-SHA256 签名密钥（空=不签名）
+# FLOW_WEBHOOK_MAX_RETRIES = 3                 # 单条投递失败重试次数（指数退避）
+#
+# —— 多租户 + 认证（S2）——
+# 多租户隔离（db-per-tenant；默认 single = 单库，等价 S1 之前）：
+# FLOW_TENANCY = "single" | "multi"
+# multi 下租户库 URL（二选一；db_id 派生为 flow_<tenant>，模板须产同名库）：
+# FLOW_TENANT_DB_URL_TEMPLATE = "postgres://…/flow_{tenant}"   # {tenant} 占位
+# FLOW_TENANT_<T>_PG_URL      = "postgres://…/somedb"          # 每租户显式覆盖
+# FLOW_TENANT_IAM_URL_TEMPLATE / FLOW_TENANT_<T>_IAM_URL       # IAM 库（缺省各租户复用默认 IAM 库）
+# 认证（生产务必设 jwt；off 模式租户取自 X-Tenant 头，是生产越权隐患）：
+# FLOW_AUTH_MODE = "off" | "jwt"     # off(默认)=X-Tenant 头/默认租户；jwt=验签取 claim
+# FLOW_JWT_ALG = "HS256" | "RS256"   # 默认 HS256
+# FLOW_JWT_SECRET      = "…"         # HS256 对称密钥
+# FLOW_JWT_PUBLIC_KEY  = "-----BEGIN PUBLIC KEY-----…"   # RS256 PEM 公钥
+# FLOW_JWT_TENANT_CLAIM = "tenant"   # 租户 claim 名（默认 tenant）
+# FLOW_JWT_ROLES_CLAIM  = "roles"    # 角色 claim 名（默认 roles）

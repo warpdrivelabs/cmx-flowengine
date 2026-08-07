@@ -46,3 +46,15 @@ IAM_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/cmx \
   cargo run -p cmx-flow-demo
 # 浏览器打开 http://127.0.0.1:8090
 ```
+
+## 数据读取约定（ZmcDataSet vs DataSet）
+
+flow 读库时按「结果集的形态与去向」二选一，与 cmx-container 平台其它模块（DOC/DCT/RPT）保持一致——**不为统一而统一**：
+
+- ✅ **用 `ZmcDataSet`**：当需要**对外返回一个业务行数据集**——把某表/视图的 N 行（可能很大）整体交给消费方。例：报表取数、单据列表二进制出口、给第三方的批量行导出。
+  走 cmx-database-pg 的 `manager.query_sql_zmc(db_id, sql, dataset_id)`（或 `_with_datavalues` / `_stream_chunks` 流式），再 `encode_columnar_binary` 出列式 msgpack。这是驱动无关、零拷贝、可流式的出口（省 `DataValue` 拷贝 + msgpack + 峰值内存 O(单行)）。范例见 `cmx-doc` 的 `/api/doc/data.bin` 家族（`cmx-doc-api/src/handlers.rs` 的 `encode_columnar_binary`）与 `cmx-doc-store-pg/src/zmc_loader.rs`。背景见备忘 `cmx-rowsource-zmc`。
+
+- ⬜ **保留 `DataSet`（`query_sql`）**：控制面的**小行读**——单行 → DTO、聚合快照装载、元数据/绑定查询、候选人解析。`ZmcDataSet` 是位置索引访问（`col_str(row,col)` / `get_i64(col)`），对「首行 → DTO」的小读反而更繁；这类读全平台（91 处）仍用 `query_sql` → `DataSet` 的按名取值（`row.get_by_name(schema, "col")`）。
+
+> 现状：cmx-flowengine 当前**没有**「对外返回业务行数据集」的端点（待办/实例列表是手工投影成 `serde_json::Value` 的小结果），故全部读走 `DataSet`。**待真正新增数据集导出类端点时，按上面第一条用 ZmcDataSet 落地。**
+

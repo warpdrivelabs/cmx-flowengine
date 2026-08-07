@@ -16,6 +16,9 @@ members = [
     "crates/cmx-flow-engine",
     "crates/cmx-flow-def",
     "crates/cmx-flow-store-pg",
+    "crates/cmx-flow-adapters",
+    "crates/cmx-flow-app",
+    "crates/cmx-flow-server",
     "crates/cmx-flow-demo",
     "crates/cmx-flow-tests",
 ]
@@ -33,12 +36,16 @@ cmx-flow-bpmn = { path = "crates/cmx-flow-bpmn", version = "0.1.12" }
 cmx-flow-engine = { path = "crates/cmx-flow-engine", version = "0.1.12" }
 cmx-flow-def = { path = "crates/cmx-flow-def", version = "0.1.12" }
 cmx-flow-store-pg = { path = "crates/cmx-flow-store-pg", version = "0.1.12" }
+cmx-flow-adapters = { path = "crates/cmx-flow-adapters", version = "0.1.12" }
+cmx-flow-app = { path = "crates/cmx-flow-app", version = "0.1.12" }
 
 # —— 复用 cmx-container 基础设施（跨 workspace 路径；仍是 cmx-container 成员，非本库成员）——
 # tokio-postgres 并行 DB 层（多数据源池 / register_datasource / query_sql / 事务门面）
 cmx-database-pg = { path = "../cmx-container/crates/libs/cmx-infra/cmx-database-pg", version = "0.1.12" }
 # 核心库（DataValue：强类型写入参数 / 查询结果读取）
 cmx-core = { path = "../cmx-container/crates/libs/cmx-core", version = "0.1.12" }
+# 通用 HTTP 服务骨架（chassis）：flow/report/mdm-server 共用的启动/日志/中间件/优雅关闭骨架
+cmx-web-chassis = { path = "../cmx-container/crates/libs/cmx-web-chassis", version = "0.1.12" }
 
 # —— 外部 crate（版本照抄 cmx-container 根 [workspace.dependencies]）——
 serde = { version = "1.0", features = ["derive"] }
@@ -49,6 +56,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.21", features = ["v4", "serde"] }
 async-trait = "0.1"
+anyhow = "1.0"
+# JWT 验签（S2 认证：验 HS256/RS256 签名，解 tenant/user/roles claim）
+jsonwebtoken = "9"
 roxmltree = "0.20"
 tokio = { version = "1.41", features = ["full"] }
 axum = { version = "0.8.9", features = ["macros", "multipart"] }

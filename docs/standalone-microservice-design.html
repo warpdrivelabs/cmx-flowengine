@@ -324,6 +324,10 @@ SSE /events?user=&amp;tenant= 实时推</code></pre>
 </ol>
 </div>
 
+<div class="card">
+<b>数据集类端点用 <code>ZmcDataSet</code> 出口（与 DOC/DCT/RPT 一致）：</b>凡是<span class="hl">对外返回业务行数据集</span>（把某表/视图的 N 行整体交给消费方——如报表取数、待办/单据批量导出、给三方的行级数据流），走 cmx-database-pg 的 <code>query_sql_zmc</code> → <code>encode_columnar_binary</code>（列式 msgpack），驱动无关 · 零拷贝 · 可流式（峰值内存 O(单行)）。控制面小行读（单行→DTO、绑定/元数据查询）仍用 <code>query_sql</code>→<code>DataSet</code> 按名取值——不为统一而统一。判定线见 <code>cmx-flowengine/README.md</code>「数据读取约定」，范例见 <code>cmx-doc</code> 的 <code>/api/doc/data.bin</code> 家族。
+</div>
+
 <div class="card"><b>身份在 headless 下怎么传？</b>三方系统<span class="hl">用自己的登录态换成对 flow 的 JWT</span>（OIDC 或签发一个 flow 专用 token，claim 带 tenant/user/roles）。flow 不认第三方的 session，只认标准 token。这样"用户是外部的"贯穿到 API 边界：flow 从不管登录，只<b>信任 token 里的身份声明</b>，并用 §4① 的身份适配器把 role/org 引用解析成人。</div>
 
 <!-- ============================================================ -->
