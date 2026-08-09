@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cmx-flow 可嵌组件 · 集成示例（S5）</title>
+<style>
+  body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+    background:#f4f5f8;color:#3a3f45}
+  header{padding:14px 22px;background:#fff;border-bottom:1px solid #e2e6ec;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header .cfg{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:#697077}
+  header input{font:12.5px monospace;padding:4px 8px;border:1px solid #d0d4da;border-radius:5px;min-width:200px}
+  nav{display:flex;gap:6px;padding:10px 22px;background:#fff;border-bottom:1px solid #e2e6ec}
+  nav button{padding:6px 16px;border:1px solid #d0d4da;background:transparent;border-radius:6px;cursor:pointer;font-size:13px;color:inherit}
+  nav button.active{background:#0a6ed1;color:#fff;border-color:#0a6ed1}
+  main{padding:22px;height:calc(100vh - 160px)}
+  .stage{height:100%;background:#fff;border:1px solid #e2e6ec;border-radius:10px;overflow:hidden;
+    box-shadow:0 1px 3px rgba(0,0,0,0.04)}
+  .stage > *{display:block;width:100%;height:100%}
+  .hidden{display:none!important}
+  #log{position:fixed;right:14px;bottom:14px;width:340px;max-height:200px;overflow:auto;
+    background:#1a1d22;color:#c8ccd2;font:11.5px monospace;border-radius:8px;padding:10px 12px;
+    box-shadow:0 4px 20px rgba(0,0,0,0.25);white-space:pre-wrap}
+  #log b{color:#2ea8c8}
+</style>
+</head>
+<body>
+<header>
+  <h1>cmx-flow 可嵌组件</h1>
+  <div class="cfg">
+    <label>api-base <input id="apiBase" value="" placeholder="留空=同源"></label>
+    <label>token <input id="token" placeholder="Bearer（留空=同源 cookie）"></label>
+    <button id="apply">应用配置</button>
+  </div>
+</header>
+<nav>
+  <button data-tab="todo" class="active">&lt;flow-todo&gt; 待办中心</button>
+  <button data-tab="designer">&lt;flow-designer&gt; 设计器</button>
+  <button data-tab="taskform">&lt;flow-task-form&gt; 任务表单</button>
+</nav>
+<main>
+  <div class="stage" id="stage"></div>
+</main>
+<div id="log"><b>事件日志</b>（组件派发的 CustomEvent 在此可见）</div>
+
+<!-- 一行引入即注册全部三个组件（框架无关；此处相对路径指向同目录 vendor 的 web/）。 -->
+<script type="module" src="../index.js"></script>
+<script type="module">
+  const stage = document.getElementById('stage')
+  const log = document.getElementById('log')
+  const logLine = (m) => { log.textContent += '\n' + m; log.scrollTop = log.scrollHeight }
+
+  // 监听三组件塌缩事件（宿主自决怎么开/收/刷新——替代门户开 Tab 链）
+  for (const name of ['flow-open-task', 'flow-designer-open-task', 'flow-task-done', 'flow-close', 'flow-designer-close']) {
+    document.addEventListener(name, (e) => logLine(`▶ ${name} ${JSON.stringify(e.detail).slice(0, 120)}`))
+  }
+
+  const attrs = () => {
+    const a = {}
+    const b = document.getElementById('apiBase').value.trim()
+    const t = document.getElementById('token').value.trim()
+    if (b) a['api-base'] = b
+    if (t) a['token'] = t
+    return a
+  }
+
+  const TABS = {
+    todo:     () => Object.assign(document.createElement('flow-todo'), {}),
+    designer: () => document.createElement('flow-designer'),
+    taskform: () => {
+      const el = document.createElement('flow-task-form')
+      // 演示任务上下文（真实集成由宿主按选中待办填）
+      el.setAttribute('task-id', 'demo-task-1')
+      el.setAttribute('instance-id', 'demo-inst-1')
+      el.setAttribute('form-key', 'pay.review')
+      el.setAttribute('form-mode', 'approve')
+      return el
+    },
+  }
+
+  let current = 'todo'
+  function render() {
+    stage.innerHTML = ''
+    const el = TABS[current]()
+    for (const [k, v] of Object.entries(attrs())) el.setAttribute(k, v)
+    stage.appendChild(el)
+    logLine(`挂载 <${el.tagName.toLowerCase()}> api-base="${el.getAttribute('api-base') || '(同源)'}"`)
+  }
+
+  document.querySelectorAll('nav button').forEach((b) => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('nav button').forEach((x) => x.classList.remove('active'))
+      b.classList.add('active')
+      current = b.dataset.tab
+      render()
+    })
+  })
+  document.getElementById('apply').addEventListener('click', render)
+
+  // 首屏
+  customElements.whenDefined('flow-todo').then(render)
+</script>
+</body>
+</html>
