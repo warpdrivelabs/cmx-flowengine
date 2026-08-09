@@ -1,0 +1,67 @@
+# cmx-flow 独立流程微服务 —— 本地/演示编排（S6 交付）。
+#
+# 起一套「独立流程微服务 + 平台反代」最小拓扑，演示三姿态之「独立部署」：
+#   postgres  —— 流程运行库(fico) + IAM 候选人库(cmx)
+#   flow-server —— 独立流程引擎（headless /api/flow/v1/* + SSE + swagger），JWT + API Key 认证
+#
+# 平台 web-server 侧不在此编排（它是既有大服务）；平台对接只需在其 dev-local.toml 配：
+#   [center_client.urls] flow = "http://localhost:8091"
+#   [service_auth] outgoing_api_key = "cmx_sk_platform_to_flow"
+# 然后平台的 /api/flow/* 就经 FlowProxyModule 转发到这里（见 docs/S6 集成）。
+#
+# 用法：
+#   docker compose -f deploy/docker-compose.yml up --build
+#   curl http://localhost:8091/api/flow/v1/openapi.json
+#   curl http://localhost:8091/api/flow/v1/docs/
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fico
+    ports:
+      - "5432:5432"
+    volumes:
+      - flow-pg-data:/var/lib/postgresql/data
+      # 初始化：建 IAM 库 cmx（flow 运行库 fico 由 POSTGRES_DB 建）。
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  flow-server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # —— 数据源 ——
+      FLOW_PG_URL: postgres://postgres:postgres@postgres:5432/fico
+      IAM_PG_URL: postgres://postgres:postgres@postgres:5432/cmx
+      # —— 端口 ——
+      FLOW_PORT: "8091"
+      # —— 认证（S2/S3）：生产务必 jwt；密钥与平台签发方共享 ——
+      FLOW_AUTH_MODE: jwt
+      FLOW_JWT_ALG: HS256
+      FLOW_JWT_SECRET: shared-with-platform-change-me
+      FLOW_JWT_TENANT_CLAIM: tenant
+      FLOW_JWT_ROLES_CLAIM: roles
+      # —— 服务间 API Key（S3/S6）：平台 FlowProxy 用它做服务身份 ——
+      # 冒号后是无委托令牌时的回退租户；多租户下真实租户取委托 JWT 的 claim。
+      FLOW_API_KEYS: "cmx_sk_platform_to_flow:default"
+      # —— 身份适配器（S1）：候选人/组织回连平台 IAM（http）或直连库(pg)或 mock ——
+      FLOW_IDENTITY_MODE: mock
+      # 若回连平台 IAM 查询服务：
+      # FLOW_IDENTITY_MODE: http
+      # FLOW_IDENTITY_URL: http://host.docker.internal:8080/api/iam/flow-identity
+    ports:
+      - "8091:8091"
+
+volumes:
+  flow-pg-data:

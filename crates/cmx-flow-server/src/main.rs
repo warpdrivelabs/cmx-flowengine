@@ -18,8 +18,10 @@
  */
 
 use cmx_database_pg::{DbConfig, DbType, get_default_pg_db_manager};
-use cmx_flow_app::{FLOW_DB_ID, IAM_DB_ID, flow_routes, spawn_timer_poller};
+use cmx_flow_app::openapi::flow_openapi;
+use cmx_flow_app::{FLOW_DB_ID, IAM_DB_ID, flow_routes, flow_routes_v1, spawn_timer_poller};
 use cmx_web_chassis::{BannerSpec, ChassisConfig, ServiceSpec, run};
+use utoipa_swagger_ui::SwaggerUi;
 
 /// flow 专属字符画（区别于平台/默认 banner）。
 const FLOW_ART: &str = r#"
@@ -45,11 +47,46 @@ async fn main() -> cmx_web_chassis::Result<()> {
         .tagline("  cmx-flow 流程引擎微服务 · cmx-web-chassis ")
         .stops(vec![(0, 230, 170), (0, 140, 255), (90, 90, 255)]);
 
+    // 路由（S3 headless + 监控大盘）：
+    //   - 根路径 /  → 引擎监控大盘 HTML（自包含单页，轮询 /api/flow/v1/stats）。
+    //   - v1 正式契约 /api/flow/v1/*（含 SSE /events、/stats）+ 旧 /api/flow/*（兼容并存），二者经认证中间件。
+    //   - OpenAPI 文档 /api/flow/v1/openapi.json + swagger UI /api/flow/v1/docs（**免认证**，公开文档）。
+    //
+    // chassis 默认把 router nest 到 /api 下；这里改用 nest_api(false) 自己 nest，好让根大盘 `/` 逃出 /api。
+    let authed = flow_routes_v1::<()>()
+        .merge(flow_routes::<()>())
+        // 可观测中间件（内层，夹在认证之后）：next.run 时 auth 已建 scope，故能采集身份。
+        .layer(axum::middleware::from_fn(cmx_flow_app::observe_middleware))
+        // 认证中间件（外层，先跑）：建租户/用户 scope。
+        .layer(axum::middleware::from_fn(cmx_flow_app::auth_middleware));
+    let api_router = axum::Router::new()
+        .merge(authed)
+        .merge(SwaggerUi::new("/flow/v1/docs").url("/flow/v1/openapi.json", flow_openapi()));
+    let app_router = axum::Router::new()
+        // 根路径 → 业务监控大盘（流程域：实例/待办/定义/协作…；免认证，轮询 /api/flow/v1/stats）。
+        .route("/", axum::routing::get(cmx_flow_app::dashboard::dashboard))
+        .nest("/api", api_router);
+
+    // 通用技术监控（chassis 默认在 /_mon 挂技术页 + 起系统采样器）：这里注入 flow 的身份读取器，
+    // 好让请求遥测面板显示租户/用户/角色（读 tenant.rs 的 task_local scope；不在 scope 时匿名）。
+    // 业务监控（/）与技术监控（/_mon）由此分立：前者流程域指标，后者系统/DB/请求域指标。
+    cmx_web_monitor::set_service_name("cmx-flow 流程引擎");
+    cmx_web_monitor::set_identity_provider(cmx_flow_app::identity_snapshot);
+    // 拓扑来源：独立 flow-server 自身即引擎，流程能力为「进程内内嵌」（无下游反代）。
+    cmx_web_monitor::set_topology_provider(|| {
+        vec![cmx_web_monitor::ServiceDep {
+            key: "flow".into(),
+            label: "流程引擎".into(),
+            mode: "embedded".into(),
+            target: None,
+            proxiable: true,
+        }]
+    });
+
     let spec = ServiceSpec::<()>::new("flow", cfg)
         .banner(banner)
-        // 认证中间件（S2）：FLOW_AUTH_MODE=off(默认,X-Tenant 头/默认租户) | jwt(验签取 claim)。
-        // 建租户 scope，请求内 DB 走该租户库（db-per-tenant）。
-        .router(flow_routes::<()>().layer(axum::middleware::from_fn(cmx_flow_app::auth_middleware)))
+        .nest_api(false) // 已自行 nest /api，避免 chassis 再包一层。
+        .router(app_router)
         .state(())
         // 钩子① 注册数据源（db_id 对齐 core 常量，否则引擎单例找不到源）。
         .init("datasources", |_meta| {

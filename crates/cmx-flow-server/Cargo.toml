@@ -19,11 +19,15 @@ path = "src/main.rs"
 cmx-flow-app = { workspace = true }
 # 通用 HTTP 服务骨架（配置/日志/中间件/优雅关闭/banner + ServiceSpec/run）
 cmx-web-chassis = { workspace = true }
+# 通用技术监控（注入 flow 身份读取器；技术页 /_mon 由 chassis 自动挂）
+cmx-web-monitor = { workspace = true }
 # tokio-postgres DB 层（注册数据源）
 cmx-database-pg = { workspace = true }
 
 # Web 框架（Router 类型；服务栈由 chassis 提供）
 axum = { workspace = true }
+# swagger UI 挂载（S3 headless OpenAPI 文档）
+utoipa-swagger-ui = { workspace = true }
 # 异步运行时（#[tokio::main]）
 tokio = { workspace = true }
 # 启动钩子错误通道

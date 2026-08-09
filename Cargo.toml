@@ -46,6 +46,8 @@ cmx-database-pg = { path = "../cmx-container/crates/libs/cmx-infra/cmx-database-
 cmx-core = { path = "../cmx-container/crates/libs/cmx-core", version = "0.1.12" }
 # 通用 HTTP 服务骨架（chassis）：flow/report/mdm-server 共用的启动/日志/中间件/优雅关闭骨架
 cmx-web-chassis = { path = "../cmx-container/crates/libs/cmx-web-chassis", version = "0.1.12" }
+# 通用技术监控：请求遥测 + 系统指标（CPU/内存/网络/磁盘）+ DB 连接池；与 chassis 并列组装
+cmx-web-monitor = { path = "../cmx-container/crates/libs/cmx-web-monitor", version = "0.1.12" }
 
 # —— 外部 crate（版本照抄 cmx-container 根 [workspace.dependencies]）——
 serde = { version = "1.0", features = ["derive"] }
@@ -59,6 +61,11 @@ async-trait = "0.1"
 anyhow = "1.0"
 # JWT 验签（S2 认证：验 HS256/RS256 签名，解 tenant/user/roles claim）
 jsonwebtoken = "9"
+# SSE 事件流（S3）：broadcast → axum Sse 的流适配
+tokio-stream = { version = "0.1", features = ["sync"] }
+# OpenAPI（S3 headless 契约）：注解 + swagger UI
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 roxmltree = "0.20"
 tokio = { version = "1.41", features = ["full"] }
 axum = { version = "0.8.9", features = ["macros", "multipart"] }

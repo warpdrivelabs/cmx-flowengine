@@ -33,6 +33,8 @@ cmx-core = { workspace = true }
 
 # Web 框架（handler 提取器 + Router；信封自持不借 cmx-api）
 axum = { workspace = true }
+# 通用技术监控（observe 中间件 / client_stats / SSE 计数 / Identity 注入）——请求遥测从本 crate 上提
+cmx-web-monitor = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
@@ -42,3 +44,8 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 # JWT 验签中间件（S2 认证）
 jsonwebtoken = { workspace = true }
+# SSE 事件流（S3）：broadcast 流 + Stream 适配
+tokio-stream = { workspace = true }
+# OpenAPI 契约（S3）：注解 + swagger UI
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
