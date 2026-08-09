@@ -30,12 +30,19 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// 发一条生命周期事件：**双发**——出站 webhook（若启用）+ 进程内 SSE 广播（S3，始终）。
+/// 自动补上当前租户（SSE 按租户过滤）。webhook 关也能 SSE，故不再以 webhook 启用为前提。
+fn publish_event(rt: &FlowRuntime, event: FlowEvent) {
+    let event = event.tenant(Some(crate::tenant::current_tenant()));
+    if rt.webhook.is_enabled() {
+        rt.webhook.emit(event.clone());
+    }
+    crate::events::publish(event);
+}
+
 /// 从实例快照投影出 state/definitionKey/businessKey（webhook 事件公共字段）。
 async fn emit_instance_event(rt: &FlowRuntime, kind: FlowEventKind, instance_id: &str) {
-    if !rt.webhook.is_enabled() {
-        return;
-    }
-    // 借快照补齐展示字段；取不到就只带 instance_id（webhook 是通知，不因取数失败阻断）。
+    // 借快照补齐展示字段；取不到就只带 instance_id（事件是通知，不因取数失败阻断）。
     let (state, def_key, biz_key) = match rt.engine.store().load_snapshot(instance_id).await {
         Ok(snap) => (
             Some(instance_state_str(snap.instance.state).to_string()),
@@ -44,7 +51,8 @@ async fn emit_instance_event(rt: &FlowRuntime, kind: FlowEventKind, instance_id:
         ),
         Err(_) => (None, None, None),
     };
-    rt.webhook.emit(
+    publish_event(
+        rt,
         FlowEvent::new(kind, instance_id, now_rfc3339())
             .state(state)
             .definition_key(def_key)
@@ -58,7 +66,7 @@ async fn emit_task_events(
     kind: FlowEventKind,
     result: &cmx_flow_engine::ExecutionResult,
 ) {
-    if !rt.webhook.is_enabled() || result.open_tasks.is_empty() {
+    if result.open_tasks.is_empty() {
         return;
     }
     // 补齐 definitionKey/businessKey（借快照一次）。
@@ -71,7 +79,8 @@ async fn emit_task_events(
     };
     let ts = now_rfc3339();
     for t in &result.open_tasks {
-        rt.webhook.emit(
+        publish_event(
+            rt,
             FlowEvent::new(kind, &result.instance_id, ts.clone())
                 .definition_key(def_key.clone())
                 .business_key(biz_key.clone())
@@ -83,9 +92,6 @@ async fn emit_task_events(
 
 /// emit 一条 task.reassigned（转办/委派/加签后新办理人 = to_user）。
 async fn emit_reassigned(rt: &FlowRuntime, instance_id: &str, task_id: &str, to_user: &str) {
-    if !rt.webhook.is_enabled() {
-        return;
-    }
     // 补 node_bpmn_id（借快照找该任务；找不到就不带）。
     let node = rt
         .engine
@@ -99,7 +105,8 @@ async fn emit_reassigned(rt: &FlowRuntime, instance_id: &str, task_id: &str, to_
                 .find(|t| t.id == task_id)
                 .map(|t| t.node_bpmn_id.clone())
         });
-    rt.webhook.emit(
+    publish_event(
+        rt,
         FlowEvent::new(FlowEventKind::TaskReassigned, instance_id, now_rfc3339())
             .task(Some(task_id.to_string()), node)
             .assignee(Some(to_user.to_string())),
@@ -755,9 +762,11 @@ pub async fn complete_task(
         )
         .await;
     }
-    // 出站 webhook：该任务已办结；若实例随之完成发 instance.completed，否则为新产生的待办发 task.created。
-    if rt.webhook.is_enabled() {
-        rt.webhook.emit(
+    // 生命周期事件（webhook + SSE 双发）：该任务已办结；若实例随之完成发 instance.completed，
+    // 否则为新产生的待办发 task.created。
+    {
+        publish_event(
+            &rt,
             FlowEvent::new(FlowEventKind::TaskCompleted, &req.instance_id, now_rfc3339())
                 .task(Some(task_id.clone()), Some(node_bpmn_id.clone())),
         );
@@ -773,7 +782,8 @@ pub async fn complete_task(
                     if t.id == task_id {
                         continue;
                     }
-                    rt.webhook.emit(
+                    publish_event(
+                        &rt,
                         FlowEvent::new(FlowEventKind::TaskCreated, &req.instance_id, now_rfc3339())
                             .definition_key(Some(snap.instance.definition_key.clone()))
                             .business_key(snap.instance.business_key.clone())

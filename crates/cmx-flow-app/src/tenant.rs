@@ -79,6 +79,21 @@ pub fn in_scope() -> bool {
     TENANT.try_with(|_| ()).is_ok()
 }
 
+/// 身份快照 —— 供通用监控 crate [`cmx_web_monitor`] 的 observe 中间件读取当前请求身份。
+///
+/// 注册方式：flow-server 启动时 `cmx_web_monitor::set_identity_provider(identity_snapshot)`。
+/// observe 夹在认证之后（scope 已建），故这里能读到 tenant/user/roles；无 scope 返 None（记为匿名）。
+pub fn identity_snapshot() -> Option<cmx_web_monitor::Identity> {
+    if !in_scope() {
+        return None;
+    }
+    Some(cmx_web_monitor::Identity {
+        tenant: current_tenant(),
+        user: current_user(),
+        roles: current_roles(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
