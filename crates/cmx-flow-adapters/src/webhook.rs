@@ -64,6 +64,9 @@ pub struct FlowEvent {
     /// 办理人（task.created/reassigned 带）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// 租户（S3 SSE 按此过滤，只推本租户事件；单租户为 "default"）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
     /// 事件时间（RFC3339）。
     pub occurred_at: String,
 }
@@ -80,6 +83,7 @@ impl FlowEvent {
             task_id: None,
             node_bpmn_id: None,
             assignee: None,
+            tenant: None,
             occurred_at,
         }
     }
@@ -102,6 +106,10 @@ impl FlowEvent {
     }
     pub fn assignee(mut self, v: Option<String>) -> Self {
         self.assignee = v;
+        self
+    }
+    pub fn tenant(mut self, v: Option<String>) -> Self {
+        self.tenant = v;
         self
     }
 }

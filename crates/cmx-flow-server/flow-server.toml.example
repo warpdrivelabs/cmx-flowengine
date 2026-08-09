@@ -36,3 +36,20 @@ graceful_timeout_secs = 10
 # FLOW_JWT_PUBLIC_KEY  = "-----BEGIN PUBLIC KEY-----…"   # RS256 PEM 公钥
 # FLOW_JWT_TENANT_CLAIM = "tenant"   # 租户 claim 名（默认 tenant）
 # FLOW_JWT_ROLES_CLAIM  = "roles"    # 角色 claim 名（默认 roles）
+#
+# —— headless 对外契约（S3）——
+# 端点：/api/flow/v1/*（正式契约，破坏性变更进 v2）+ /api/flow/*（旧,兼容并存）。
+# 文档：/api/flow/v1/openapi.json（OpenAPI 3.1）+ /api/flow/v1/docs（swagger UI，免认证）。
+# 实时：/api/flow/v1/events（SSE 生命周期事件流，按租户过滤；?user= 可再筛办理人）。
+# 服务间 API Key（免 JWT，key→租户）：
+# FLOW_API_KEYS = "svckey:tenantA,k2:tenantB"   # key:tenant 逗号分隔；无冒号=默认租户
+#
+# —— 平台对接 · 认证桥（S6）——
+# 平台 web-server 经 FlowProxyModule 转发时，出站带三层头（对齐平台 remote_importers）：
+#   X-API-Key: <平台服务凭证>              → 命中 FLOW_API_KEYS 验服务身份
+#   X-Delegated-User-Token: Bearer <用户JWT> → 认证桥解它取**真实办理人 + 租户**（on-behalf-of）
+#   X-Request-Id: <链路ID>                 → 追踪
+# 认证桥（auth.rs）：API Key 命中后，若带委托令牌则验签取用户/租户（租户优先取委托 claim，
+#   多租户下一个服务 key 服务多租户）；无委托令牌则退化纯服务调用（roles=["service"]）。
+# 委托令牌**始终验签**，故 FLOW_JWT_SECRET 须与平台签发方一致。
+

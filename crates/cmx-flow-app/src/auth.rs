@@ -39,6 +39,8 @@ struct AuthConfig {
     decoding_key: Option<DecodingKey>,
     tenant_claim: String,
     roles_claim: String,
+    /// 服务间 API Key → 租户映射（S3）。`FLOW_API_KEYS="k1:tenantA,k2:tenantB"`。
+    api_keys: std::collections::HashMap<String, String>,
 }
 
 static AUTH: OnceLock<AuthConfig> = OnceLock::new();
@@ -79,8 +81,32 @@ fn auth_config() -> &'static AuthConfig {
                 .unwrap_or_else(|_| "tenant".to_string()),
             roles_claim: std::env::var("FLOW_JWT_ROLES_CLAIM")
                 .unwrap_or_else(|_| "roles".to_string()),
+            api_keys: parse_api_keys(),
         }
     })
+}
+
+/// 解析 `FLOW_API_KEYS="k1:tenantA,k2:tenantB"` → {k1→tenantA, k2→tenantB}。
+/// 无冒号的 key 绑定默认租户。
+fn parse_api_keys() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(raw) = std::env::var("FLOW_API_KEYS") {
+        for entry in raw.split(',') {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            match entry.split_once(':') {
+                Some((k, t)) => {
+                    map.insert(k.trim().to_string(), t.trim().to_string());
+                }
+                None => {
+                    map.insert(entry.to_string(), DEFAULT_TENANT.to_string());
+                }
+            }
+        }
+    }
+    map
 }
 
 /// JWT claim 壳（宽松：只取需要的，其余忽略）。
@@ -99,6 +125,31 @@ struct Claims {
 /// 加在 flow 路由外层（flow-server / 平台壳各自 `.layer(from_fn(auth))`）。
 pub async fn auth(req: Request, next: Next) -> Response {
     let cfg = auth_config();
+    // 先查 X-Api-Key（服务间 M2M，S3）：命中即以该 key 绑定的租户建 scope，免 JWT。
+    if let Some(key) = header_str(&req, "x-api-key") {
+        match cfg.api_keys.get(&key) {
+            Some(key_tenant) => {
+                // S6 认证桥：服务身份已验（API Key 合法）。若平台再带上**委托用户令牌**
+                // （X-Delegated-User-Token: Bearer <终端用户 JWT>，对齐平台 remote_importers 的
+                // 三层出站鉴权），则解它取真实办理人 + 租户——否则退化为纯服务调用（S3 语义）。
+                //
+                // 关键：多租户下一个服务 key 服务多个平台租户，故**租户优先取委托令牌的 claim**，
+                // 而非 key 绑定的租户（key_tenant 仅作无委托令牌时的回退）。
+                let ctx = match delegated_user_ctx(&req, cfg) {
+                    Some(mut ctx) => {
+                        // 委托令牌解出用户/租户；追加 "service" 角色标记本跳是经服务代理来的。
+                        ctx.roles.push("service".to_string());
+                        ctx
+                    }
+                    None => {
+                        TenantCtx::new(key_tenant.clone()).with_roles(vec!["service".to_string()])
+                    }
+                };
+                return scope(ctx, next.run(req)).await;
+            }
+            None => return unauthorized("无效 API Key"),
+        }
+    }
     let ctx = match cfg.mode {
         AuthMode::Off => ctx_from_headers(&req),
         AuthMode::Jwt => match verify_jwt(&req, cfg) {
@@ -117,29 +168,55 @@ fn ctx_from_headers(req: &Request) -> TenantCtx {
     TenantCtx::new(tenant).with_user(user)
 }
 
-/// jwt 模式：验签 + 解 claim。失败返回 401 响应。
+/// jwt 模式：从 `Authorization: Bearer` 取令牌验签 + 解 claim。失败返回 401 响应。
 fn verify_jwt(req: &Request, cfg: &AuthConfig) -> Result<TenantCtx, Response> {
-    let key = cfg
-        .decoding_key
-        .as_ref()
-        .ok_or_else(|| unauthorized("服务未配置 JWT 密钥"))?;
-
     let token = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")))
         .ok_or_else(|| unauthorized("缺少 Authorization: Bearer <token>"))?;
+    decode_claims(token, cfg).map_err(|e| unauthorized(&format!("JWT 校验失败: {e}")))
+}
+
+/// S6 认证桥：从 `X-Delegated-User-Token: Bearer <jwt>` 解出委托的终端用户上下文。
+///
+/// 平台经 FlowProxyModule 出站时，把当前登录用户的原始 JWT 放此头（对齐 remote_importers 的
+/// `apply_auth_headers`）。这里**始终验签**（无论 FLOW_AUTH_MODE）——委托令牌是终端用户身份的
+/// 唯一凭据，不能无签信任。无密钥（未配 JWT）或验签失败 → 返回 None（退化为纯服务调用，不 401，
+/// 因服务身份本身已由 API Key 验过）。
+fn delegated_user_ctx(req: &Request, cfg: &AuthConfig) -> Option<TenantCtx> {
+    let token = req
+        .headers()
+        .get("x-delegated-user-token")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")).or(Some(s)))?;
+    match decode_claims(token, cfg) {
+        Ok(ctx) => Some(ctx),
+        Err(e) => {
+            tracing::warn!(error = %e, "X-Delegated-User-Token 验签失败，退化为纯服务调用");
+            None
+        }
+    }
+}
+
+/// 验签一个 JWT 字符串 → 租户上下文（tenant/user/roles claim）。供 Bearer 与委托令牌两路复用。
+///
+/// 需已配解码密钥（`decoding_key`）；未配时 Err（jwt 模式启动即告警，off 模式无委托令牌路径）。
+fn decode_claims(token: &str, cfg: &AuthConfig) -> Result<TenantCtx, String> {
+    let key = cfg
+        .decoding_key
+        .as_ref()
+        .ok_or_else(|| "服务未配置 JWT 密钥".to_string())?;
 
     let mut validation = Validation::new(cfg.alg);
-    // flow 只信任 token 声明；不校验 aud（由签发方约束）。exp 默认校验（过期即 401）。
+    // flow 只信任 token 声明；不校验 aud（由签发方约束）。exp 默认校验（过期即失败）。
     validation.validate_aud = false;
 
-    let data = decode::<Claims>(token, key, &validation)
-        .map_err(|e| unauthorized(&format!("JWT 校验失败: {e}")))?;
+    let data = decode::<Claims>(token, key, &validation).map_err(|e| e.to_string())?;
     let claims = data.claims;
 
-    // tenant claim（配置名）→ 字符串；缺失回退默认租户（也可改成强制要求）。
+    // tenant claim（配置名）→ 字符串；缺失回退默认租户。
     let tenant = claims
         .extra
         .get(&cfg.tenant_claim)
@@ -174,5 +251,98 @@ fn unauthorized(msg: &str) -> Response {
         axum::Json(serde_json::json!({ "code": 401, "msg": msg })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jsonwebtoken::{EncodingKey, Header, encode};
+
+    /// 构造一个 HS256 测试用 AuthConfig（不碰进程 OnceLock / 环境变量）。
+    fn hs256_cfg(secret: &str) -> AuthConfig {
+        AuthConfig {
+            mode: AuthMode::Jwt,
+            alg: Algorithm::HS256,
+            decoding_key: Some(DecodingKey::from_secret(secret.as_bytes())),
+            tenant_claim: "tenant".to_string(),
+            roles_claim: "roles".to_string(),
+            api_keys: std::collections::HashMap::new(),
+        }
+    }
+
+    /// 签一个 HS256 JWT（含 sub/tenant/roles + 远期 exp）。
+    fn sign(secret: &str, sub: &str, tenant: &str, roles: &[&str]) -> String {
+        let claims = serde_json::json!({
+            "sub": sub,
+            "tenant": tenant,
+            "roles": roles,
+            "exp": 4_102_444_800u64, // 2100-01-01，避免过期
+        });
+        encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn decode_claims_extracts_user_tenant_roles() {
+        let cfg = hs256_cfg("s6-secret");
+        let token = sign("s6-secret", "u_alice", "tenantA", &["approver", "finance"]);
+        let ctx = decode_claims(&token, &cfg).expect("应验签通过");
+        assert_eq!(ctx.tenant, "tenantA");
+        assert_eq!(ctx.user.as_deref(), Some("u_alice"));
+        assert_eq!(ctx.roles, vec!["approver".to_string(), "finance".to_string()]);
+    }
+
+    #[test]
+    fn decode_claims_rejects_wrong_secret() {
+        let cfg = hs256_cfg("right-secret");
+        let token = sign("WRONG-secret", "u_bob", "t1", &[]);
+        assert!(decode_claims(&token, &cfg).is_err(), "错密钥应验签失败");
+    }
+
+    #[test]
+    fn delegated_user_ctx_honors_token_over_key_tenant() {
+        // S6 桥核心：委托令牌带 Bearer 前缀，解出的 tenant 覆盖 API Key 绑定租户。
+        let cfg = hs256_cfg("s6-secret");
+        let token = sign("s6-secret", "u_carol", "tenantB", &["clerk"]);
+        let req = Request::builder()
+            .header("x-delegated-user-token", format!("Bearer {token}"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let ctx = delegated_user_ctx(&req, &cfg).expect("应解出委托用户");
+        assert_eq!(ctx.tenant, "tenantB"); // 取委托令牌的 claim，非 key 绑定租户
+        assert_eq!(ctx.user.as_deref(), Some("u_carol"));
+        assert_eq!(ctx.roles, vec!["clerk".to_string()]);
+    }
+
+    #[test]
+    fn delegated_user_ctx_accepts_bare_token_without_bearer() {
+        // 容忍无 Bearer 前缀（宿主直接放裸 JWT）。
+        let cfg = hs256_cfg("s6-secret");
+        let token = sign("s6-secret", "u_dan", "t2", &[]);
+        let req = Request::builder()
+            .header("x-delegated-user-token", token)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let ctx = delegated_user_ctx(&req, &cfg).expect("裸令牌也应解出");
+        assert_eq!(ctx.user.as_deref(), Some("u_dan"));
+    }
+
+    #[test]
+    fn delegated_user_ctx_none_when_absent_or_bad() {
+        let cfg = hs256_cfg("s6-secret");
+        // 缺头 → None（退化纯服务调用）
+        let req = Request::builder().body(axum::body::Body::empty()).unwrap();
+        assert!(delegated_user_ctx(&req, &cfg).is_none());
+        // 坏令牌 → None（不 401，服务身份已验）
+        let bad = Request::builder()
+            .header("x-delegated-user-token", "Bearer not.a.jwt")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(delegated_user_ctx(&bad, &cfg).is_none());
+    }
 }
 
