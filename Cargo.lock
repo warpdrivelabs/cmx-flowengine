@@ -864,6 +864,7 @@ dependencies = [
  "anyhow",
  "cmx-core",
  "cmx-database-pg",
+ "cmx-utils",
  "serde",
  "thiserror 2.0.19",
  "toml 0.8.23",

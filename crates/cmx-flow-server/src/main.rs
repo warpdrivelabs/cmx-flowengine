@@ -112,6 +112,13 @@ async fn main() -> cmx_web_chassis::Result<()> {
     // 必须在 ChassisConfig::load / apply_toml_env（都读 env）之前，故置于 main 首行。
     dotenvy::dotenv().ok();
 
+    // 全局 ConfigManager 装配（**所有能力中心共用的唯一那段代码**，在 cmx-service-base）：
+    // CONFIG_FILE 指定的 toml + env → ConfigManager::global()。flow/portal/report/mdm 同一制度，
+    // 不再各写一套。非致命：配置源缺失只 warn（各处仍有 env/默认兜底），不阻塞启动。
+    if let Err(e) = cmx_service_base::init_config_manager() {
+        tracing::warn!(error = %e, "全局 ConfigManager 初始化失败，回退 env/默认兜底");
+    }
+
     // 框架级配置：FLOW_ 前缀环境变量 + 可选 flow-server.toml，默认端口 8091。
     let mut cfg = ChassisConfig::load("flow", "FLOW", "flow-server.toml");
     // 认证/数据源：读同一 toml 的 [auth]/[datasource] 段 → set_var 注入 FLOW_*（env 未设时）。
