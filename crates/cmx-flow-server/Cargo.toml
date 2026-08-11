@@ -23,6 +23,8 @@ cmx-web-chassis = { workspace = true }
 cmx-web-monitor = { workspace = true }
 # tokio-postgres DB 层（注册数据源）
 cmx-database-pg = { workspace = true }
+# 基础服务库：pg 数据源注册原语（与 portal 共享；flow 用 default features 不拉 Redis/sqlx/cmx-utils）
+cmx-service-base = { workspace = true }
 
 # Web 框架（Router 类型；服务栈由 chassis 提供）
 axum = { workspace = true }
@@ -30,7 +32,12 @@ axum = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 # 异步运行时（#[tokio::main]）
 tokio = { workspace = true }
+# 自动读取 .env（统一启动契约：与门户一致，bin 自读 .env，无需手动 source）
+dotenvy = { workspace = true }
 # 启动钩子错误通道
 anyhow = { workspace = true }
 # 日志（钩子内 tracing::info）
 tracing = { workspace = true }
+# 认证/数据源 toml 配置段解析（[auth]/[datasource] → set_var 注入 FLOW_* 环境变量）
+toml = { workspace = true }
+serde = { workspace = true }

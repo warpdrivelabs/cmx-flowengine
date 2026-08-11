@@ -804,9 +804,13 @@ dependencies = [
  "axum",
  "cmx-database-pg",
  "cmx-flow-app",
+ "cmx-service-base",
  "cmx-web-chassis",
  "cmx-web-monitor",
+ "dotenvy",
+ "serde",
  "tokio",
+ "toml 0.8.23",
  "tracing",
  "utoipa-swagger-ui",
 ]
@@ -851,6 +855,19 @@ dependencies = [
  "serde_json",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "cmx-service-base"
+version = "0.1.12"
+dependencies = [
+ "anyhow",
+ "cmx-core",
+ "cmx-database-pg",
+ "serde",
+ "thiserror 2.0.19",
+ "toml 0.8.23",
+ "tracing",
 ]
 
 [[package]]

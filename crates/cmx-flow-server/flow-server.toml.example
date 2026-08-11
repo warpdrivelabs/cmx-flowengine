@@ -1,7 +1,8 @@
 # cmx-flow-server 配置示例（可选）。
 #
 # 加载顺序：本文件（路径由 FLOW_CONFIG 指定，或默认 ./flow-server.toml）→ 环境变量覆盖。
-# 环境变量优先级最高。仅列出 chassis 框架级配置；flow 专属配置（数据源/适配器）见下方注释。
+# 环境变量优先级最高。框架级 + 认证/数据源均可写 toml（认证/数据源段由 main.rs apply_toml_env
+# 注入 FLOW_* 环境变量；env 已显式设置则覆盖 toml）。
 
 # —— chassis 框架级（FLOW_ 前缀环境变量可覆盖：FLOW_HOST/FLOW_PORT/FLOW_LOG_DIR/…）——
 host = "0.0.0.0"
@@ -10,46 +11,42 @@ log_dir = "logs"
 log_level = "info"                 # RUST_LOG 未设时用
 graceful_timeout_secs = 10
 
-# —— flow 专属（不在 toml 里，用环境变量）——
-# FLOW_PG_URL   = "postgres://postgres:postgres@127.0.0.1:5432/fico"   # 运行态 + 定义库
-# IAM_PG_URL    = "postgres://postgres:postgres@127.0.0.1:5432/cmx"    # 候选人/组织库（pg 模式）
+# —— 数据源（toml 段；→ FLOW_PG_URL / IAM_PG_URL）——
+[datasource]
+# flow_pg_url = "postgres://postgres:postgres@127.0.0.1:5432/fico"   # 运行态 + 定义库
+# iam_pg_url  = "postgres://postgres:postgres@127.0.0.1:5432/cmx"    # 候选人/组织库（pg 模式）
+
+# —— 认证（toml 段；→ FLOW_AUTH_MODE/FLOW_JWT_*/FLOW_API_KEYS/FLOW_TENANCY）——
+# 平台经 FlowProxyModule 转发时注入 X-API-Key + X-Delegated-User-Token（委托令牌始终验签）。
+[auth]
+# mode = "off" | "jwt"            # off(默认)=X-Tenant 头/默认租户；jwt=验签取 claim。生产务必 jwt
+# jwt_alg = "HS256"               # 默认 HS256（或 RS256）
+# jwt_secret = "…"                # HS256 密钥——★须 = 平台签发 JWT 密钥（否则委托令牌验签 401）
+# jwt_public_key = "-----BEGIN PUBLIC KEY-----…"  # RS256 PEM 公钥（RS256 时）
+# jwt_tenant_claim = "tenant"     # 租户 claim 名（默认 tenant）
+# jwt_roles_claim = "roles"       # 角色 claim 名（默认 roles）
+# api_keys = "svckey:tenantA,k2:tenantB"   # 服务间 key:租户，逗号分隔；无冒号=默认租户。
+#                                  ★命中即免 JWT；须 = 平台 [service_auth].outgoing_api_key
+# tenancy = "single" | "multi"    # 多租户 db-per-tenant 隔离（默认 single 单库）
+
+# —— 平台对接对齐清单（S6，最关键）——
+# 门户走独立微服务模式（平台 dev-local.toml 配了 [center_client.urls].flow）时，两个值必须对齐，
+# 否则平台代理请求被 flow-server 判 401 → 门户跳登录：
+#   1. [auth].api_keys 的 key   = 平台 [service_auth].outgoing_api_key
+#   2. [auth].jwt_secret        = 平台签发 JWT 的密钥（cmx-auth JwtConfig 默认或 dev-local 自定义）
+# 真实配置见同目录 flow-server.toml。
+
+# —— flow 专属（仍用环境变量；toml 未覆盖这些）——
 # 适配器选择（S1，默认全 pg=回连库；独立部署常用 http/mock）：
 # FLOW_IDENTITY_MODE = "mock" | "http" | "pg"   （+ FLOW_IDENTITY_URL）
 # FLOW_SUBFLOW_MODE  = "mock" | "http" | "pg"   （+ FLOW_SUBFLOW_URL）
 # FLOW_DELEGATE_MODE = "mock" | "http" | "pg"   （+ FLOW_DELEGATE_URL）
-# 出站生命周期 webhook（S1，实例/任务事件通知第三方；空 URL = 关闭）：
-# FLOW_WEBHOOK_URLS        = "https://third-party/hook,https://another/hook"  # 逗号分隔
-# FLOW_WEBHOOK_SIGNING_KEY = "shared-secret"   # HMAC-SHA256 签名密钥（空=不签名）
-# FLOW_WEBHOOK_MAX_RETRIES = 3                 # 单条投递失败重试次数（指数退避）
-#
-# —— 多租户 + 认证（S2）——
-# 多租户隔离（db-per-tenant；默认 single = 单库，等价 S1 之前）：
-# FLOW_TENANCY = "single" | "multi"
-# multi 下租户库 URL（二选一；db_id 派生为 flow_<tenant>，模板须产同名库）：
-# FLOW_TENANT_DB_URL_TEMPLATE = "postgres://…/flow_{tenant}"   # {tenant} 占位
-# FLOW_TENANT_<T>_PG_URL      = "postgres://…/somedb"          # 每租户显式覆盖
-# FLOW_TENANT_IAM_URL_TEMPLATE / FLOW_TENANT_<T>_IAM_URL       # IAM 库（缺省各租户复用默认 IAM 库）
-# 认证（生产务必设 jwt；off 模式租户取自 X-Tenant 头，是生产越权隐患）：
-# FLOW_AUTH_MODE = "off" | "jwt"     # off(默认)=X-Tenant 头/默认租户；jwt=验签取 claim
-# FLOW_JWT_ALG = "HS256" | "RS256"   # 默认 HS256
-# FLOW_JWT_SECRET      = "…"         # HS256 对称密钥
-# FLOW_JWT_PUBLIC_KEY  = "-----BEGIN PUBLIC KEY-----…"   # RS256 PEM 公钥
-# FLOW_JWT_TENANT_CLAIM = "tenant"   # 租户 claim 名（默认 tenant）
-# FLOW_JWT_ROLES_CLAIM  = "roles"    # 角色 claim 名（默认 roles）
+# 出站生命周期 webhook（S1）：FLOW_WEBHOOK_URLS / FLOW_WEBHOOK_SIGNING_KEY / FLOW_WEBHOOK_MAX_RETRIES
+# 多租户库 URL（multi 时）：FLOW_TENANT_DB_URL_TEMPLATE / FLOW_TENANT_<T>_PG_URL 等
 #
 # —— headless 对外契约（S3）——
-# 端点：/api/flow/v1/*（正式契约，破坏性变更进 v2）+ /api/flow/*（旧,兼容并存）。
-# 文档：/api/flow/v1/openapi.json（OpenAPI 3.1）+ /api/flow/v1/docs（swagger UI，免认证）。
-# 实时：/api/flow/v1/events（SSE 生命周期事件流，按租户过滤；?user= 可再筛办理人）。
-# 服务间 API Key（免 JWT，key→租户）：
-# FLOW_API_KEYS = "svckey:tenantA,k2:tenantB"   # key:tenant 逗号分隔；无冒号=默认租户
-#
-# —— 平台对接 · 认证桥（S6）——
-# 平台 web-server 经 FlowProxyModule 转发时，出站带三层头（对齐平台 remote_importers）：
-#   X-API-Key: <平台服务凭证>              → 命中 FLOW_API_KEYS 验服务身份
-#   X-Delegated-User-Token: Bearer <用户JWT> → 认证桥解它取**真实办理人 + 租户**（on-behalf-of）
-#   X-Request-Id: <链路ID>                 → 追踪
-# 认证桥（auth.rs）：API Key 命中后，若带委托令牌则验签取用户/租户（租户优先取委托 claim，
-#   多租户下一个服务 key 服务多租户）；无委托令牌则退化纯服务调用（roles=["service"]）。
-# 委托令牌**始终验签**，故 FLOW_JWT_SECRET 须与平台签发方一致。
+# 端点：/api/flow/v1/*（正式契约）+ /api/flow/*（旧,兼容并存）。
+# 文档：/api/flow/v1/openapi.json + /api/flow/v1/docs（swagger UI，免认证）。
+# 实时：/api/flow/v1/events（SSE 生命周期事件流，按租户过滤）。
+
 

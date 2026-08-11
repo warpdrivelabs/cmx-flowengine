@@ -48,10 +48,13 @@ cmx-core = { path = "../cmx-container/crates/libs/cmx-core", version = "0.1.12" 
 cmx-web-chassis = { path = "../cmx-container/crates/libs/cmx-web-chassis", version = "0.1.12" }
 # 通用技术监控：请求遥测 + 系统指标（CPU/内存/网络/磁盘）+ DB 连接池；与 chassis 并列组装
 cmx-web-monitor = { path = "../cmx-container/crates/libs/cmx-web-monitor", version = "0.1.12" }
+# 基础服务库：pg 数据源注册原语（default-features=false → 不拉 Redis/sqlx/cmx-utils，flow 零负担）
+cmx-service-base = { path = "../cmx-container/crates/libs/cmx-service-base", version = "0.1.12", default-features = false }
 
 # —— 外部 crate（版本照抄 cmx-container 根 [workspace.dependencies]）——
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
+toml = "0.8"
 thiserror = "2.0"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
@@ -70,6 +73,8 @@ roxmltree = "0.20"
 tokio = { version = "1.41", features = ["full"] }
 axum = { version = "0.8.9", features = ["macros", "multipart"] }
 tower-http = { version = "0.6", features = ["fs", "cors", "trace", "compression-full", "timeout", "limit"] }
+# 自动读取 .env（与门户 cmx-platform-app 一致：统一启动契约，bin 自读 .env 无需手动 source）
+dotenvy = "0.15"
 
 [profile.release]
 opt-level = 3
