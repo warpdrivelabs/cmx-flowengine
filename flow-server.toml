@@ -1,6 +1,6 @@
 # cmx-flow-server 实际配置（认证对齐平台，供独立微服务模式使用）。
 #
-# 加载顺序：本文件（路径由 FLOW_CONFIG 指定，或默认 ./flow-server.toml）→ 环境变量覆盖。
+# 加载顺序：本文件（路径由 CONFIG_FILE 指定，回退 FLOW_CONFIG，或默认 ./flow-server.toml）→ 环境变量覆盖。
 # 环境变量优先级最高（同名 FLOW_* 环境变量若已设置，覆盖本文件对应值）。
 #
 # 认证/数据源段（[auth]/[datasource]）由 flow-server main.rs 的 apply_toml_env() 读出并注入

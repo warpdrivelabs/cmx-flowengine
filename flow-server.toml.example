@@ -1,6 +1,6 @@
 # cmx-flow-server 配置示例（可选）。
 #
-# 加载顺序：本文件（路径由 FLOW_CONFIG 指定，或默认 ./flow-server.toml）→ 环境变量覆盖。
+# 加载顺序：本文件（路径由 CONFIG_FILE 指定，回退 FLOW_CONFIG，或默认 ./flow-server.toml）→ 环境变量覆盖。
 # 环境变量优先级最高。框架级 + 认证/数据源均可写 toml（认证/数据源段由 main.rs apply_toml_env
 # 注入 FLOW_* 环境变量；env 已显式设置则覆盖 toml）。
 

@@ -65,10 +65,15 @@ struct DatasourceSection {
     iam_pg_url: Option<String>,  // → IAM_PG_URL
 }
 
-/// 读 flow-server.toml（同 chassis 约定：`FLOW_CONFIG` 指定路径，否则默认 `flow-server.toml`）的
-/// `[auth]`/`[datasource]` 段，注入 FLOW_* 环境变量。env 已显式设置的键不覆盖（env 优先）。
+/// 读 flow-server.toml 的 `[auth]`/`[datasource]` 段，注入 FLOW_* 环境变量。
+/// 路径来源与 chassis 统一：`CONFIG_FILE`（与门户一致）→ 回退 `FLOW_CONFIG` → 默认 `flow-server.toml`。
+/// env 已显式设置的键不覆盖（env 优先）。
 fn apply_toml_env() {
-    let path = std::env::var("FLOW_CONFIG").unwrap_or_else(|_| "flow-server.toml".to_string());
+    let path = std::env::var("CONFIG_FILE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("FLOW_CONFIG").ok().filter(|s| !s.trim().is_empty()))
+        .unwrap_or_else(|| "flow-server.toml".to_string());
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(_) => return, // 文件不存在：跳过，回退纯环境变量/默认
