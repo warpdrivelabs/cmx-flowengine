@@ -1,0 +1,21 @@
+<div class="fpr-root" style="display:flex;flex-direction:column;height:100%;box-sizing:border-box;background:var(--sapBackgroundColor,#f7f9fc);font-family:var(--sapFontFamily,Arial,sans-serif);">
+  <div style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--sapGroup_ContentBorderColor,#e0e0e0);background:#fff;">
+    <ui5-icon name="form" style="color:var(--sapInformativeColor,#0a6ed1);"></ui5-icon>
+    <b id="fprTitle" style="font-size:1rem;">付款请款单（HTML 表单）</b>
+    <span style="flex:1;"></span>
+    <ui5-badge id="fprMode" color-scheme="6">审批</ui5-badge>
+  </div>
+  <div style="flex:1;min-height:0;overflow:auto;padding:14px;">
+    <div style="border:1px solid var(--sapGroup_ContentBorderColor,#e0e0e0);border-radius:10px;background:#fff;padding:14px 16px;">
+      <div style="font-weight:700;color:var(--sapInformativeColor,#0a6ed1);margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #eef2f6;display:flex;align-items:center;gap:6px;">
+        <ui5-icon name="document-text"></ui5-icon> 单据信息
+        <span id="fprRef" style="margin-left:auto;font:600 11px/1 ui-monospace,Menlo,monospace;color:var(--sapContent_LabelColor);"></span>
+      </div>
+      <div id="fprFields" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;"></div>
+    </div>
+    <div style="margin-top:12px;font-size:12px;color:var(--sapContent_LabelColor);padding:0 2px;">
+      本页为 <b>html-pages 类</b>业务表单（门户原生 hydrate 渲染，非 iframe）。审批意见与办结在右侧「审批」区完成。
+    </div>
+  </div>
+</div>
+<script type="application/json" id="__designer_meta__">{"pageData":[],"pageFns":[],"pageServices":[],"pageDeps":[],"pageInterfaces":[{"name":"initPage","enabled":true,"body":"var root=host.shadowRoot;\nfunction $(s){return root.querySelector(s);}\nfunction esc(v){return String(v==null?'':v).replace(/[&<>\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c];});}\n// 读任务上下文：workspace.context 优先，host.props 兜底（与 voucher-detail 同款）。\nvar ws=host.workspace;\nfunction ctxGet(k){ try{ return (ws&&ws.context&&ws.context.get)?ws.context.get(k):null; }catch(e){ return null; } }\nvar props=host.props||{};\nfunction pick(k){ var v=ctxGet(k); if(v==null||v==='') v=props[k]; return v; }\nvar bizTable=pick('bizTable')||'', bizId=pick('bizId')||'', formMode=pick('formMode')||'approve', instanceId=pick('instanceId')||'';\nvar modeLbl=formMode==='edit'?'可编辑':(formMode==='readonly'?'只读':'审批');\nvar mEl=$('#fprMode'); if(mEl)mEl.textContent=modeLbl;\nvar refEl=$('#fprRef'); if(refEl)refEl.textContent=bizTable?(bizTable+' / '+bizId):'';\n// 拉实例变量当业务字段展示（F3 首版：变量投影；F4 换真实 cf_* 取数）。\nfunction render(vars){\n  var box=$('#fprFields'); if(!box)return;\n  var keys=Object.keys(vars||{}).filter(function(k){return k!=='bizTable'&&k!=='bizId';});\n  if(!keys.length){ box.innerHTML='<div style=\"grid-column:1/-1;color:#888;font-size:12px\">无业务字段</div>'; return; }\n  box.innerHTML=keys.map(function(k){ var v=vars[k]; if(v&&typeof v==='object')v=JSON.stringify(v); return '<div style=\"border:1px solid #eef2f6;border-radius:8px;padding:8px 10px;background:#fafbfc\"><div style=\"font-size:11px;color:#6a6d70\">'+esc(k)+'</div><b style=\"font-size:13px\">'+esc(v)+'</b></div>'; }).join('');\n}\nif(instanceId){\n  fetch('/api/flow/instances/'+encodeURIComponent(instanceId)+'/variables',{headers:{Accept:'application/json'},credentials:'same-origin'}).then(function(r){return r.json();}).then(function(j){ var d=(j&&('data' in j))?j.data:j; render(d||{}); }).catch(function(){ render({}); });\n} else { render({}); }"},{"name":"getState","enabled":true,"body":"return {};"},{"name":"isDirty","enabled":true,"body":"return false;"},{"name":"validate","enabled":true,"body":"return {valid:true};"}],"dataSources":[],"dataFlow":{"schema":[],"aggregations":[],"relations":[]},"models":[]}</script>

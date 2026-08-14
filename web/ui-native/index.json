@@ -1,0 +1,40 @@
+{
+  "version": "2026.08.12",
+  "pages": [
+    {
+      "id": "portal.flow.design-workbench",
+      "name": "流程设计工作台",
+      "details": "native_pages 四区流程设计工作台：explorer 流程定义列表、content bpmn-js 画布+工具条、property 选中节点属性；后端 /api/flow/* 由 cmx-flow-api 提供，引擎在 web-server 内单例运行。",
+      "sourceType": "js",
+      "relPath": "flow/design-workbench.js"
+    },
+    {
+      "id": "portal.flow.todo-center",
+      "name": "待办中心",
+      "details": "native_pages 四区待办中心（F3）：explorer 待办分类（我的待办/待认领/我发起的/抄送我的/我已办）、content 待办列表卡片、property 流程轨迹+意见历史；数据源 /api/flow/tasks/my。点「办理」经 openWorkNode 打开 portal.flow.task-form。",
+      "sourceType": "js",
+      "relPath": "flow/todo-center.js"
+    },
+    {
+      "id": "portal.flow.task-form",
+      "name": "任务表单宿主",
+      "details": "native_pages 任务办理表单（F3，由待办中心动态打开、不进菜单）：content 业务单据审阅区+审批意见区+同意/驳回，property 流程轨迹；办结走 /api/flow/tasks/{id}/complete，成功广播 cmx-flow-task-done 让待办中心刷新。",
+      "sourceType": "js",
+      "relPath": "flow/task-form.js"
+    },
+    {
+      "id": "portal.flow.identity-workbench",
+      "name": "身份管理工作台",
+      "details": "native_pages 四区身份管理工作台（P0-c，仅 FLOW_IDENTITY_MODE=local 有意义）：explorer 组织/角色/岗位/用户四类切换+列表、content 记录编辑表单（新增/保存/删除）、property 字段说明+关系型审批提示+身份模式徽标；数据源 /api/flow/identity/*，落 fid_* 表。external 模式只读。",
+      "sourceType": "js",
+      "relPath": "flow/identity-workbench.js"
+    },
+    {
+      "id": "portal.flow.ops-console",
+      "name": "流程运维台",
+      "details": "native_pages 四区流程实例运维台（H4）：explorer 实例列表(异常高亮)、content 详情(令牌位置/任务/变量)+干预工具条(重试异常/改变量/取消)、property 异常明细+流转台账。数据源 /api/flow/instances/*，消费 H2 incident。",
+      "sourceType": "js",
+      "relPath": "flow/ops-console.js"
+    }
+  ]
+}

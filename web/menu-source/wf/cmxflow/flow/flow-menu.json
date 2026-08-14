@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "flow",
+      "caption": "流程管理",
+      "name": "flow",
+      "icon": "tabler-outline/git-branch",
+      "expanded": true,
+      "children": [
+        {
+          "id": "fi-gl-flow-design-workbench",
+          "name": "flow-design-workbench",
+          "caption": "流程设计工作台",
+          "type": "workspace-node",
+          "permissionId": null,
+          "icon": "workflow-tasks",
+          "workspace": {
+            "id": "flow_design_workbench",
+            "explorer": {
+              "caption": "流程定义",
+              "icon": "tree",
+              "views": [
+                {
+                  "id": "flow-design-workbench-explorer",
+                  "tabLabel": "定义",
+                  "icon": "tree",
+                  "type": "native_pages",
+                  "native_page": "portal.flow.design-workbench",
+                  "view": "explorer"
+                }
+              ]
+            },
+            "content": {
+              "caption": "流程设计工作台",
+              "icon": "workflow-tasks",
+              "views": [
+                {
+                  "id": "flow-design-workbench-content",
+                  "tabLabel": "流程图",
+                  "icon": "workflow-tasks",
+                  "type": "native_pages",
+                  "native_page": "portal.flow.design-workbench",
+                  "view": "content"
+                }
+              ]
+            },
+            "property": {
+              "caption": "节点属性",
+              "icon": "detail-view",
+              "views": [
+                {
+                  "id": "flow-design-workbench-prop",
+                  "tabLabel": "属性",
+                  "icon": "detail-view",
+                  "type": "native_pages",
+                  "native_page": "portal.flow.design-workbench",
+                  "view": "property"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "fi-gl-flow-todo-center",
+          "name": "flow-todo-center",
+          "caption": "待办中心",
+          "type": "workspace-node",
+          "permissionId": null,
+          "icon": "task",
+          "workspace": {
+            "id": "flow_todo_center",
+            "explorer": {
+              "caption": "待办分类",
+              "icon": "tree",
+              "views": [
+                {
+                  "id": "flow-todo-center-explorer",
+                  "tabLabel": "分类",
+                  "icon": "tree",
+                  "type": "native_pages",
+                  "native_page": "portal.flow.todo-center",
+                  "view": "explorer"
+                }
+              ]
+            },
+            "content": {
+              "caption": "待办中心",
+              "icon": "task",
+              "views": [
+                {
+                  "id": "flow-todo-center-content",
+                  "tabLabel": "待办",
+                  "icon": "task",
+                  "type": "native_pages",
+                  "native_page": "portal.flow.todo-center",
+                  "view": "content"
+                }
+              ]
+            },
+            "property": {
+              "caption": "流程轨迹",
+              "icon": "detail-view",
+              "views": [
+                {
+                  "id": "flow-todo-center-prop",
+                  "tabLabel": "轨迹",
+                  "icon": "detail-view",
+                  "type": "native_pages",
+                  "native_page": "portal.flow.todo-center",
+                  "view": "property"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

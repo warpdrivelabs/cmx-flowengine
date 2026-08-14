@@ -1,0 +1,14 @@
+{
+  "pages": [
+    {
+      "id": "fi.cmxfico.gl.flow-pay-review-form",
+      "name": "付款复核表单",
+      "domain": "fi",
+      "app": "cmxfico",
+      "module": "gl",
+      "page": "flow-pay-review-form",
+      "relPath": "fi/cmxfico/gl/flow-pay-review-form.html",
+      "latestHtmlFile": "flow-pay-review-form.html"
+    }
+  ]
+}
