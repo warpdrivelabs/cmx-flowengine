@@ -16,9 +16,9 @@
 use std::collections::HashMap;
 
 use cmx_flow_model::{
-    BoundaryTimer, CallActivity, CandidateKind, CandidateRef, FlowNode, MultiInstance, NodeId,
-    NodeKind, ProcessDefinition, SequenceFlow, ServiceTask, UserTask, VarMapping,
-    candidate::parse_candidate_expr, duration::parse_iso8601_duration,
+    BoundaryTimer, CallActivity, CandidateKind, CandidateRef, FlowNode, MessageCatch,
+    MultiInstance, NodeId, NodeKind, ProcessDefinition, SequenceFlow, ServiceTask, UserTask,
+    VarMapping, candidate::parse_candidate_expr, duration::parse_iso8601_duration,
 };
 use roxmltree::{Document, Node};
 
@@ -45,12 +45,19 @@ pub fn compile(xml: &str) -> Result<ProcessDefinition> {
         let local = child.tag_name().name();
         let kind = match local {
             "startEvent" => Some(NodeKind::StartEvent),
-            "endEvent" => Some(NodeKind::EndEvent),
+            // endEvent：含 <terminateEventDefinition> 子元素 → 终止事件（一票否决），否则普通结束。
+            "endEvent" => Some(if has_terminate_definition(&child) {
+                NodeKind::TerminateEndEvent
+            } else {
+                NodeKind::EndEvent
+            }),
             "userTask" => Some(NodeKind::UserTask(parse_user_task(&child))),
             "serviceTask" => Some(parse_service_task(&child)?),
             "exclusiveGateway" => Some(NodeKind::ExclusiveGateway),
             "parallelGateway" => Some(NodeKind::ParallelGateway),
+            "inclusiveGateway" => Some(NodeKind::InclusiveGateway),
             "boundaryEvent" => parse_boundary_event(&child)?,
+            "intermediateCatchEvent" => parse_intermediate_catch(&child)?,
             "callActivity" => Some(NodeKind::CallActivity(parse_call_activity(&child)?)),
             // 顺序流在 Pass 2 处理；其余元素（extensionElements/laneSet/文档等）跳过。
             "sequenceFlow" => None,
@@ -256,6 +263,45 @@ fn parse_multi_instance(task: &Node) -> Option<MultiInstance> {
     })
 }
 
+/// 判断 endEvent 是否为终止事件（含 `<terminateEventDefinition>` 子元素，前缀/方言无关）。
+fn has_terminate_definition(node: &Node) -> bool {
+    node.children()
+        .filter(Node::is_element)
+        .any(|n| n.tag_name().name() == "terminateEventDefinition")
+}
+
+/// 解析 intermediateCatchEvent：仅支持 messageEventDefinition（A4 消息中间捕获）。
+///
+/// 消息名取 `messageEventDefinition` 的 `messageRef` 或本事件的 `cmx:message`/`name` 属性；
+/// 相关键变量取 `cmx:correlationVar` 属性（可空）。非消息类型（timer/signal 等）显式报不支持。
+fn parse_intermediate_catch(node: &Node) -> Result<Option<NodeKind>> {
+    let has_message = node
+        .children()
+        .filter(Node::is_element)
+        .any(|n| n.tag_name().name() == "messageEventDefinition");
+    if !has_message {
+        return Err(Error::Unsupported(format!(
+            "intermediateCatchEvent (id={:?}) 仅支持 messageEventDefinition（A4），其它类型待补",
+            node.attribute("id")
+        )));
+    }
+    // 消息名：优先 messageEventDefinition.messageRef，退回事件的 cmx:message / name 属性 / id。
+    let msg_ref = node
+        .children()
+        .filter(Node::is_element)
+        .find(|n| n.tag_name().name() == "messageEventDefinition")
+        .and_then(|n| local_attr(&n, "messageRef"));
+    let message_name = msg_ref
+        .or_else(|| local_attr(node, "message"))
+        .or_else(|| node.attribute("name").map(|s| s.to_string()))
+        .unwrap_or_else(|| node.attribute("id").unwrap_or("message").to_string());
+    let correlation_var = local_attr(node, "correlationVar").filter(|s| !s.is_empty());
+    Ok(Some(NodeKind::MessageCatchEvent(MessageCatch {
+        message_name,
+        correlation_var,
+    })))
+}
+
 /// 解析 boundaryEvent：仅支持 timerEventDefinition + timeDuration（M2.5 边界定时器）。
 ///
 /// 定时器边界返回 Some(BoundaryTimerEvent)；非定时器类型（error/message/signal 等）显式报
@@ -323,6 +369,18 @@ fn parse_call_activity(node: &Node) -> Result<CallActivity> {
     }
     let input_vars = parse_var_mappings(node, "in");
     let output_vars = parse_var_mappings(node, "out");
+    // 兜底：设计器用 cmx:inVars / cmx:outVars 属性存映射（`source:target` 逗号分隔），规避
+    // bpmn-js moddle 扩展注册。仅当结构化 <in>/<out> 缺失时读属性，二者不叠加（避免重复）。
+    let input_vars = if input_vars.is_empty() {
+        parse_attr_var_mappings(node, "inVars")
+    } else {
+        input_vars
+    };
+    let output_vars = if output_vars.is_empty() {
+        parse_attr_var_mappings(node, "outVars")
+    } else {
+        output_vars
+    };
     Ok(CallActivity {
         called_element,
         called_key,
@@ -337,6 +395,34 @@ fn parse_call_activity(node: &Node) -> Result<CallActivity> {
 fn parse_var_mappings(node: &Node, local: &str) -> Vec<VarMapping> {
     let mut out = Vec::new();
     collect_var_mappings(node, local, &mut out);
+    out
+}
+
+/// 从 `cmx:inVars` / `cmx:outVars` 属性解析变量映射（设计器落点，规避 moddle 扩展）。
+///
+/// 格式：`source:target` 对，逗号分隔；省略 `:target` 时 target = source。
+/// 例：`amount:subAmount, applicant` → [{amount→subAmount}, {applicant→applicant}]。
+fn parse_attr_var_mappings(node: &Node, local: &str) -> Vec<VarMapping> {
+    let raw = match local_attr(node, local) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for pair in raw.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let (source, target) = match pair.split_once(':') {
+            Some((s, t)) => (s.trim().to_string(), t.trim().to_string()),
+            None => (pair.to_string(), pair.to_string()),
+        };
+        if source.is_empty() {
+            continue;
+        }
+        let target = if target.is_empty() { source.clone() } else { target };
+        out.push(VarMapping { source, target });
+    }
     out
 }
 
@@ -452,11 +538,85 @@ fn is_flow_node_like(local: &str) -> bool {
             | "receiveTask"
             | "manualTask"
             | "subProcess"
-            | "inclusiveGateway"
             | "eventBasedGateway"
             | "complexGateway"
-            | "intermediateCatchEvent"
             | "intermediateThrowEvent"
             | "boundaryEvent"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cmx_flow_model::NodeKind;
+
+    // 含 callActivity 的最小主流程；call_inner 插在 calledElement 之后，可放属性 + 自定义子元素。
+    // 约定：call_inner 需自行闭合开标签（给出 `>` 或属性后接 `>` + 子元素）。
+    fn main_with_call(call_open_and_children: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:flowable="http://flowable.org/bpmn"
+             xmlns:cmx="http://cmx/flow">
+  <process id="main" name="主" isExecutable="true">
+    <startEvent id="start"/>
+    <sequenceFlow id="s0" sourceRef="start" targetRef="c"/>
+    <callActivity id="c" name="子调用" calledElement="sub" {call_open_and_children}
+    </callActivity>
+    <sequenceFlow id="s1" sourceRef="c" targetRef="done"/>
+    <endEvent id="done"/>
+  </process>
+</definitions>"#
+        )
+    }
+
+    fn call_activity_of(xml: &str) -> CallActivity {
+        let def = compile(xml).expect("编译应成功");
+        for node in &def.nodes {
+            if let NodeKind::CallActivity(ca) = &node.kind {
+                return ca.clone();
+            }
+        }
+        panic!("未找到 callActivity");
+    }
+
+    #[test]
+    fn attr_var_mappings_parsed() {
+        // cmx:inVars / cmx:outVars 属性写法（设计器落点）；开标签用自闭前的 `>` 收口。
+        let xml = main_with_call(
+            r#"cmx:inVars="amount:subAmount, applicant" cmx:outVars="finResult:result">"#,
+        );
+        let ca = call_activity_of(&xml);
+        assert_eq!(ca.input_vars.len(), 2);
+        assert_eq!(ca.input_vars[0].source, "amount");
+        assert_eq!(ca.input_vars[0].target, "subAmount");
+        // 省略 :target → target = source
+        assert_eq!(ca.input_vars[1].source, "applicant");
+        assert_eq!(ca.input_vars[1].target, "applicant");
+        assert_eq!(ca.output_vars.len(), 1);
+        assert_eq!(ca.output_vars[0].source, "finResult");
+        assert_eq!(ca.output_vars[0].target, "result");
+    }
+
+    #[test]
+    fn structured_in_out_still_win_over_attr() {
+        // 同时给结构化 <in>/<out> 和属性时，结构化优先（属性仅兜底）。
+        let inner = r#"cmx:inVars="ignored:ignored">
+      <extensionElements>
+        <flowable:in source="realIn" target="realInT"/>
+      </extensionElements>"#;
+        let xml = main_with_call(inner);
+        let ca = call_activity_of(&xml);
+        assert_eq!(ca.input_vars.len(), 1);
+        assert_eq!(ca.input_vars[0].source, "realIn");
+        assert_eq!(ca.input_vars[0].target, "realInT");
+    }
+
+    #[test]
+    fn no_mappings_is_empty() {
+        let xml = main_with_call(">");
+        let ca = call_activity_of(&xml);
+        assert!(ca.input_vars.is_empty());
+        assert!(ca.output_vars.is_empty());
+    }
 }

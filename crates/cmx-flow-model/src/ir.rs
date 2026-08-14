@@ -43,6 +43,13 @@ pub enum NodeKind {
     ///
     /// 同一个网关既可 fork 又可 join（既有多入边又有多出边），引擎按到达令牌数判定。
     ParallelGateway,
+    /// 包容网关（A1，BPMN inclusiveGateway，OR）：
+    /// - fork：对每条出边求条件，**满足的都分裂令牌**（≥1；全不满足走 default）。介于排他
+    ///   （择一）与并行（全分裂）之间——按条件择「若干」。审批高频（金额+类型同时命中多路）。
+    /// - join：等所有**实际会到达**的分支令牌到齐再放行。比并行 join 难（到达数依 fork 时条件而定），
+    ///   本引擎采用务实规则：本网关已到达(Joining)令牌 ≥1 且实例内**再无其它可能到达本网关的
+    ///   非结束令牌**时放行（对无环审批流正确）。
+    InclusiveGateway,
     /// 边界定时器事件（M2.5，BPMN boundaryEvent + timerEventDefinition）：
     /// 附着在某个 userTask 上，超时触发。它**不是**正常推进能到达的节点（无入边），
     /// 只有定时器到期时引擎把宿主令牌（中断型）或新令牌（非中断型）置于此节点，再沿其
@@ -54,6 +61,29 @@ pub enum NodeKind {
     /// 子实例跑完（到 endEvent）→ 引擎回调 complete_subflow：回写变量 + 唤醒父令牌沿出边前进。
     /// M5.1 先支持写死的 calledElement（具体子流程 key）；M5.2 叠组织路由（calledKey 逻辑名）。
     CallActivity(CallActivity),
+    /// 消息中间捕获事件（A4，BPMN intermediateCatchEvent + messageEventDefinition）：
+    ///
+    /// 令牌到达时**挂起等待外部消息**（WaitingMessage），由外部系统经 `correlate_message` 按
+    /// 消息名 + 相关键唤醒。打通「等第三方审批结果/外部回调再继续」这类集成场景——审批流常见的
+    /// 「发起后等对方系统裁决」。相关键取实例变量（`correlation_var`）的值。
+    MessageCatchEvent(MessageCatch),
+    /// 终止结束事件（A2，BPMN endEvent + `<terminateEventDefinition>`）：一票否决。
+    ///
+    /// 与普通 EndEvent 只消费**本令牌**不同：令牌到达终止事件时，**杀掉本实例所有其它未结束
+    /// 令牌 + 丢弃全部未办结任务**，实例立即 Completed。审批场景的「一票否决/否决即终止全流程」
+    /// 标准建模——尤其配合并行会签/多分支：任一分支到达终止事件，整个实例收口。
+    TerminateEndEvent,
+}
+
+/// 消息捕获事件的静态配置（A4，来自 BPMN intermediateCatchEvent + messageEventDefinition）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageCatch {
+    /// 消息名（对齐 BPMN `<message name=...>` 或 messageRef）。外部 correlate 时按此名匹配。
+    pub message_name: String,
+    /// 相关键变量名：实例变量里承载相关键的键名（如 "orderId"）。外部 correlate 传相关键值，
+    /// 引擎找到「该变量值 == 相关键」且停在本消息事件的实例令牌唤醒。空 = 仅按消息名 + 实例 id 唤醒。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_var: Option<String>,
 }
 
 /// 调用活动的静态配置（来自 BPMN callActivity）。
@@ -170,6 +200,14 @@ pub enum CandidateKind {
     Position,
     /// 按部门（org(id)）——M4 新建 cmx_org，取该部门（及子树）下的用户。
     Org,
+    /// 部门领导（orgLeader(orgId?)）——P0 关系型。取该组织的 leader；orgId 省略时用实例所属组织
+    /// （ResolveContext.org_id）。对应外接 IAM 的 cmx_org.leader_user_id。
+    OrgLeader,
+    /// 发起人本人（initiator）——P0 关系型。解析成 ResolveContext.initiator 单元素。value 忽略。
+    Initiator,
+    /// 发起人上级（initiatorLeader）——P0 关系型。取发起人所属组织的 leader（发起人的部门领导）。
+    /// value 忽略；锚点是发起人而非实例组织。
+    InitiatorLeader,
 }
 
 /// 多实例（multiInstance）静态配置——会签 / 或签的定义侧描述。
@@ -324,7 +362,9 @@ impl ProcessDefinition {
                 }
             }
             // endEvent 不应有出边。
-            if matches!(node.kind, NodeKind::EndEvent) && !node.outgoing.is_empty() {
+            if matches!(node.kind, NodeKind::EndEvent | NodeKind::TerminateEndEvent)
+                && !node.outgoing.is_empty()
+            {
                 return Err(Error::InvalidDefinition(format!(
                     "结束事件 {} 不应有出边",
                     node.bpmn_id

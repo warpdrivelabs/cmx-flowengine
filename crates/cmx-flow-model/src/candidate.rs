@@ -47,7 +47,21 @@ fn parse_one(item: &str, default_kind: CandidateKind) -> CandidateRef {
             value: item.to_string(),
         };
     }
-    // 裸值：按 default_kind。
+    // 无括号的裸值：先看是否是「无参关系型关键字」（initiator / initiatorLeader / orgLeader），
+    // 这些 value 语义为空（锚点来自 ResolveContext）。命中则按该 kind，value 置空。
+    let lower = item.to_ascii_lowercase();
+    if let Some(kind) = kind_from_name(&lower) {
+        if matches!(
+            kind,
+            CandidateKind::Initiator | CandidateKind::InitiatorLeader | CandidateKind::OrgLeader
+        ) {
+            return CandidateRef {
+                kind,
+                value: String::new(),
+            };
+        }
+    }
+    // 其它裸值：按 default_kind。
     CandidateRef {
         kind: default_kind,
         value: item.to_string(),
@@ -61,6 +75,10 @@ fn kind_from_name(name: &str) -> Option<CandidateKind> {
         "role" | "group" => Some(CandidateKind::Role),
         "position" | "pos" | "post" => Some(CandidateKind::Position),
         "org" | "dept" | "department" => Some(CandidateKind::Org),
+        // P0 关系型：部门领导 / 发起人本人 / 发起人上级。
+        "orgleader" | "leader" | "deptleader" => Some(CandidateKind::OrgLeader),
+        "initiator" | "starter" => Some(CandidateKind::Initiator),
+        "initiatorleader" | "starterleader" => Some(CandidateKind::InitiatorLeader),
         _ => None,
     }
 }
@@ -110,5 +128,42 @@ mod tests {
         );
         assert!(parse_candidate_expr("", CandidateKind::User).is_empty());
         assert!(parse_candidate_expr("  ,  ", CandidateKind::User).is_empty());
+    }
+
+    #[test]
+    fn parses_relationship_kinds() {
+        // 无参关系型（裸关键字，value 语义为空）。
+        let init = parse_candidate_expr("initiator", CandidateKind::User);
+        assert_eq!(init.len(), 1);
+        assert_eq!(init[0].kind, CandidateKind::Initiator);
+        assert!(init[0].value.is_empty());
+
+        let il = parse_candidate_expr("initiatorLeader", CandidateKind::User);
+        assert_eq!(il[0].kind, CandidateKind::InitiatorLeader);
+
+        // 部门领导：带 orgId 或省略。
+        let ol1 = parse_candidate_expr("orgLeader(d_fin)", CandidateKind::User);
+        assert_eq!(ol1[0].kind, CandidateKind::OrgLeader);
+        assert_eq!(ol1[0].value, "d_fin");
+        let ol2 = parse_candidate_expr("orgLeader", CandidateKind::User);
+        assert_eq!(ol2[0].kind, CandidateKind::OrgLeader);
+        assert!(ol2[0].value.is_empty());
+    }
+
+    #[test]
+    fn mixed_relationship_and_classic() {
+        // 关系型与经典引用混排，各归其类。
+        let refs = parse_candidate_expr("role(finance), initiator, orgLeader(d1)", CandidateKind::User);
+        assert_eq!(refs.len(), 3);
+        assert_eq!(refs[0].kind, CandidateKind::Role);
+        assert_eq!(refs[1].kind, CandidateKind::Initiator);
+        assert_eq!(refs[2].kind, CandidateKind::OrgLeader);
+    }
+
+    #[test]
+    fn bare_user_id_not_mistaken_for_relationship() {
+        // 普通用户 id 不应被误判为关系型（只有精确关键字才是）。
+        let refs = parse_candidate_expr("u_1001, mgr", CandidateKind::User);
+        assert!(refs.iter().all(|r| r.kind == CandidateKind::User));
     }
 }

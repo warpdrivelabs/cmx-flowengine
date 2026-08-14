@@ -705,6 +705,7 @@ dependencies = [
  "cmx-flow-bpmn",
  "cmx-flow-def",
  "cmx-flow-engine",
+ "cmx-flow-identity",
  "cmx-flow-model",
  "cmx-flow-store-pg",
  "cmx-web-monitor",
@@ -717,6 +718,7 @@ dependencies = [
  "utoipa",
  "utoipa-swagger-ui",
  "uuid",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -784,6 +786,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmx-flow-identity"
+version = "0.1.12"
+dependencies = [
+ "async-trait",
+ "cmx-core",
+ "cmx-database-pg",
+ "cmx-flow-model",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cmx-flow-model"
 version = "0.1.12"
 dependencies = [
@@ -838,6 +855,7 @@ dependencies = [
  "cmx-database-pg",
  "cmx-flow-bpmn",
  "cmx-flow-engine",
+ "cmx-flow-identity",
  "cmx-flow-model",
  "cmx-flow-store-pg",
  "serde_json",

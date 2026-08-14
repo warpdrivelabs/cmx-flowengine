@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use cmx_flow_engine::{
-    AssigneeResolver, CandidateKind, CandidateRef, DelegateContext, JavaDelegate, ResolveResult,
-    RouteResult, SubflowRouter,
+    AssigneeResolver, CandidateKind, CandidateRef, DelegateContext, JavaDelegate, ResolveContext,
+    ResolveResult, RouteResult, SubflowRouter,
 };
 
 /// Mock 候选人解析：User→自身；Role/Position/Org→可预测的合成用户 id。
@@ -26,6 +26,46 @@ impl AssigneeResolver for MockAssigneeResolver {
             CandidateKind::Role => vec![format!("role:{v}:u1"), format!("role:{v}:u2")],
             CandidateKind::Position => vec![format!("position:{v}:u1")],
             CandidateKind::Org => vec![format!("org:{v}:u1"), format!("org:{v}:u2")],
+            // 关系型（无上下文）：orgLeader(orgId) 显式可合成；其余需上下文，返回空。
+            CandidateKind::OrgLeader if !v.is_empty() => vec![format!("orgLeader:{v}")],
+            CandidateKind::OrgLeader
+            | CandidateKind::Initiator
+            | CandidateKind::InitiatorLeader => vec![],
+        };
+        Ok(out)
+    }
+
+    /// 带上下文：关系型合成可预测 id（发起人本人=ctx.initiator；部门领导=orgLeader:<org>；
+    /// 发起人上级=initiatorLeader:<initiator>）。便于端到端演示无需真实 IAM。
+    async fn resolve_with(
+        &self,
+        candidate: &CandidateRef,
+        ctx: &ResolveContext,
+    ) -> ResolveResult<Vec<String>> {
+        let out = match candidate.kind {
+            CandidateKind::OrgLeader => {
+                let org = if candidate.value.is_empty() {
+                    ctx.org_id.clone().unwrap_or_default()
+                } else {
+                    candidate.value.clone()
+                };
+                if org.is_empty() {
+                    vec![]
+                } else {
+                    vec![format!("orgLeader:{org}")]
+                }
+            }
+            CandidateKind::Initiator => ctx
+                .initiator
+                .clone()
+                .filter(|s| !s.is_empty())
+                .into_iter()
+                .collect(),
+            CandidateKind::InitiatorLeader => match ctx.initiator.as_deref() {
+                Some(u) if !u.is_empty() => vec![format!("initiatorLeader:{u}")],
+                _ => vec![],
+            },
+            _ => return self.resolve(candidate).await,
         };
         Ok(out)
     }
@@ -75,6 +115,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(role, vec!["role:finance:u1", "role:finance:u2"]);
+    }
+
+    #[tokio::test]
+    async fn mock_resolves_relationship_kinds_with_context() {
+        let r = MockAssigneeResolver;
+        let ctx = ResolveContext::new(Some("u_boss".into()), Some("d_fin".into()));
+        // 发起人本人 → ctx.initiator
+        let init = r
+            .resolve_with(&CandidateRef { kind: CandidateKind::Initiator, value: String::new() }, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(init, vec!["u_boss"]);
+        // 部门领导（无显式 org）→ 用 ctx.org_id
+        let ol = r
+            .resolve_with(&CandidateRef { kind: CandidateKind::OrgLeader, value: String::new() }, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(ol, vec!["orgLeader:d_fin"]);
+        // 部门领导（显式 org 覆盖）
+        let ol2 = r
+            .resolve_with(&CandidateRef { kind: CandidateKind::OrgLeader, value: "d_hr".into() }, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(ol2, vec!["orgLeader:d_hr"]);
+        // 发起人上级
+        let il = r
+            .resolve_with(&CandidateRef { kind: CandidateKind::InitiatorLeader, value: String::new() }, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(il, vec!["initiatorLeader:u_boss"]);
+    }
+
+    #[tokio::test]
+    async fn mock_relationship_without_context_is_empty() {
+        let r = MockAssigneeResolver;
+        // 无上下文（走无参 resolve）：发起人相关无从解析 → 空。
+        let init = r
+            .resolve(&CandidateRef { kind: CandidateKind::Initiator, value: String::new() })
+            .await
+            .unwrap();
+        assert!(init.is_empty());
+        // orgLeader 显式给 org 时无上下文也能合成。
+        let ol = r
+            .resolve(&CandidateRef { kind: CandidateKind::OrgLeader, value: "d_x".into() })
+            .await
+            .unwrap();
+        assert_eq!(ol, vec!["orgLeader:d_x"]);
     }
 
     #[tokio::test]

@@ -17,6 +17,7 @@ members = [
     "crates/cmx-flow-def",
     "crates/cmx-flow-store-pg",
     "crates/cmx-flow-adapters",
+    "crates/cmx-flow-identity",
     "crates/cmx-flow-app",
     "crates/cmx-flow-server",
     "crates/cmx-flow-demo",
@@ -37,6 +38,7 @@ cmx-flow-engine = { path = "crates/cmx-flow-engine", version = "0.1.12" }
 cmx-flow-def = { path = "crates/cmx-flow-def", version = "0.1.12" }
 cmx-flow-store-pg = { path = "crates/cmx-flow-store-pg", version = "0.1.12" }
 cmx-flow-adapters = { path = "crates/cmx-flow-adapters", version = "0.1.12" }
+cmx-flow-identity = { path = "crates/cmx-flow-identity", version = "0.1.12" }
 cmx-flow-app = { path = "crates/cmx-flow-app", version = "0.1.12" }
 
 # —— 复用 cmx-container 基础设施（跨 workspace 路径；仍是 cmx-container 成员，非本库成员）——
@@ -62,6 +64,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.21", features = ["v4", "serde"] }
 async-trait = "0.1"
 anyhow = "1.0"
+# 非加密内容哈希（前端页 rev = xxhash64→16hex，字节对齐门户 cmx-jsonstore::content_rev）
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
 # JWT 验签（S2 认证：验 HS256/RS256 签名，解 tenant/user/roles claim）
 jsonwebtoken = "9"
 # SSE 事件流（S3）：broadcast → axum Sse 的流适配

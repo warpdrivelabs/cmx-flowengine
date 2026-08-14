@@ -1016,12 +1016,15 @@ fn node_kind_str(k: &NodeKind) -> &'static str {
     match k {
         NodeKind::StartEvent => "startEvent",
         NodeKind::EndEvent => "endEvent",
+        NodeKind::TerminateEndEvent => "terminateEndEvent",
         NodeKind::UserTask(_) => "userTask",
         NodeKind::ServiceTask(_) => "serviceTask",
         NodeKind::ExclusiveGateway => "exclusiveGateway",
         NodeKind::ParallelGateway => "parallelGateway",
+        NodeKind::InclusiveGateway => "inclusiveGateway",
         NodeKind::BoundaryTimerEvent(_) => "boundaryTimerEvent",
         NodeKind::CallActivity(_) => "callActivity",
+        NodeKind::MessageCatchEvent(_) => "messageCatchEvent",
     }
 }
 
@@ -1029,6 +1032,7 @@ fn instance_state_str(s: cmx_flow_model::InstanceState) -> &'static str {
     use cmx_flow_model::InstanceState::*;
     match s {
         Active => "ACTIVE",
+        Suspended => "SUSPENDED",
         Completed => "COMPLETED",
         Terminated => "TERMINATED",
     }
@@ -1041,6 +1045,9 @@ fn candidate_kind_str(k: cmx_flow_model::CandidateKind) -> &'static str {
         Role => "ROLE",
         Position => "POSITION",
         Org => "ORG",
+        OrgLeader => "ORG_LEADER",
+        Initiator => "INITIATOR",
+        InitiatorLeader => "INITIATOR_LEADER",
     }
 }
 
@@ -1051,6 +1058,8 @@ fn token_state_str(s: cmx_flow_model::TokenState) -> &'static str {
         Waiting => "WAITING",
         Joining => "JOINING",
         WaitingSubflow => "WAITING_SUBFLOW",
+        WaitingMessage => "WAITING_MESSAGE",
+        Incident => "INCIDENT",
         Ended => "ENDED",
     }
 }

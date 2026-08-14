@@ -18,6 +18,7 @@
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use cmx_flow_model::{
     AssigneeResolver, CandidateKind, CcRecord, InstanceSnapshot, InstanceState, MiScope, NodeKind,
@@ -76,7 +77,9 @@ pub struct FiredTimer {
 /// 流程引擎。泛型于 RuntimeStore：测试用 InMemoryStore，生产用 PG 实现。
 pub struct Engine<S: RuntimeStore> {
     store: S,
-    definitions: HashMap<String, ProcessDefinition>,
+    /// 已部署定义。用 `RwLock` 内部可变：`deploy` 取 `&self`，故 `Arc<Engine>` 之后仍可**热装载**
+    /// 新发布的定义（H1：发布即生效，无需重启）。读多写极少，RwLock 合适。
+    definitions: RwLock<HashMap<String, ProcessDefinition>>,
     delegates: DelegateRegistry,
     /// 可注入时钟：生产 SystemClock，测试 TestClock（M2.5 定时器可测的关键）。
     clock: Arc<dyn Clock>,
@@ -99,7 +102,7 @@ impl<S: RuntimeStore> Engine<S> {
     pub fn with_clock(store: S, clock: Arc<dyn Clock>) -> Self {
         Self {
             store,
-            definitions: HashMap::new(),
+            definitions: RwLock::new(HashMap::new()),
             delegates: DelegateRegistry::new(),
             clock,
             resolver: None,
@@ -118,15 +121,18 @@ impl<S: RuntimeStore> Engine<S> {
     }
 
     /// 解析候选引用为用户 id 集合（并集去重）。无 resolver 或无引用 → 空 Vec（调用方降级）。
+    ///
+    /// `ctx` 携带 initiator/org，供关系型候选（部门领导/发起人上级/本人）解析；非关系型忽略它。
     async fn resolve_candidates(
         &self,
         candidates: &[cmx_flow_model::CandidateRef],
+        ctx: &cmx_flow_model::ResolveContext,
     ) -> Result<Vec<String>> {
         if candidates.is_empty() {
             return Ok(Vec::new());
         }
         match &self.resolver {
-            Some(r) => r.resolve_all(candidates).await.map_err(Error::from),
+            Some(r) => r.resolve_all_with(candidates, ctx).await.map_err(Error::from),
             None => {
                 tracing::warn!(
                     count = candidates.len(),
@@ -137,12 +143,47 @@ impl<S: RuntimeStore> Engine<S> {
         }
     }
 
+    /// 从实例快照构建解析上下文：initiator 取实例变量 `initiator`（约定），org 取实例 org_id。
+    fn resolve_ctx_of(snapshot: &InstanceSnapshot) -> cmx_flow_model::ResolveContext {
+        let initiator = snapshot
+            .instance
+            .variables
+            .get("initiator")
+            .and_then(|v| v.as_str().map(|s| s.to_string()));
+        cmx_flow_model::ResolveContext::new(initiator, snapshot.instance.org_id.clone())
+    }
+
     /// 部署一份流程定义。会做 M1 拓扑子集校验（引擎声明自己支持的形态）。
-    pub fn deploy(&mut self, def: ProcessDefinition) -> Result<()> {
+    ///
+    /// **取 `&self`**（内部 RwLock）：故 `Arc<Engine>` 包好后仍可热装载新发布的定义（H1）。
+    /// 同 key 覆盖（发布新版即替换运行时定义；已在跑的旧实例按各自快照+其定义 key 继续，
+    /// 因定义按 key 存，覆盖后旧实例读到的是新版——审批场景可接受，实例迁移是后续 B1）。
+    pub fn deploy(&self, def: ProcessDefinition) -> Result<()> {
         Self::check_topology(&def)?;
         tracing::info!(key = %def.key, nodes = def.nodes.len(), "部署流程定义");
-        self.definitions.insert(def.key.clone(), def);
+        self.definitions
+            .write()
+            .expect("definitions 锁中毒")
+            .insert(def.key.clone(), def);
         Ok(())
+    }
+
+    /// 克隆出一份已部署定义（读锁只在克隆期间持有，绝不跨 await）。未部署 → DefinitionNotFound。
+    fn get_definition(&self, key: &str) -> Result<ProcessDefinition> {
+        self.definitions
+            .read()
+            .expect("definitions 锁中毒")
+            .get(key)
+            .cloned()
+            .ok_or_else(|| Error::DefinitionNotFound(key.to_string()))
+    }
+
+    /// 某 key 是否已部署（读锁瞬时持有）。
+    fn has_definition(&self, key: &str) -> bool {
+        self.definitions
+            .read()
+            .expect("definitions 锁中毒")
+            .contains_key(key)
     }
 
     /// 注册一个 serviceTask delegate。
@@ -168,15 +209,21 @@ impl<S: RuntimeStore> Engine<S> {
             let ok = match &node.kind {
                 NodeKind::StartEvent => out == 1,
                 NodeKind::EndEvent => out == 0,
+                // 终止结束事件：同普通 endEvent，无出边。
+                NodeKind::TerminateEndEvent => out == 0,
                 NodeKind::UserTask(_) | NodeKind::ServiceTask(_) => out == 1,
                 // 排他网关：择一，至少一条出边。
                 NodeKind::ExclusiveGateway => out >= 1,
                 // 并行网关：作为 fork 需多出边，作为纯 join 出边可为 1；统一要求 >= 1。
                 NodeKind::ParallelGateway => out >= 1,
+                // 包容网关：同并行，>= 1 出边。
+                NodeKind::InclusiveGateway => out >= 1,
                 // 边界定时器事件：触发后沿唯一出边走升级/催办分支，需恰好一条出边。
                 NodeKind::BoundaryTimerEvent(_) => out == 1,
                 // 调用活动：子流程完成后沿唯一出边继续，需恰好一条出边。
                 NodeKind::CallActivity(_) => out == 1,
+                // 消息中间捕获事件：唤醒后沿唯一出边继续，需恰好一条出边。
+                NodeKind::MessageCatchEvent(_) => out == 1,
             };
             if !ok {
                 return Err(Error::UnsupportedTopology(format!(
@@ -241,10 +288,7 @@ impl<S: RuntimeStore> Engine<S> {
         parent_token_id: Option<String>,
         parent_node_bpmn_id: Option<String>,
     ) -> Result<InstanceSnapshot> {
-        let def = self
-            .definitions
-            .get(definition_key)
-            .ok_or_else(|| Error::DefinitionNotFound(definition_key.to_string()))?;
+        let def = self.get_definition(definition_key)?;
 
         let now = self.clock.now();
         let instance_id = Uuid::new_v4().to_string();
@@ -284,7 +328,7 @@ impl<S: RuntimeStore> Engine<S> {
             delegations: Vec::new(),
         };
 
-        self.run_to_wait(def, &mut snapshot, now).await?;
+        self.run_to_wait(&def, &mut snapshot, now).await?;
         self.store.create_snapshot(&snapshot).await?;
         Ok(snapshot)
     }
@@ -364,12 +408,7 @@ impl<S: RuntimeStore> Engine<S> {
         parent_token_id: &str,
         node_bpmn: &str,
     ) -> Result<()> {
-        let def = self
-            .definitions
-            .get(&parent_snap.instance.definition_key)
-            .ok_or_else(|| {
-                Error::DefinitionNotFound(parent_snap.instance.definition_key.clone())
-            })?;
+        let def = self.get_definition(&parent_snap.instance.definition_key)?;
         let node = def
             .node_by_bpmn(node_bpmn)
             .ok_or_else(|| Error::IllegalTokenState(format!("节点 {node_bpmn} 不在定义中")))?;
@@ -401,7 +440,7 @@ impl<S: RuntimeStore> Engine<S> {
             },
             _ => ca.called_element.clone(),
         };
-        if !self.definitions.contains_key(&sub_key) {
+        if !self.has_definition(&sub_key) {
             return Err(Error::DefinitionNotFound(format!(
                 "子流程 {sub_key}（callActivity {node_bpmn} 调用）未部署"
             )));
@@ -449,11 +488,7 @@ impl<S: RuntimeStore> Engine<S> {
 
             let mut parent = self.store.load_snapshot(&parent_id).await?;
             let now = self.clock.now();
-            let def = self
-                .definitions
-                .get(&parent.instance.definition_key)
-                .ok_or_else(|| Error::DefinitionNotFound(parent.instance.definition_key.clone()))?
-                .clone();
+            let def = self.get_definition(&parent.instance.definition_key)?;
 
             // 定位父令牌，必须是 WaitingSubflow。
             let Some(tidx) = parent.tokens.iter().position(|t| t.id == parent_token_id) else {
@@ -518,10 +553,14 @@ impl<S: RuntimeStore> Engine<S> {
         variables: Variables,
     ) -> Result<ExecutionResult> {
         let mut snapshot = self.store.load_snapshot(instance_id).await?;
-        let def = self
-            .definitions
-            .get(&snapshot.instance.definition_key)
-            .ok_or_else(|| Error::DefinitionNotFound(snapshot.instance.definition_key.clone()))?;
+        let def = self.get_definition(&snapshot.instance.definition_key)?;
+
+        // 实例已挂起（A7）：拒绝办结，恢复后方可办理。
+        if snapshot.instance.state == InstanceState::Suspended {
+            return Err(Error::TaskNotActionable(format!(
+                "实例 {instance_id} 已挂起，恢复(resume)后方可办理"
+            )));
+        }
 
         // 定位任务，必须存在且未办结。
         let task_idx = snapshot
@@ -563,7 +602,8 @@ impl<S: RuntimeStore> Engine<S> {
 
         // 节点配置抄送：解析 cc 表达式为用户，落抄送记录（不阻塞流程）。
         if !cc_refs.is_empty() {
-            let cc_users = self.resolve_candidates(&cc_refs).await?;
+            let cc_ctx = Self::resolve_ctx_of(&snapshot);
+            let cc_users = self.resolve_candidates(&cc_refs, &cc_ctx).await?;
             append_cc_records(
                 &mut snapshot.cc_records,
                 &snapshot.instance.id,
@@ -594,7 +634,7 @@ impl<S: RuntimeStore> Engine<S> {
             // 令牌不动（仍 Waiting 在本节点），流程不推进——父任务还没办。
         } else if is_mi {
             // —— 多实例（会签/或签）：计数、判完成条件、收口或展开下一个 —— //
-            complete_mi_task(def, &mut snapshot, &node_bpmn, &token_id, now)?;
+            complete_mi_task(&def, &mut snapshot, &node_bpmn, &token_id, now)?;
         } else {
             // —— 普通单实例：令牌离开 userTask 沿唯一出边，转 Active —— //
             let token_idx = snapshot
@@ -625,7 +665,7 @@ impl<S: RuntimeStore> Engine<S> {
             tok.updated_at = now;
         }
 
-        self.run_to_wait(def, &mut snapshot, now).await?;
+        self.run_to_wait(&def, &mut snapshot, now).await?;
         self.store.save_snapshot(&snapshot).await?;
 
         // 办结可能把令牌推进到 callActivity（挂起 WaitingSubflow）→ 启动子实例。
@@ -839,6 +879,13 @@ impl<S: RuntimeStore> Engine<S> {
 
     /// 定位一个「可操作」任务的下标：存在、未办结、未被挂起。转签家族共用。
     fn actionable_task_idx(&self, snapshot: &InstanceSnapshot, task_id: &str) -> Result<usize> {
+        // 实例已挂起（A7）：拒绝一切任务动作，直到 resume。
+        if snapshot.instance.state == InstanceState::Suspended {
+            return Err(Error::TaskNotActionable(format!(
+                "实例 {} 已挂起，恢复(resume)后方可办理",
+                snapshot.instance.id
+            )));
+        }
         let idx = snapshot
             .tasks
             .iter()
@@ -863,7 +910,8 @@ impl<S: RuntimeStore> Engine<S> {
         reason: Option<&str>,
     ) -> Result<usize> {
         let mut snapshot = self.store.load_snapshot(instance_id).await?;
-        let cc_users = self.resolve_candidates(cc_refs).await?;
+        let cc_ctx = Self::resolve_ctx_of(&snapshot);
+        let cc_users = self.resolve_candidates(cc_refs, &cc_ctx).await?;
         let before = snapshot.cc_records.len();
         let now = self.clock.now();
         append_cc_records(
@@ -904,12 +952,451 @@ impl<S: RuntimeStore> Engine<S> {
             .map_err(Error::from)
     }
 
-    /// 取消 / 终止一个流程实例（撤单、作废等审批刚需）。
+    /// 退回 / 驳回（P6）——把一个待办任务打回到之前的节点重新办理。
     ///
-    /// 语义：硬终止——杀掉全部未结束令牌、丢弃未办结任务、收口未完成的多实例域，实例转
-    /// `Terminated`。已办结任务保留以供归档；save_snapshot 的 `is_terminal()` 路径会把实例
-    /// 与已办结任务归档进历史表。M3 不做补偿（不回滚已执行的 serviceTask 副作用）。
+    /// 与 complete_task 的区别：complete 沿出边**向前**推进；reject 把令牌移到**目标节点**
+    /// （回退），由 run_to_wait 在目标节点重建待办。目标选择：
+    ///   - 显式 `target_bpmn_id`（驳回到指定节点，须是 userTask，A/B8「驳回到指定节点」）；
+    ///   - 省略则回退到**直接前驱**（沿入边找唯一上游节点；多前驱时报错要求显式指定）。
     ///
+    /// 语义：当前任务标记办结（记 REJECT 台账，comment 存驳回意见），令牌回目标节点重新展开。
+    /// 合并提交的变量（可带驳回意见变量）。不做补偿。多实例任务不支持退回（须整域处理）——报错。
+    pub async fn reject_task(
+        &self,
+        instance_id: &str,
+        task_id: &str,
+        from_user: &str,
+        target_bpmn_id: Option<&str>,
+        reason: Option<&str>,
+        variables: Variables,
+    ) -> Result<ExecutionResult> {
+        let mut snapshot = self.store.load_snapshot(instance_id).await?;
+        let def = self.get_definition(&snapshot.instance.definition_key)?;
+
+        let idx = self.actionable_task_idx(&snapshot, task_id)?;
+        let node_bpmn = snapshot.tasks[idx].node_bpmn_id.clone();
+        let token_id = snapshot.tasks[idx].token_id.clone();
+
+        // 多实例任务不支持退回（一个子任务打回会破坏会签计数）——显式挡回。
+        if snapshot
+            .mi_scopes
+            .iter()
+            .any(|s| s.node_bpmn_id == node_bpmn && !s.finished)
+        {
+            return Err(Error::TaskNotActionable(format!(
+                "任务 {task_id} 属于会签/或签域，不支持退回（请整域处理）"
+            )));
+        }
+
+        // 目标节点：显式优先，否则找直接前驱。
+        let target = match target_bpmn_id {
+            Some(t) if !t.is_empty() => {
+                // 校验目标存在且是 userTask（回退到非人工节点无意义）。
+                let tn = def.node_by_bpmn(t).ok_or_else(|| {
+                    Error::TaskNotActionable(format!("退回目标节点 {t} 不在定义中"))
+                })?;
+                if !matches!(tn.kind, NodeKind::UserTask(_)) {
+                    return Err(Error::TaskNotActionable(format!(
+                        "退回目标 {t} 不是用户任务，无法回退办理"
+                    )));
+                }
+                t.to_string()
+            }
+            _ => predecessor_user_task(&def, &node_bpmn)?,
+        };
+
+        let now = self.clock.now();
+        // 合并驳回意见等变量。
+        snapshot.instance.variables.merge(variables);
+
+        // 当前任务办结 + 台账（REJECT）。
+        {
+            let t = &mut snapshot.tasks[idx];
+            t.completed = true;
+            t.completed_at = Some(now);
+        }
+        push_delegation(
+            &mut snapshot.delegations,
+            instance_id,
+            task_id,
+            "REJECT",
+            from_user,
+            &target,
+            None,
+            reason,
+            now,
+        );
+        // 清本任务候选 + 挂在令牌上的定时器。
+        snapshot.candidates.retain(|c| c.task_id != task_id);
+        snapshot.jobs.retain(|j| j.token_id != token_id);
+
+        // 令牌回目标节点，转 Active，由 run_to_wait 重建目标待办。
+        let token_idx = snapshot
+            .tokens
+            .iter()
+            .position(|t| t.id == token_id)
+            .ok_or_else(|| {
+                Error::IllegalTokenState(format!("任务 {task_id} 的令牌 {token_id} 不存在"))
+            })?;
+        {
+            let tok = &mut snapshot.tokens[token_idx];
+            tok.node_bpmn_id = target.clone();
+            tok.state = TokenState::Active;
+            tok.updated_at = now;
+        }
+
+        self.run_to_wait(&def, &mut snapshot, now).await?;
+        snapshot.instance.updated_at = now;
+        self.store.save_snapshot(&snapshot).await?;
+        Ok(Self::result_of(&snapshot))
+    }
+
+    /// 运维干预：直接改实例变量（H4）——merge 传入变量到实例并落库，不推进令牌。
+    ///
+    /// 用于运维台修数据（如修正一个导致 incident 的错误值），改完可再 `retry_incident`。
+    /// 只改变量、不动令牌/任务，是安全的最小干预。返回更新后的实例视图。
+    pub async fn set_variables(
+        &self,
+        instance_id: &str,
+        variables: Variables,
+    ) -> Result<ExecutionResult> {
+        let mut snapshot = self.store.load_snapshot(instance_id).await?;
+        let now = self.clock.now();
+        snapshot.instance.variables.merge(variables);
+        snapshot.instance.updated_at = now;
+        self.store.save_snapshot(&snapshot).await?;
+        Ok(Self::result_of(&snapshot))
+    }
+
+    /// 重试 incident（H2）——把实例内所有 `Incident` 态令牌重新激活，再跑一遍推进。
+    ///
+    /// 用于 serviceTask 失败挂起后：运维改了数据/修了外部依赖，手动触发重试。重试仍失败则
+    /// 令牌再次落 Incident（重试次数累加，见 `record_incident`）。无 incident 令牌 → 幂等无操作。
+    /// 可选 `variables`：重试前 merge（如运维手改的修正值）。
+    pub async fn retry_incident(
+        &self,
+        instance_id: &str,
+        variables: Variables,
+    ) -> Result<ExecutionResult> {
+        let mut snapshot = self.store.load_snapshot(instance_id).await?;
+        let def = self.get_definition(&snapshot.instance.definition_key)?;
+        let now = self.clock.now();
+
+        snapshot.instance.variables.merge(variables);
+        // 所有 Incident 令牌 → Active（重新可推进）。
+        let mut reactivated = 0usize;
+        for tok in &mut snapshot.tokens {
+            if tok.state == TokenState::Incident {
+                tok.state = TokenState::Active;
+                tok.updated_at = now;
+                reactivated += 1;
+            }
+        }
+        if reactivated == 0 {
+            // 无 incident：幂等返回当前视图，不写库。
+            return Ok(Self::result_of(&snapshot));
+        }
+        tracing::info!(instance = %instance_id, reactivated, "重试 incident：重新激活令牌");
+
+        self.run_to_wait(&def, &mut snapshot, now).await?;
+        snapshot.instance.updated_at = now;
+        self.store.save_snapshot(&snapshot).await?;
+        Ok(Self::result_of(&snapshot))
+    }
+
+    /// 挂起实例（A7）——暂停一个运行中实例：令牌/任务保留，拒绝一切办理动作，直到 resume。
+    ///
+    /// 幂等：非 Active 实例（已挂起/完成/终止）直接返回其视图。审批场景：争议冻结、等外部裁决。
+    pub async fn suspend_process(&self, instance_id: &str) -> Result<ExecutionResult> {
+        let mut snapshot = self.store.load_snapshot(instance_id).await?;
+        if snapshot.instance.state != InstanceState::Active {
+            return Ok(Self::result_of(&snapshot));
+        }
+        snapshot.instance.state = InstanceState::Suspended;
+        snapshot.instance.updated_at = self.clock.now();
+        self.store.save_snapshot(&snapshot).await?;
+        tracing::info!(instance = %instance_id, "实例已挂起");
+        Ok(Self::result_of(&snapshot))
+    }
+
+    /// 恢复实例（A7）——把挂起的实例转回 Active，可继续办理。
+    ///
+    /// 幂等：非 Suspended 实例直接返回其视图。恢复后推进任何 Active 令牌。
+    pub async fn resume_process(&self, instance_id: &str) -> Result<ExecutionResult> {
+        let mut snapshot = self.store.load_snapshot(instance_id).await?;
+        if snapshot.instance.state != InstanceState::Suspended {
+            return Ok(Self::result_of(&snapshot));
+        }
+        let def = self.get_definition(&snapshot.instance.definition_key)?;
+        let now = self.clock.now();
+        snapshot.instance.state = InstanceState::Active;
+        snapshot.instance.updated_at = now;
+        self.run_to_wait(&def, &mut snapshot, now).await?;
+        self.store.save_snapshot(&snapshot).await?;
+        tracing::info!(instance = %instance_id, "实例已恢复");
+        Ok(Self::result_of(&snapshot))
+    }
+
+    /// 自由跳转（A7）——管理员把实例令牌强制移到任意用户任务节点重新办理。
+    ///
+    /// 运维纠偏（跳过卡住环节 / 回到某节点重办）。目标须 userTask。作废当前未办结任务、清候选/
+    /// 定时器/会签域，只保留被跳转的主令牌落到目标由 run_to_wait 重建待办。
+    /// 简化：跳转**第一个**非结束令牌（审批流通常单主令牌；多令牌并行分支跳转语义复杂，暂不支持）。
+    pub async fn jump_to(
+        &self,
+        instance_id: &str,
+        target_bpmn_id: &str,
+        reason: Option<&str>,
+    ) -> Result<ExecutionResult> {
+        let mut snapshot = self.store.load_snapshot(instance_id).await?;
+        let def = self.get_definition(&snapshot.instance.definition_key)?;
+        if snapshot.instance.state != InstanceState::Active {
+            return Err(Error::TaskNotActionable(format!(
+                "实例 {instance_id} 非活动态，不能跳转"
+            )));
+        }
+        let tn = def
+            .node_by_bpmn(target_bpmn_id)
+            .ok_or_else(|| Error::TaskNotActionable(format!("跳转目标 {target_bpmn_id} 不在定义中")))?;
+        if !matches!(tn.kind, NodeKind::UserTask(_)) {
+            return Err(Error::TaskNotActionable(format!(
+                "跳转目标 {target_bpmn_id} 不是用户任务"
+            )));
+        }
+        let now = self.clock.now();
+        let tok_idx = snapshot
+            .tokens
+            .iter()
+            .position(|t| t.state != TokenState::Ended)
+            .ok_or_else(|| Error::IllegalTokenState("无可跳转的活动令牌".into()))?;
+        let jumped_token = snapshot.tokens[tok_idx].id.clone();
+        for t in snapshot.tasks.iter_mut() {
+            if !t.completed {
+                t.completed = true;
+                t.completed_at = Some(now);
+            }
+        }
+        snapshot.candidates.clear();
+        snapshot.jobs.clear();
+        for s in snapshot.mi_scopes.iter_mut() {
+            s.finished = true;
+        }
+        for (i, tok) in snapshot.tokens.iter_mut().enumerate() {
+            if i != tok_idx && tok.state != TokenState::Ended {
+                tok.state = TokenState::Ended;
+                tok.updated_at = now;
+            }
+        }
+        {
+            let tok = &mut snapshot.tokens[tok_idx];
+            tok.node_bpmn_id = target_bpmn_id.to_string();
+            tok.state = TokenState::Active;
+            tok.updated_at = now;
+        }
+        push_delegation(
+            &mut snapshot.delegations,
+            instance_id,
+            &jumped_token,
+            "JUMP",
+            "admin",
+            target_bpmn_id,
+            None,
+            reason,
+            now,
+        );
+        self.run_to_wait(&def, &mut snapshot, now).await?;
+        snapshot.instance.updated_at = now;
+        self.store.save_snapshot(&snapshot).await?;
+        tracing::info!(instance = %instance_id, target = %target_bpmn_id, "自由跳转");
+        Ok(Self::result_of(&snapshot))
+    }
+
+    /// 催办（A7）——对待办任务当前办理人发催办知会（落抄送 + 台账），不改流程。
+    pub async fn urge_task(
+        &self,
+        instance_id: &str,
+        task_id: &str,
+        from_user: &str,
+        message: Option<&str>,
+    ) -> Result<ExecutionResult> {
+        let mut snapshot = self.store.load_snapshot(instance_id).await?;
+        let now = self.clock.now();
+        let idx = snapshot
+            .tasks
+            .iter()
+            .position(|t| t.id == task_id && !t.completed)
+            .ok_or_else(|| Error::TaskNotActionable(task_id.to_string()))?;
+        let assignee = snapshot.tasks[idx].assignee.clone();
+        let node_bpmn = snapshot.tasks[idx].node_bpmn_id.clone();
+        if let Some(to) = &assignee {
+            append_cc_records(
+                &mut snapshot.cc_records,
+                instance_id,
+                Some(&node_bpmn),
+                Some(from_user),
+                message,
+                std::slice::from_ref(to),
+                now,
+            );
+        }
+        push_delegation(
+            &mut snapshot.delegations,
+            instance_id,
+            task_id,
+            "URGE",
+            from_user,
+            assignee.as_deref().unwrap_or(""),
+            None,
+            message,
+            now,
+        );
+        snapshot.instance.updated_at = now;
+        self.store.save_snapshot(&snapshot).await?;
+        Ok(Self::result_of(&snapshot))
+    }
+
+    /// 相关消息（A4）——外部系统投递一条消息，唤醒停在消息中间捕获事件的令牌。
+    ///
+    /// 匹配规则：找一个 `WaitingMessage` 令牌，其所在节点是 `MessageCatchEvent` 且消息名 ==
+    /// `message_name`，并且（若节点声明了 `correlation_var`）该实例变量的值 == `correlation_key`。
+    /// 命中则 merge 传入变量、令牌转 Active、run_to_wait 继续推进。无命中 → 错误（可让调用方降级）。
+    ///
+    /// `instance_id` 显式给定时只在该实例内找（点对点回调）；为 None 时跨实例扫描（相关键路由）。
+    pub async fn correlate_message(
+        &self,
+        instance_id: Option<&str>,
+        message_name: &str,
+        correlation_key: Option<&str>,
+        variables: Variables,
+    ) -> Result<ExecutionResult> {
+        // 定位候选实例：显式 id → 单实例；否则需 correlation_key 跨实例扫描（借 list_instances）。
+        let target_iid = match instance_id {
+            Some(id) => id.to_string(),
+            None => {
+                let key = correlation_key.ok_or_else(|| {
+                    Error::TaskNotActionable("跨实例相关消息需提供 correlationKey".into())
+                })?;
+                self.find_message_instance(message_name, key).await?
+            }
+        };
+
+        let mut snapshot = self.store.load_snapshot(&target_iid).await?;
+        let def = self.get_definition(&snapshot.instance.definition_key)?;
+        let now = self.clock.now();
+
+        // 在该实例里找匹配的 WaitingMessage 令牌。
+        let mut matched: Option<usize> = None;
+        for (i, tok) in snapshot.tokens.iter().enumerate() {
+            if tok.state != TokenState::WaitingMessage {
+                continue;
+            }
+            let node = match def.node_by_bpmn(&tok.node_bpmn_id) {
+                Some(n) => n,
+                None => continue,
+            };
+            if let NodeKind::MessageCatchEvent(mc) = &node.kind {
+                if mc.message_name != message_name {
+                    continue;
+                }
+                // 相关键校验（节点声明了 correlation_var 且外部传了 key 才校验）。
+                if let (Some(var), Some(key)) = (&mc.correlation_var, correlation_key) {
+                    let cur = snapshot
+                        .instance
+                        .variables
+                        .get(var)
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        .or_else(|| snapshot.instance.variables.get(var).map(|v| v.to_string()));
+                    if cur.as_deref() != Some(key) {
+                        continue;
+                    }
+                }
+                matched = Some(i);
+                break;
+            }
+        }
+        let idx = matched.ok_or_else(|| {
+            Error::TaskNotActionable(format!(
+                "实例 {target_iid} 无等待消息 '{message_name}' 的令牌（相关键 {correlation_key:?}）"
+            ))
+        })?;
+
+        // 唤醒：merge 变量，令牌离开消息事件沿唯一出边，转 Active，run_to_wait。
+        snapshot.instance.variables.merge(variables);
+        let node_bpmn = snapshot.tokens[idx].node_bpmn_id.clone();
+        let outgoing = def
+            .node_by_bpmn(&node_bpmn)
+            .map(|n| n.outgoing.clone())
+            .unwrap_or_default();
+        let target = outgoing
+            .first()
+            .map(|f| f.target_bpmn_id.clone())
+            .ok_or_else(|| Error::IllegalTokenState(format!("消息事件 {node_bpmn} 无出边")))?;
+        {
+            let tok = &mut snapshot.tokens[idx];
+            tok.node_bpmn_id = target;
+            tok.state = TokenState::Active;
+            tok.updated_at = now;
+        }
+        self.run_to_wait(&def, &mut snapshot, now).await?;
+        snapshot.instance.updated_at = now;
+        self.store.save_snapshot(&snapshot).await?;
+        tracing::info!(instance = %target_iid, message = %message_name, "相关消息已投递");
+        Ok(Self::result_of(&snapshot))
+    }
+
+    /// 跨实例查找：哪个实例停在等待 `message_name` 的令牌，且相关键变量值 == `key`。
+    ///
+    /// 扫描 list_instances 的 Active 实例，逐个 load_snapshot 判定。审批量级可接受；大规模应建
+    /// 消息订阅索引表（B 级优化）。返回首个命中实例 id。
+    async fn find_message_instance(&self, message_name: &str, key: &str) -> Result<String> {
+        let summaries = self.store.list_instances(500).await?;
+        for s in summaries {
+            if s.state != InstanceState::Active {
+                continue;
+            }
+            let snap = match self.store.load_snapshot(&s.id).await {
+                Ok(sn) => sn,
+                Err(_) => continue,
+            };
+            let def = match self.get_definition(&snap.instance.definition_key) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            for tok in &snap.tokens {
+                if tok.state != TokenState::WaitingMessage {
+                    continue;
+                }
+                if let Some(node) = def.node_by_bpmn(&tok.node_bpmn_id) {
+                    if let NodeKind::MessageCatchEvent(mc) = &node.kind {
+                        if mc.message_name != message_name {
+                            continue;
+                        }
+                        let matches_key = match &mc.correlation_var {
+                            Some(var) => {
+                                let cur = snap
+                                    .instance
+                                    .variables
+                                    .get(var)
+                                    .and_then(|v| v.as_str().map(|x| x.to_string()))
+                                    .or_else(|| {
+                                        snap.instance.variables.get(var).map(|v| v.to_string())
+                                    });
+                                cur.as_deref() == Some(key)
+                            }
+                            None => true,
+                        };
+                        if matches_key {
+                            return Ok(s.id.clone());
+                        }
+                    }
+                }
+            }
+        }
+        Err(Error::TaskNotActionable(format!(
+            "无实例等待消息 '{message_name}'（相关键 {key}）"
+        )))
+    }
+
     /// 幂等：已处于终态的实例直接返回其视图。
     pub async fn cancel_process(
         &self,
@@ -975,11 +1462,7 @@ impl<S: RuntimeStore> Engine<S> {
             if snapshot.instance.state.is_terminal() {
                 continue;
             }
-            let def = self
-                .definitions
-                .get(&snapshot.instance.definition_key)
-                .ok_or_else(|| Error::DefinitionNotFound(snapshot.instance.definition_key.clone()))?
-                .clone();
+            let def = self.get_definition(&snapshot.instance.definition_key)?;
 
             let mut any_fired = false;
             for job_id in job_ids {
@@ -1062,20 +1545,41 @@ impl<S: RuntimeStore> Engine<S> {
                         .get(&st.delegate)
                         .ok_or_else(|| Error::DelegateNotFound(st.delegate.clone()))?;
                     let instance_id = snapshot.instance.id.clone();
-                    {
+                    let exec_result = {
                         let mut ctx = DelegateContext {
                             instance_id: &instance_id,
                             node_bpmn_id: &node_bpmn,
                             variables: &mut snapshot.instance.variables,
                         };
-                        delegate
-                            .execute(&mut ctx)
-                            .await
-                            .map_err(Error::DelegateFailed)?;
+                        delegate.execute(&mut ctx).await
+                    };
+                    match exec_result {
+                        Ok(()) => {
+                            // 成功：清掉该节点可能存在的 incident 痕迹，沿唯一出边离开。
+                            clear_incident(&mut snapshot.instance.variables, &node_bpmn);
+                            let target = choose_target(
+                                &node_bpmn,
+                                &kind,
+                                &outgoing,
+                                &snapshot.instance.variables,
+                            )?;
+                            move_token(&mut snapshot.tokens[idx], target, now);
+                        }
+                        Err(reason) => {
+                            // 失败：**不再中断整体推进、不丢实例**——把本令牌停到 Incident 态，
+                            // 记失败原因 + 累加重试次数（H2）。实例保持 Active，其余分支照跑；
+                            // 人工 retry_incident 可恢复。这是生产可用性硬门槛。
+                            let retries =
+                                record_incident(&mut snapshot.instance.variables, &node_bpmn, &reason);
+                            tracing::warn!(
+                                instance = %instance_id, node = %node_bpmn, retries,
+                                reason = %reason, "serviceTask 失败 → Incident（实例保留，待人工重试）"
+                            );
+                            let tok = &mut snapshot.tokens[idx];
+                            tok.state = TokenState::Incident;
+                            tok.updated_at = now;
+                        }
                     }
-                    let target =
-                        choose_target(&node_bpmn, &kind, &outgoing, &snapshot.instance.variables)?;
-                    move_token(&mut snapshot.tokens[idx], target, now);
                 }
 
                 NodeKind::ExclusiveGateway => {
@@ -1154,6 +1658,77 @@ impl<S: RuntimeStore> Engine<S> {
                     }
                 }
 
+                NodeKind::InclusiveGateway => {
+                    // 包容网关：fork 按条件择「若干」出边；join 等所有可能到达的令牌到齐。
+                    let incoming_count = def
+                        .node_by_bpmn(&node_bpmn)
+                        .map(|n| n.incoming_count)
+                        .unwrap_or(1);
+                    let instance_id = snapshot.instance.id.clone();
+
+                    // join 相判定：入边 > 1 视为合流点（与并行一致的结构判据）。
+                    if incoming_count > 1 {
+                        // 本令牌先停 Joining。
+                        {
+                            let tok = &mut snapshot.tokens[idx];
+                            tok.state = TokenState::Joining;
+                            tok.updated_at = now;
+                        }
+                        // 放行条件：实例内再无「可能到达本网关」的其它非结束令牌
+                        // （不含已停在本网关的 Joining 令牌）。对无环审批流正确。
+                        let others_pending = snapshot.tokens.iter().any(|t| {
+                            t.state != TokenState::Ended
+                                && !(t.state == TokenState::Joining && t.node_bpmn_id == node_bpmn)
+                                && can_reach(&def, &t.node_bpmn_id, &node_bpmn)
+                        });
+                        if others_pending {
+                            // 还有分支在路上：本令牌驻留 Joining，转处理其它 Active 令牌。
+                            continue;
+                        }
+                        // 到齐：合并所有停在本网关的 Joining 令牌为一个幸存者，再 fork。
+                        let survivor_id = snapshot
+                            .tokens
+                            .iter()
+                            .find(|t| t.state == TokenState::Joining && t.node_bpmn_id == node_bpmn)
+                            .map(|t| t.id.clone())
+                            .ok_or_else(|| {
+                                Error::IllegalTokenState(format!(
+                                    "包容网关 {node_bpmn} join 到齐但找不到幸存令牌"
+                                ))
+                            })?;
+                        snapshot.tokens.retain(|t| {
+                            !(t.state == TokenState::Joining
+                                && t.node_bpmn_id == node_bpmn
+                                && t.id != survivor_id)
+                        });
+                        let sidx = snapshot
+                            .tokens
+                            .iter()
+                            .position(|t| t.id == survivor_id)
+                            .ok_or_else(|| Error::IllegalTokenState("幸存令牌意外丢失".into()))?;
+                        fork_token_inclusive(
+                            &mut snapshot.tokens,
+                            sidx,
+                            &node_bpmn,
+                            &outgoing,
+                            &instance_id,
+                            &snapshot.instance.variables.clone(),
+                            now,
+                        )?;
+                    } else {
+                        // 纯 fork：按条件择若干出边分裂。
+                        fork_token_inclusive(
+                            &mut snapshot.tokens,
+                            idx,
+                            &node_bpmn,
+                            &outgoing,
+                            &instance_id,
+                            &snapshot.instance.variables.clone(),
+                            now,
+                        )?;
+                    }
+                }
+
                 NodeKind::UserTask(ref ut) => {
                     match &ut.multi_instance {
                         // —— 普通单实例用户任务（M1 路径 + M4.1 候选人解析） —— //
@@ -1164,7 +1739,10 @@ impl<S: RuntimeStore> Engine<S> {
 
                             // 候选人解析（M4.1）：有候选引用且已注入 resolver → 解析成用户集。
                             //   0 人：退回静态 assignee（宽容）；1 人：直派；≥2 人：落候选池待认领。
-                            let resolved = self.resolve_candidates(&ut.candidates).await?;
+                            //   P0：带上下文（initiator/org），支持关系型候选（部门领导/发起人上级/本人）。
+                            let rctx = Self::resolve_ctx_of(snapshot);
+                            let resolved =
+                                self.resolve_candidates(&ut.candidates, &rctx).await?;
                             let (assignee, candidates) = decide_assignment(
                                 &task_id,
                                 &instance_id,
@@ -1272,6 +1850,33 @@ impl<S: RuntimeStore> Engine<S> {
                     tok.updated_at = now;
                 }
 
+                NodeKind::TerminateEndEvent => {
+                    // 一票否决（A2）：本令牌 Ended，并杀掉本实例所有其它未结束令牌 + 丢弃未办结任务，
+                    // 收口未完成的多实例域。之后 run_to_wait 收尾判据（全令牌 Ended）即把实例 Completed。
+                    for (i, tok) in snapshot.tokens.iter_mut().enumerate() {
+                        if i == idx || tok.state != TokenState::Ended {
+                            tok.state = TokenState::Ended;
+                            tok.updated_at = now;
+                        }
+                    }
+                    // 未办结任务作废（保留已办结的供归档）；候选/定时器/会签域清理。
+                    for t in snapshot.tasks.iter_mut() {
+                        if !t.completed {
+                            t.completed = true;
+                            t.completed_at = Some(now);
+                        }
+                    }
+                    snapshot.candidates.clear();
+                    snapshot.jobs.clear();
+                    for s in snapshot.mi_scopes.iter_mut() {
+                        s.finished = true;
+                    }
+                    tracing::info!(
+                        instance = %snapshot.instance.id,
+                        "TerminateEndEvent 一票否决：终止全部令牌与待办"
+                    );
+                }
+
                 NodeKind::BoundaryTimerEvent(_) => {
                     // 边界定时器被触发后，令牌被置于此节点转 Active；这里像直通节点一样
                     // 沿其唯一出边离开（走升级/催办分支）。正常推进不会「主动」到达边界事件，
@@ -1287,6 +1892,14 @@ impl<S: RuntimeStore> Engine<S> {
                     // 那里可安全地 async 启动子实例（可能递归含孙流程），不与本同步循环纠缠。
                     let tok = &mut snapshot.tokens[idx];
                     tok.state = TokenState::WaitingSubflow;
+                    tok.updated_at = now;
+                }
+
+                NodeKind::MessageCatchEvent(_) => {
+                    // 消息中间捕获（A4）是等待态：令牌挂起为 WaitingMessage，停止推进（提交点），
+                    // 等外部经 correlate_message 按消息名 + 相关键唤醒后沿唯一出边继续。
+                    let tok = &mut snapshot.tokens[idx];
+                    tok.state = TokenState::WaitingMessage;
                     tok.updated_at = now;
                 }
             }
@@ -1330,6 +1943,92 @@ impl<S: RuntimeStore> Engine<S> {
 fn move_token(token: &mut Token, target_bpmn_id: String, now: DateTime<Utc>) {
     token.node_bpmn_id = target_bpmn_id;
     token.updated_at = now;
+}
+
+/// 记一条 incident 到实例变量 `__incident`（JSON 对象，按节点 bpmn_id 聚合）。返回该节点累计重试次数。
+///
+/// 结构：`{"__incident": {"<node>": {"reason": "...", "retries": N, "lastAt": "..."}}}`。
+/// 不新建表——incident 视图由 tokens(Incident 态) + 本变量派生，持久化随实例变量一起走。
+fn record_incident(vars: &mut Variables, node_bpmn: &str, reason: &str) -> i64 {
+    let mut root = match vars.get("__incident") {
+        Some(serde_json::Value::Object(m)) => m.clone(),
+        _ => serde_json::Map::new(),
+    };
+    let prev = root
+        .get(node_bpmn)
+        .and_then(|v| v.get("retries"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let retries = prev + 1;
+    root.insert(
+        node_bpmn.to_string(),
+        serde_json::json!({ "reason": reason, "retries": retries }),
+    );
+    vars.set("__incident", serde_json::Value::Object(root));
+    retries
+}
+
+/// 清掉某节点的 incident 痕迹（成功执行后）。若清空则删掉 `__incident` 变量本身。
+fn clear_incident(vars: &mut Variables, node_bpmn: &str) {
+    if let Some(serde_json::Value::Object(m)) = vars.get("__incident") {
+        if !m.contains_key(node_bpmn) {
+            return;
+        }
+        let mut root = m.clone();
+        root.remove(node_bpmn);
+        if root.is_empty() {
+            vars.set("__incident", serde_json::Value::Null);
+        } else {
+            vars.set("__incident", serde_json::Value::Object(root));
+        }
+    }
+}
+
+/// 找某节点的「直接前驱用户任务」（退回默认目标）。
+///
+/// 沿全体节点的出边反查指向 `node_bpmn` 的上游节点：
+///   - 恰有一个前驱且是 userTask → 返回它；
+///   - 前驱是网关/其它非人工节点 → 继续向其上游回溯（跳过网关，找到最近的 userTask）；
+///   - 无前驱 / 多前驱无法确定 / 回溯不到 userTask → 报错，要求显式指定 target。
+fn predecessor_user_task(def: &ProcessDefinition, node_bpmn: &str) -> Result<String> {
+    // 反向邻接：谁的出边指向 cur。
+    fn preds(def: &ProcessDefinition, cur: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for n in &def.nodes {
+            for e in &n.outgoing {
+                if e.target_bpmn_id == cur {
+                    out.push(n.bpmn_id.clone());
+                }
+            }
+        }
+        out
+    }
+    let mut cur = node_bpmn.to_string();
+    let mut guard = 0usize;
+    loop {
+        guard += 1;
+        if guard > 64 {
+            return Err(Error::TaskNotActionable(
+                "退回目标回溯过深，请显式指定目标节点".into(),
+            ));
+        }
+        let ps = preds(def, &cur);
+        if ps.len() != 1 {
+            return Err(Error::TaskNotActionable(format!(
+                "节点 {node_bpmn} 前驱不唯一或无前驱（{} 个），请显式指定退回目标",
+                ps.len()
+            )));
+        }
+        let p = &ps[0];
+        let pn = def
+            .node_by_bpmn(p)
+            .ok_or_else(|| Error::IllegalTokenState(format!("节点 {p} 不在定义中")))?;
+        if matches!(pn.kind, NodeKind::UserTask(_)) {
+            return Ok(p.clone());
+        }
+        // 前驱是网关/事件等非人工节点：继续向上游回溯，跳过它。
+        cur = p.clone();
+    }
 }
 
 /// 变量映射（M5）：按 mappings 把 src 里的变量拷成一个新 Variables。
@@ -1546,6 +2245,89 @@ fn fire_timer(
 /// 所有出边无条件全取（AND 语义）。新令牌复用同一 instance，parent_id 记为幸存令牌 id，
 /// 便于将来（M3）做 scope 归属；M1/M2 的 join 靠 node_bpmn_id + incoming_count 计数，不依赖
 /// parent_id，故此处仅作血缘留痕。
+/// 包容网关 fork：只对**条件满足**的出边分裂令牌（全不满足走 default）。
+///
+/// 与 `fork_token`（并行，全分裂）的区别：先按 `eval_condition` 过滤出边。至少产生一个令牌。
+fn fork_token_inclusive(
+    tokens: &mut Vec<Token>,
+    idx: usize,
+    gateway_bpmn: &str,
+    outgoing: &[SequenceFlow],
+    instance_id: &str,
+    vars: &Variables,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    // 选中满足条件的非 default 边；无条件边视为恒真。
+    let mut chosen: Vec<&SequenceFlow> = Vec::new();
+    for flow in outgoing {
+        if flow.is_default {
+            continue;
+        }
+        let passed = match &flow.condition {
+            Some(expr) => eval_condition(expr, vars)?,
+            None => true,
+        };
+        if passed {
+            chosen.push(flow);
+        }
+    }
+    // 全不满足 → 走 default（若有）。
+    if chosen.is_empty() {
+        if let Some(def_flow) = outgoing.iter().find(|f| f.is_default) {
+            chosen.push(def_flow);
+        } else {
+            return Err(Error::NoOutgoingFlow {
+                gateway: gateway_bpmn.to_string(),
+            });
+        }
+    }
+    let survivor_id = tokens[idx].id.clone();
+    // 幸存令牌走第一条选中边并恢复 Active。
+    {
+        let tok = &mut tokens[idx];
+        tok.node_bpmn_id = chosen[0].target_bpmn_id.clone();
+        tok.state = TokenState::Active;
+        tok.updated_at = now;
+    }
+    // 其余选中边各生成一个新 Active 令牌。
+    for flow in chosen.iter().skip(1) {
+        tokens.push(Token {
+            id: Uuid::new_v4().to_string(),
+            instance_id: instance_id.to_string(),
+            node_bpmn_id: flow.target_bpmn_id.clone(),
+            state: TokenState::Active,
+            parent_id: Some(survivor_id.clone()),
+            created_at: now,
+            updated_at: now,
+        });
+    }
+    Ok(())
+}
+
+/// 从 `from` 节点沿出边能否到达 `target`（有向可达性，含自身；用于包容网关 join 判定
+/// 「是否还有分支可能到达本网关」）。BFS，带访问集防环。
+fn can_reach(def: &ProcessDefinition, from: &str, target: &str) -> bool {
+    if from == target {
+        return true;
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut stack = vec![from.to_string()];
+    while let Some(cur) = stack.pop() {
+        if !seen.insert(cur.clone()) {
+            continue;
+        }
+        if let Some(node) = def.node_by_bpmn(&cur) {
+            for e in &node.outgoing {
+                if e.target_bpmn_id == target {
+                    return true;
+                }
+                stack.push(e.target_bpmn_id.clone());
+            }
+        }
+    }
+    false
+}
+
 fn fork_token(
     tokens: &mut Vec<Token>,
     idx: usize,

@@ -18,6 +18,9 @@ use crate::variables::Variables;
 pub enum InstanceState {
     /// 活动中：至少有一个活动令牌，或停在等待态待外部触发。
     Active,
+    /// 已挂起（A7）：管理员暂停实例——令牌位置/任务保留，但拒绝一切办理动作（complete/reject/
+    /// claim 等），直到 resume。审批场景：暂停一个正在跑的流程（如等待外部裁决、争议冻结）。
+    Suspended,
     /// 已完成：所有令牌抵达 endEvent 并被消费。
     Completed,
     /// 已终止：被外部取消（M1 预留，暂无触发路径）。
@@ -45,6 +48,13 @@ pub enum TokenState {
     /// 子流程等待（M5）：停在 callActivity，等被调子实例完成。与 Waiting/Joining 并列的
     /// 「挂起等待」态；唤醒信号来自子实例完成（complete_subflow），按 parent_token_id 精确唤醒。
     WaitingSubflow,
+    /// 消息等待（A4）：停在消息中间捕获事件，等外部经 `correlate_message` 按消息名+相关键唤醒。
+    /// 与 WaitingSubflow 并列的挂起等待态；唤醒信号来自外部系统回调，非内部推进。
+    WaitingMessage,
+    /// 异常挂起（H2 Incident）：serviceTask/delegate 执行失败且重试耗尽——令牌停在故障节点，
+    /// 实例**不丢失、不终止**，等待人工介入 `retry_incident` 重试或改数据后恢复。失败原因与
+    /// 已重试次数记在实例变量 `__incident`。这是生产可用性的关键：失败可见、可恢复，而非静默丢。
+    Incident,
     /// 已结束：抵达 endEvent，等待实例收尾。
     Ended,
 }

@@ -1,0 +1,36 @@
+[package]
+name = "cmx-flow-identity"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# 可选内建身份模块（P0-b，方案决策①「身份双模」的内建那一半）。
+#
+# 定位：**独立部署且无外部 IAM 时**才启用。它自建一套 `fid_*` 命名空间表（组织/角色/用户/岗位
+# + 用户-角色/用户-岗位关联），并提供 `LocalAssigneeResolver` 实现引擎的 `AssigneeResolver`
+# trait（含 P0 关系型：部门领导/发起人上级/本人，用 fid_org.leader_user_id）。
+#
+# 关键守约：表名 **fid_ 前缀，绝不叫 cmx_user/cmx_org**——它是流程微服务自持的可选插件，不冒充
+# 平台 IAM，也不违背「流程库永不建 user/role 表」判据（这是**独立可选模块**，非引擎核）。
+# external 模式下本 crate 完全不参与（app 不注入 LocalResolver），行为零回归。
+
+[dependencies]
+# 内部依赖 - 引擎中立模型（AssigneeResolver / CandidateRef / ResolveContext 契约）
+cmx-flow-model = { workspace = true }
+# 内部依赖 - tokio-postgres 并行 DB 层（建表/CRUD/解析查询门面）
+cmx-database-pg = { workspace = true }
+# 内部依赖 - 核心库（DataValue：强类型写入参数）
+cmx-core = { workspace = true }
+
+# 异步 trait（实现 AssigneeResolver）
+async-trait = { workspace = true }
+# 错误处理
+thiserror = { workspace = true }
+# 日志追踪
+tracing = { workspace = true }
+# JSON（CRUD 载体）
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -26,7 +26,7 @@ pub use memory_store::InMemoryStore;
 // 便于消费方一处引入运行态/模型类型。
 pub use cmx_flow_model::{
     AssigneeResolver, CandidateKind, CandidateRef, CcRecord, CcSummary, InstanceSnapshot,
-    InstanceState, ProcessDefinition, ProcessInstance, ResolveError, ResolveResult, RouteError,
-    RouteResult, RuntimeStore, SubflowRouter, Task, TaskCandidate, TaskDelegation, Token,
-    TokenState, Variables,
+    InstanceState, ProcessDefinition, ProcessInstance, ResolveContext, ResolveError, ResolveResult,
+    RouteError, RouteResult, RuntimeStore, SubflowRouter, Task, TaskCandidate, TaskDelegation,
+    Token, TokenState, Variables,
 };

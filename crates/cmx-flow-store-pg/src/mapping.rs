@@ -24,6 +24,7 @@ use serde_json::Value as JsonValue;
 pub fn instance_state_str(s: InstanceState) -> &'static str {
     match s {
         InstanceState::Active => "ACTIVE",
+        InstanceState::Suspended => "SUSPENDED",
         InstanceState::Completed => "COMPLETED",
         InstanceState::Terminated => "TERMINATED",
     }
@@ -33,6 +34,7 @@ pub fn instance_state_str(s: InstanceState) -> &'static str {
 fn parse_instance_state(s: &str) -> StoreResult<InstanceState> {
     match s {
         "ACTIVE" => Ok(InstanceState::Active),
+        "SUSPENDED" => Ok(InstanceState::Suspended),
         "COMPLETED" => Ok(InstanceState::Completed),
         "TERMINATED" => Ok(InstanceState::Terminated),
         other => Err(StoreError::Backend(format!("未知实例状态: {other}"))),
@@ -46,6 +48,8 @@ pub fn token_state_str(s: TokenState) -> &'static str {
         TokenState::Waiting => "WAITING",
         TokenState::Joining => "JOINING",
         TokenState::WaitingSubflow => "WAITING_SUBFLOW",
+        TokenState::WaitingMessage => "WAITING_MESSAGE",
+        TokenState::Incident => "INCIDENT",
         TokenState::Ended => "ENDED",
     }
 }
@@ -57,18 +61,23 @@ fn parse_token_state(s: &str) -> StoreResult<TokenState> {
         "WAITING" => Ok(TokenState::Waiting),
         "JOINING" => Ok(TokenState::Joining),
         "WAITING_SUBFLOW" => Ok(TokenState::WaitingSubflow),
+        "WAITING_MESSAGE" => Ok(TokenState::WaitingMessage),
+        "INCIDENT" => Ok(TokenState::Incident),
         "ENDED" => Ok(TokenState::Ended),
         other => Err(StoreError::Backend(format!("未知令牌状态: {other}"))),
     }
 }
 
-/// CandidateKind → 存储文本（M4.1）。
+/// CandidateKind → 存储文本（M4.1；P0 补关系型）。
 fn candidate_kind_str(k: CandidateKind) -> &'static str {
     match k {
         CandidateKind::User => "USER",
         CandidateKind::Role => "ROLE",
         CandidateKind::Position => "POSITION",
         CandidateKind::Org => "ORG",
+        CandidateKind::OrgLeader => "ORG_LEADER",
+        CandidateKind::Initiator => "INITIATOR",
+        CandidateKind::InitiatorLeader => "INITIATOR_LEADER",
     }
 }
 
@@ -79,6 +88,9 @@ fn parse_candidate_kind(s: &str) -> StoreResult<CandidateKind> {
         "ROLE" => Ok(CandidateKind::Role),
         "POSITION" => Ok(CandidateKind::Position),
         "ORG" => Ok(CandidateKind::Org),
+        "ORG_LEADER" => Ok(CandidateKind::OrgLeader),
+        "INITIATOR" => Ok(CandidateKind::Initiator),
+        "INITIATOR_LEADER" => Ok(CandidateKind::InitiatorLeader),
         other => Err(StoreError::Backend(format!("未知候选类型: {other}"))),
     }
 }
