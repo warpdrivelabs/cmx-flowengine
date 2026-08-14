@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use cmx_flow_model::{
-    BoundaryTimer, CallActivity, CandidateKind, CandidateRef, FlowNode, MessageCatch,
+    BoundaryTimer, BusinessRule, CallActivity, CandidateKind, CandidateRef, FlowNode, MessageCatch,
     MultiInstance, NodeId, NodeKind, ProcessDefinition, SequenceFlow, ServiceTask, UserTask,
     VarMapping, candidate::parse_candidate_expr, duration::parse_iso8601_duration,
 };
@@ -37,102 +37,16 @@ pub fn compile(xml: &str) -> Result<ProcessDefinition> {
         .to_string();
     let name = process.attribute("name").map(|s| s.to_string());
 
-    // —— Pass 1：建节点 + 索引 —— //
+    // —— Pass 1：建节点 + 索引（递归进嵌入 subProcess，A5 扁平化） —— //
     let mut nodes: Vec<FlowNode> = Vec::new();
     let mut index: HashMap<String, NodeId> = HashMap::new();
+    collect_nodes(&process, &mut nodes, &mut index)?;
 
-    for child in process.children().filter(Node::is_element) {
-        let local = child.tag_name().name();
-        let kind = match local {
-            "startEvent" => Some(NodeKind::StartEvent),
-            // endEvent：含 <terminateEventDefinition> 子元素 → 终止事件（一票否决），否则普通结束。
-            "endEvent" => Some(if has_terminate_definition(&child) {
-                NodeKind::TerminateEndEvent
-            } else {
-                NodeKind::EndEvent
-            }),
-            "userTask" => Some(NodeKind::UserTask(parse_user_task(&child))),
-            "serviceTask" => Some(parse_service_task(&child)?),
-            "exclusiveGateway" => Some(NodeKind::ExclusiveGateway),
-            "parallelGateway" => Some(NodeKind::ParallelGateway),
-            "inclusiveGateway" => Some(NodeKind::InclusiveGateway),
-            "boundaryEvent" => parse_boundary_event(&child)?,
-            "intermediateCatchEvent" => parse_intermediate_catch(&child)?,
-            "callActivity" => Some(NodeKind::CallActivity(parse_call_activity(&child)?)),
-            // 顺序流在 Pass 2 处理；其余元素（extensionElements/laneSet/文档等）跳过。
-            "sequenceFlow" => None,
-            _ => {
-                // 未知的「活动类」元素给出明确的不支持提示，而不是静默丢弃，
-                // 避免流程被悄悄改变语义。纯装饰/元信息元素则忽略。
-                if is_flow_node_like(local) {
-                    return Err(Error::Unsupported(format!(
-                        "元素 <{local}> (id={:?})",
-                        child.attribute("id")
-                    )));
-                }
-                None
-            }
-        };
+    // —— Pass 2：解析 sequenceFlow，挂出边（递归进 subProcess） —— //
+    collect_flows(&process, &process, &mut nodes, &index)?;
 
-        if let Some(kind) = kind {
-            let bpmn_id = child
-                .attribute("id")
-                .ok_or_else(|| Error::MissingElement(format!("<{local}> 缺少 id")))?
-                .to_string();
-            let node_id = NodeId(nodes.len());
-            index.insert(bpmn_id.clone(), node_id);
-            nodes.push(FlowNode {
-                id: node_id,
-                bpmn_id,
-                name: child.attribute("name").map(|s| s.to_string()),
-                kind,
-                incoming_count: 0, // Pass 2 统计
-                outgoing: Vec::new(),
-            });
-        }
-    }
-
-    // —— Pass 2：解析 sequenceFlow，挂出边 —— //
-    for child in process.children().filter(Node::is_element) {
-        if child.tag_name().name() != "sequenceFlow" {
-            continue;
-        }
-        let flow_id = child.attribute("id").unwrap_or("<anon-flow>").to_string();
-        let source_ref = child.attribute("sourceRef").ok_or_else(|| {
-            Error::MissingElement(format!("sequenceFlow {flow_id} 缺少 sourceRef"))
-        })?;
-        let target_ref = child.attribute("targetRef").ok_or_else(|| {
-            Error::MissingElement(format!("sequenceFlow {flow_id} 缺少 targetRef"))
-        })?;
-
-        let source_id = *index.get(source_ref).ok_or_else(|| {
-            Error::DanglingReference(format!(
-                "sequenceFlow {flow_id} 的 sourceRef '{source_ref}' 无对应节点"
-            ))
-        })?;
-        let target_id = *index.get(target_ref).ok_or_else(|| {
-            Error::DanglingReference(format!(
-                "sequenceFlow {flow_id} 的 targetRef '{target_ref}' 无对应节点"
-            ))
-        })?;
-
-        let condition = parse_condition(&child);
-
-        // default 标记：网关的 default 属性等于此边 id 时，此边为 default。
-        let is_default = source_default_of(&process, source_ref)
-            .map(|d| d == flow_id)
-            .unwrap_or(false);
-
-        nodes[source_id.0].outgoing.push(SequenceFlow {
-            bpmn_id: flow_id,
-            target: target_id,
-            target_bpmn_id: target_ref.to_string(),
-            condition,
-            is_default,
-        });
-        // 统计目标节点入边数（并行网关 join 判断令牌是否到齐所需）。
-        nodes[target_id.0].incoming_count += 1;
-    }
+    // —— Pass 3：嵌入 subProcess 合成接线（透传入口 + 内部 endEvent 接子流程出口，A5） —— //
+    wire_subprocesses(&process, &mut nodes, &index)?;
 
     // —— 定位唯一 startEvent —— //
     let start = nodes
@@ -152,6 +66,201 @@ pub fn compile(xml: &str) -> Result<ProcessDefinition> {
     };
     def.validate()?;
     Ok(def)
+}
+
+/// 递归建节点。scope 是 process 或 subProcess 元素；其活动类子元素建成节点，遇 subProcess 递归。
+fn collect_nodes(
+    scope: &Node,
+    nodes: &mut Vec<FlowNode>,
+    index: &mut HashMap<String, NodeId>,
+) -> Result<()> {
+    for child in scope.children().filter(Node::is_element) {
+        let local = child.tag_name().name();
+        let kind = match local {
+            "startEvent" => Some(NodeKind::StartEvent),
+            "endEvent" => Some(if has_terminate_definition(&child) {
+                NodeKind::TerminateEndEvent
+            } else {
+                NodeKind::EndEvent
+            }),
+            "userTask" => Some(NodeKind::UserTask(parse_user_task(&child))),
+            "serviceTask" => Some(parse_service_task(&child)?),
+            "businessRuleTask" => Some(parse_business_rule_task(&child)?),
+            "exclusiveGateway" => Some(NodeKind::ExclusiveGateway),
+            "parallelGateway" => Some(NodeKind::ParallelGateway),
+            "inclusiveGateway" => Some(NodeKind::InclusiveGateway),
+            "boundaryEvent" => parse_boundary_event(&child)?,
+            "intermediateCatchEvent" => parse_intermediate_catch(&child)?,
+            "callActivity" => Some(NodeKind::CallActivity(parse_call_activity(&child)?)),
+            // 嵌入子流程（A5）：本身建成透传节点，其内部节点递归提升进同一 arena。
+            // 块级边界事件需嵌套作用域，本轮不支持——显式挡回。
+            "subProcess" => {
+                if scope_has_boundary_on(scope, child.attribute("id").unwrap_or("")) {
+                    return Err(Error::Unsupported(format!(
+                        "subProcess (id={:?}) 的块级边界事件需嵌套作用域，本轮不支持",
+                        child.attribute("id")
+                    )));
+                }
+                Some(NodeKind::SubProcess)
+            }
+            "sequenceFlow" => None,
+            _ => {
+                if is_flow_node_like(local) {
+                    return Err(Error::Unsupported(format!(
+                        "元素 <{local}> (id={:?})",
+                        child.attribute("id")
+                    )));
+                }
+                None
+            }
+        };
+
+        if let Some(kind) = kind {
+            let is_subprocess = matches!(kind, NodeKind::SubProcess);
+            let bpmn_id = child
+                .attribute("id")
+                .ok_or_else(|| Error::MissingElement(format!("<{local}> 缺少 id")))?
+                .to_string();
+            let node_id = NodeId(nodes.len());
+            index.insert(bpmn_id.clone(), node_id);
+            nodes.push(FlowNode {
+                id: node_id,
+                bpmn_id,
+                name: child.attribute("name").map(|s| s.to_string()),
+                kind,
+                incoming_count: 0,
+                outgoing: Vec::new(),
+            });
+            if is_subprocess {
+                collect_nodes(&child, nodes, index)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 递归挂出边。process 传顶层（供 source_default_of 查网关 default）；scope 是当前作用域。
+fn collect_flows(
+    process: &Node,
+    scope: &Node,
+    nodes: &mut [FlowNode],
+    index: &HashMap<String, NodeId>,
+) -> Result<()> {
+    for child in scope.children().filter(Node::is_element) {
+        let local = child.tag_name().name();
+        if local == "subProcess" {
+            collect_flows(process, &child, nodes, index)?;
+            continue;
+        }
+        if local != "sequenceFlow" {
+            continue;
+        }
+        let flow_id = child.attribute("id").unwrap_or("<anon-flow>").to_string();
+        let source_ref = child.attribute("sourceRef").ok_or_else(|| {
+            Error::MissingElement(format!("sequenceFlow {flow_id} 缺少 sourceRef"))
+        })?;
+        let target_ref = child.attribute("targetRef").ok_or_else(|| {
+            Error::MissingElement(format!("sequenceFlow {flow_id} 缺少 targetRef"))
+        })?;
+        let source_id = *index.get(source_ref).ok_or_else(|| {
+            Error::DanglingReference(format!(
+                "sequenceFlow {flow_id} 的 sourceRef '{source_ref}' 无对应节点"
+            ))
+        })?;
+        let target_id = *index.get(target_ref).ok_or_else(|| {
+            Error::DanglingReference(format!(
+                "sequenceFlow {flow_id} 的 targetRef '{target_ref}' 无对应节点"
+            ))
+        })?;
+        let condition = parse_condition(&child);
+        let is_default = source_default_of(process, source_ref)
+            .map(|d| d == flow_id)
+            .unwrap_or(false);
+        nodes[source_id.0].outgoing.push(SequenceFlow {
+            bpmn_id: flow_id,
+            target: target_id,
+            target_bpmn_id: target_ref.to_string(),
+            condition,
+            is_default,
+        });
+        nodes[target_id.0].incoming_count += 1;
+    }
+    Ok(())
+}
+
+/// 嵌入子流程合成接线（A5）：subProcess 透传节点接到其内部 startEvent；内部 endEvent 接到
+/// subProcess 的出口目标。递归处理嵌套子流程。
+fn wire_subprocesses(
+    scope: &Node,
+    nodes: &mut Vec<FlowNode>,
+    index: &HashMap<String, NodeId>,
+) -> Result<()> {
+    for child in scope.children().filter(Node::is_element) {
+        if child.tag_name().name() != "subProcess" {
+            continue;
+        }
+        let sp_bpmn = child.attribute("id").unwrap_or("").to_string();
+        let sp_id = *index
+            .get(&sp_bpmn)
+            .ok_or_else(|| Error::DanglingReference(format!("subProcess {sp_bpmn} 无对应节点")))?;
+
+        let inner_start = child
+            .children()
+            .filter(Node::is_element)
+            .find(|n| n.tag_name().name() == "startEvent")
+            .and_then(|n| n.attribute("id"))
+            .ok_or_else(|| {
+                Error::MissingElement(format!("subProcess {sp_bpmn} 缺少内部 startEvent"))
+            })?;
+        let inner_start_id = *index.get(inner_start).ok_or_else(|| {
+            Error::DanglingReference(format!("subProcess {sp_bpmn} 内部 start 无节点"))
+        })?;
+
+        // subProcess 的出口目标（父作用域 outgoing，已由 collect_flows 挂上）。
+        let exit_targets: Vec<SequenceFlow> = nodes[sp_id.0].outgoing.clone();
+        // subProcess 节点改为只透传到内部 start。
+        nodes[sp_id.0].outgoing = vec![SequenceFlow {
+            bpmn_id: format!("{sp_bpmn}__to_inner_start"),
+            target: inner_start_id,
+            target_bpmn_id: inner_start.to_string(),
+            condition: None,
+            is_default: false,
+        }];
+        nodes[inner_start_id.0].incoming_count += 1;
+
+        // 内部 endEvent → 透传接到 subProcess 出口目标（无出口则保持 EndEvent）。
+        let inner_ends: Vec<String> = child
+            .children()
+            .filter(Node::is_element)
+            .filter(|n| n.tag_name().name() == "endEvent")
+            .filter_map(|n| n.attribute("id").map(|s| s.to_string()))
+            .collect();
+        for end_bpmn in &inner_ends {
+            let end_id = *index.get(end_bpmn).ok_or_else(|| {
+                Error::DanglingReference(format!("subProcess {sp_bpmn} 内部 end {end_bpmn} 无节点"))
+            })?;
+            if !exit_targets.is_empty() {
+                nodes[end_id.0].kind = NodeKind::SubProcess;
+                nodes[end_id.0].outgoing = exit_targets.clone();
+                for e in &exit_targets {
+                    nodes[e.target.0].incoming_count += 1;
+                }
+            }
+        }
+
+        wire_subprocesses(&child, nodes, index)?;
+    }
+    Ok(())
+}
+
+/// 判断某 scope 内是否有 boundaryEvent 附着在给定 subProcess id 上（块级边界，本轮不支持）。
+fn scope_has_boundary_on(scope: &Node, sp_id: &str) -> bool {
+    if sp_id.is_empty() {
+        return false;
+    }
+    scope.children().filter(Node::is_element).any(|n| {
+        n.tag_name().name() == "boundaryEvent" && n.attribute("attachedToRef") == Some(sp_id)
+    })
 }
 
 /// 找到要编译的 `<process>` 元素。
@@ -481,6 +590,22 @@ fn parse_service_task(node: &Node) -> Result<NodeKind> {
     }
 }
 
+/// 解析 businessRuleTask（A3）：取决策表 key（flowable/camunda decisionRef，或 cmx:decision）。
+fn parse_business_rule_task(node: &Node) -> Result<NodeKind> {
+    let decision_key = local_attr(node, "decisionRef")
+        .or_else(|| local_attr(node, "decision"))
+        .or_else(|| local_attr(node, "decisionRefBinding"));
+    match decision_key.filter(|s| !s.trim().is_empty()) {
+        Some(k) => Ok(NodeKind::BusinessRuleTask(BusinessRule {
+            decision_key: k.trim().to_string(),
+        })),
+        None => Err(Error::Unsupported(format!(
+            "businessRuleTask (id={:?}) 未指定 decisionRef（决策表 key）",
+            node.attribute("id")
+        ))),
+    }
+}
+
 /// 归一化 delegate 键：剥掉可能的 `${...}` 包裹，得到纯注册键。
 fn normalize_delegate(raw: &str) -> String {
     let s = raw.trim();
@@ -533,11 +658,9 @@ fn is_flow_node_like(local: &str) -> bool {
         local,
         "task"
             | "scriptTask"
-            | "businessRuleTask"
             | "sendTask"
             | "receiveTask"
             | "manualTask"
-            | "subProcess"
             | "eventBasedGateway"
             | "complexGateway"
             | "intermediateThrowEvent"

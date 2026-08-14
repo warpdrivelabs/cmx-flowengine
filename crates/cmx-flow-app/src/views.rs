@@ -244,11 +244,13 @@ pub fn node_kind_str(k: &NodeKind) -> &'static str {
         NodeKind::TerminateEndEvent => "terminateEndEvent",
         NodeKind::UserTask(_) => "userTask",
         NodeKind::ServiceTask(_) => "serviceTask",
+        NodeKind::BusinessRuleTask(_) => "businessRuleTask",
         NodeKind::ExclusiveGateway => "exclusiveGateway",
         NodeKind::ParallelGateway => "parallelGateway",
         NodeKind::InclusiveGateway => "inclusiveGateway",
         NodeKind::BoundaryTimerEvent(_) => "boundaryTimerEvent",
         NodeKind::CallActivity(_) => "callActivity",
+        NodeKind::SubProcess => "subProcess",
         NodeKind::MessageCatchEvent(_) => "messageCatchEvent",
     }
 }

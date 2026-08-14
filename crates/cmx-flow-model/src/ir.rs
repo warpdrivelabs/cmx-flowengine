@@ -67,6 +67,18 @@ pub enum NodeKind {
     /// 消息名 + 相关键唤醒。打通「等第三方审批结果/外部回调再继续」这类集成场景——审批流常见的
     /// 「发起后等对方系统裁决」。相关键取实例变量（`correlation_var`）的值。
     MessageCatchEvent(MessageCatch),
+    /// 业务规则任务（A3，BPMN businessRuleTask + decisionRef）：调一张决策表求值，把输出写回
+    /// 实例变量。审批矩阵剥离到表——「什么金额/部门 → 几级审批」不硬编码进流程图。
+    /// 执行是同步的（决策纯函数、无 IO），不落等待态；求值完沿唯一出边继续（后续网关可用输出变量）。
+    BusinessRuleTask(BusinessRule),
+    /// 嵌入式子流程（A5，BPMN subProcess）——**透传节点**（编译期扁平化）。
+    ///
+    /// 引擎的节点 arena 是平铺的，故嵌入子流程在编译期被「摊平」进父图：subProcess 本身是一个
+    /// 透传节点（令牌到达即沿唯一出边进入其内部 startEvent 的后继），其内部节点提升进父 arena，
+    /// 内部 endEvent 被合成边接到 subProcess 的出口。这样无需引入嵌套令牌作用域即可支持基本嵌入
+    /// 子流程。**已知限制**：附着在 subProcess 上的块级边界事件（整块超时/取消）需真正的嵌套
+    /// 作用域，本轮不支持（编译期显式报错），列为后续增强。
+    SubProcess,
     /// 终止结束事件（A2，BPMN endEvent + `<terminateEventDefinition>`）：一票否决。
     ///
     /// 与普通 EndEvent 只消费**本令牌**不同：令牌到达终止事件时，**杀掉本实例所有其它未结束
@@ -84,6 +96,13 @@ pub struct MessageCatch {
     /// 引擎找到「该变量值 == 相关键」且停在本消息事件的实例令牌唤醒。空 = 仅按消息名 + 实例 id 唤醒。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_var: Option<String>,
+}
+
+/// 业务规则任务的静态配置（A3，来自 BPMN businessRuleTask + decisionRef）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BusinessRule {
+    /// 决策表 key：引擎按此键在决策表注册表查表，对当前变量求值，输出 merge 进实例变量。
+    pub decision_key: String,
 }
 
 /// 调用活动的静态配置（来自 BPMN callActivity）。

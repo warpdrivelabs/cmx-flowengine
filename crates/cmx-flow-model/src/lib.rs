@@ -12,6 +12,7 @@
  */
 
 pub mod candidate;
+pub mod decision;
 pub mod duration;
 pub mod error;
 pub mod expr;
@@ -27,11 +28,15 @@ pub mod variables;
 pub use error::{Error, Result};
 pub use expr::{BuiltinFn, builtin_catalog, eval_condition, validate_syntax};
 pub use ir::{
-    BoundaryTimer, CallActivity, CandidateKind, CandidateRef, FlowNode, MessageCatch,
+    BoundaryTimer, BusinessRule, CallActivity, CandidateKind, CandidateRef, FlowNode, MessageCatch,
     MultiInstance, NodeId, NodeKind, ProcessDefinition, SequenceFlow, ServiceTask, TimerDuration,
     UserTask, VarMapping,
 };
 pub use resolver::{AssigneeResolver, ResolveContext, ResolveError, ResolveResult};
+pub use decision::{
+    DecisionResult, DecisionRule, DecisionTable, HitPolicy, decision_from_json,
+    evaluate as evaluate_decision,
+};
 pub use runtime::{
     CcRecord, CcSummary, DueJob, InstanceSnapshot, InstanceState, InstanceSummary, MiScope,
     ProcessInstance, Task, TaskCandidate, TaskDelegation, TimerJob, Token, TokenState,
@@ -88,6 +93,15 @@ mod tests {
         // 缺失变量 → null → 比较为假，不 panic。
         assert!(!expr::eval_condition("approved", &vars).unwrap());
         assert!(expr::eval_condition("!approved", &vars).unwrap());
+    }
+
+    #[test]
+    fn expr_null_numeric_comparison_is_false_not_error() {
+        // 未赋值变量参与数值比较 → false（不报错）：审批「缺数据即条件不满足」+ 决策未写变量不误抛。
+        let vars = Variables::new();
+        assert!(!expr::eval_condition("approvalLevel >= 3", &vars).unwrap());
+        assert!(!expr::eval_condition("amount < 100", &vars).unwrap());
+        assert!(!expr::eval_condition("x > y", &vars).unwrap());
     }
 
     #[test]

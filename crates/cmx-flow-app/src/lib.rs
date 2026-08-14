@@ -15,6 +15,7 @@ pub mod auth;
 pub mod biz_link;
 pub mod conditions;
 pub mod dashboard;
+pub mod decisions;
 pub mod engine;
 pub mod events;
 pub mod frontend_pages;
@@ -172,6 +173,9 @@ where
         .route("/conditions/eval", post(conditions::eval))
         .route("/conditions/validate", post(conditions::validate))
         .route("/conditions/functions", get(conditions::functions))
+        // —— A3：决策表（注册 + 试算，businessRuleTask 引用） ——
+        .route("/decisions", post(decisions::register_decision))
+        .route("/decisions/evaluate", post(decisions::evaluate_decision))
         // —— 内建身份主数据（P0-c：仅 local 模式可写；external 只读/闲置） ——
         .route("/identity/mode", get(identity::get_mode))
         .route(

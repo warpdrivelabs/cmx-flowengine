@@ -78,16 +78,17 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_element() {
+        // complexGateway 仍不支持（subProcess 自 A5 起已支持，故改用仍未支持的元素验证挡回逻辑）。
         let xml = r#"<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL">
           <process id="p" isExecutable="true">
             <startEvent id="s"/>
-            <sequenceFlow id="f" sourceRef="s" targetRef="sp"/>
-            <subProcess id="sp"/>
+            <sequenceFlow id="f" sourceRef="s" targetRef="cg"/>
+            <complexGateway id="cg"/>
           </process></definitions>"#;
         let err = compile(xml).unwrap_err();
         assert!(
             matches!(err, Error::Unsupported(_)),
-            "子流程 M2 仍应报不支持"
+            "complexGateway 仍应报不支持"
         );
     }
 

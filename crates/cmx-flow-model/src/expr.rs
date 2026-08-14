@@ -561,6 +561,11 @@ fn eval_binary(op: BinOp, l: &Ast, r: &Ast, vars: &Variables) -> Result<Value> {
         BinOp::Eq => Ok(Value::Bool(json_eq(&lv, &rv))),
         BinOp::Ne => Ok(Value::Bool(!json_eq(&lv, &rv))),
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+            // null/未赋值参与数值比较 → false（而非报错）：贴合审批语义「缺数据即条件不满足」，
+            // 也让「决策未写变量 → 后续网关不误抛」。两侧都非 null 时才做数值比较。
+            if lv.is_null() || rv.is_null() {
+                return Ok(Value::Bool(false));
+            }
             let a = as_number(&lv)?;
             let b = as_number(&rv)?;
             let res = match op {

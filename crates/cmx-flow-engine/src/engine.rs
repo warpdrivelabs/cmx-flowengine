@@ -21,9 +21,10 @@ use std::sync::Arc;
 use std::sync::RwLock;
 
 use cmx_flow_model::{
-    AssigneeResolver, CandidateKind, CcRecord, InstanceSnapshot, InstanceState, MiScope, NodeKind,
-    ProcessDefinition, ProcessInstance, RuntimeStore, SequenceFlow, Task, TaskCandidate,
-    TaskDelegation, TimerJob, Token, TokenState, UserTask, Variables, expr::eval_condition,
+    AssigneeResolver, CandidateKind, CcRecord, DecisionTable, InstanceSnapshot, InstanceState,
+    MiScope, NodeKind, ProcessDefinition, ProcessInstance, RuntimeStore, SequenceFlow, Task,
+    TaskCandidate, TaskDelegation, TimerJob, Token, TokenState, UserTask, Variables,
+    decision::evaluate as evaluate_decision, expr::eval_condition,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -81,6 +82,8 @@ pub struct Engine<S: RuntimeStore> {
     /// 新发布的定义（H1：发布即生效，无需重启）。读多写极少，RwLock 合适。
     definitions: RwLock<HashMap<String, ProcessDefinition>>,
     delegates: DelegateRegistry,
+    /// 决策表注册表（A3）：businessRuleTask 按 key 查表求值。RwLock 内部可变，Arc 后仍可注册。
+    decisions: RwLock<HashMap<String, DecisionTable>>,
     /// 可注入时钟：生产 SystemClock，测试 TestClock（M2.5 定时器可测的关键）。
     clock: Arc<dyn Clock>,
     /// 候选人解析器（M4.1）：把角色/岗位/部门引用解析成真实用户。None = 未注入，
@@ -104,6 +107,7 @@ impl<S: RuntimeStore> Engine<S> {
             store,
             definitions: RwLock::new(HashMap::new()),
             delegates: DelegateRegistry::new(),
+            decisions: RwLock::new(HashMap::new()),
             clock,
             resolver: None,
             subflow_router: None,
@@ -195,6 +199,23 @@ impl<S: RuntimeStore> Engine<S> {
         self.delegates.register_delegate(key, delegate);
     }
 
+    /// 注册一张决策表（A3）。**取 `&self`**（内部 RwLock），Arc 后仍可热注册；同 key 覆盖。
+    pub fn register_decision(&self, table: DecisionTable) {
+        self.decisions
+            .write()
+            .expect("decisions 锁中毒")
+            .insert(table.key.clone(), table);
+    }
+
+    /// 克隆出一张已注册决策表（读锁瞬时持有，不跨 await）。未注册 → None。
+    fn get_decision(&self, key: &str) -> Option<DecisionTable> {
+        self.decisions
+            .read()
+            .expect("decisions 锁中毒")
+            .get(key)
+            .cloned()
+    }
+
     /// 借用底层存储（消费侧偶尔需要直接查询）。
     pub fn store(&self) -> &S {
         &self.store
@@ -212,6 +233,11 @@ impl<S: RuntimeStore> Engine<S> {
                 // 终止结束事件：同普通 endEvent，无出边。
                 NodeKind::TerminateEndEvent => out == 0,
                 NodeKind::UserTask(_) | NodeKind::ServiceTask(_) => out == 1,
+                // 业务规则任务：求值决策表后沿唯一出边继续，需恰好一条出边。
+                NodeKind::BusinessRuleTask(_) => out == 1,
+                // 嵌入子流程透传节点（A5）：单出边（透传到内部 start / 内部 end 接子流程出口）。
+                // 内部 endEvent 若无子流程出口则出边为 0（保持 EndEvent 语义）——放宽为 <= 1。
+                NodeKind::SubProcess => out <= 1,
                 // 排他网关：择一，至少一条出边。
                 NodeKind::ExclusiveGateway => out >= 1,
                 // 并行网关：作为 fork 需多出边，作为纯 join 出边可为 1；统一要求 >= 1。
@@ -1538,6 +1564,18 @@ impl<S: RuntimeStore> Engine<S> {
                     move_token(&mut snapshot.tokens[idx], target, now);
                 }
 
+                NodeKind::SubProcess => {
+                    // 嵌入子流程透传节点（A5）：有出边则沿之前进（透传到内部 start / 内部 end
+                    // 接子流程出口）；无出边（内部 end 且子流程无出口=顶层结束）则令牌 Ended。
+                    if let Some(flow) = outgoing.first() {
+                        move_token(&mut snapshot.tokens[idx], flow.target_bpmn_id.clone(), now);
+                    } else {
+                        let tok = &mut snapshot.tokens[idx];
+                        tok.state = TokenState::Ended;
+                        tok.updated_at = now;
+                    }
+                }
+
                 NodeKind::ServiceTask(ref st) => {
                     // 执行 delegate（可读写实例变量）。
                     let delegate = self
@@ -1583,6 +1621,31 @@ impl<S: RuntimeStore> Engine<S> {
                 }
 
                 NodeKind::ExclusiveGateway => {
+                    let target =
+                        choose_target(&node_bpmn, &kind, &outgoing, &snapshot.instance.variables)?;
+                    move_token(&mut snapshot.tokens[idx], target, now);
+                }
+
+                NodeKind::BusinessRuleTask(ref br) => {
+                    // 决策表求值（A3）：查注册表 → 对当前变量求值 → 输出 merge 进实例变量 →
+                    // 沿唯一出边继续（后续网关可用输出变量走条件分支）。同步、无 IO、不落等待态。
+                    // 未注册决策表 → 视为「不写变量」宽容前进（避免硬失败卡流程；设计器校验挡在前）。
+                    match self.get_decision(&br.decision_key) {
+                        Some(table) => {
+                            let res = evaluate_decision(&table, &snapshot.instance.variables)?;
+                            snapshot.instance.variables.merge(res.outputs);
+                            tracing::debug!(
+                                node = %node_bpmn, decision = %br.decision_key,
+                                matched = ?res.matched_rules, "决策表求值"
+                            );
+                        }
+                        None => {
+                            tracing::warn!(
+                                node = %node_bpmn, decision = %br.decision_key,
+                                "businessRuleTask 引用的决策表未注册，跳过求值"
+                            );
+                        }
+                    }
                     let target =
                         choose_target(&node_bpmn, &kind, &outgoing, &snapshot.instance.variables)?;
                     move_token(&mut snapshot.tokens[idx], target, now);
