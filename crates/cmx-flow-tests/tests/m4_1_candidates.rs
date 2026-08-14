@@ -37,6 +37,9 @@ impl FakeResolver {
             CandidateKind::Role => "ROLE",
             CandidateKind::Position => "POSITION",
             CandidateKind::Org => "ORG",
+            CandidateKind::OrgLeader => "ORG_LEADER",
+            CandidateKind::Initiator => "INITIATOR",
+            CandidateKind::InitiatorLeader => "INITIATOR_LEADER",
         };
         format!("{k}:{value}")
     }

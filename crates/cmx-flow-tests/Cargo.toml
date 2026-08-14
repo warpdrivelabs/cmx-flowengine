@@ -18,6 +18,8 @@ cmx-flow-bpmn = { workspace = true }
 cmx-flow-engine = { workspace = true }
 # 内部依赖 - PG 持久化
 cmx-flow-store-pg = { workspace = true }
+# 内部依赖 - 可选内建身份模块（P0-b 集成测试用）
+cmx-flow-identity = { workspace = true }
 # 内部依赖 - tokio-postgres DB 层（PG 测试注册数据源用）
 cmx-database-pg = { workspace = true }
 
