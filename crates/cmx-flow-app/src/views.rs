@@ -175,6 +175,33 @@ pub fn instance_view(snap: &InstanceSnapshot) -> Value {
         })
         .collect();
 
+    // Incident（H2/H4）：异常挂起令牌 + `__incident` 变量里的原因/重试次数，供运维台展示。
+    let incident_meta = snap.instance.variables.to_json();
+    let incident_meta = incident_meta.get("__incident");
+    let incidents: Vec<Value> = snap
+        .tokens
+        .iter()
+        .filter(|t| matches!(t.state, TokenState::Incident))
+        .map(|t| {
+            let node = &t.node_bpmn_id;
+            let (reason, retries) = incident_meta
+                .and_then(|m| m.get(node))
+                .map(|e| {
+                    (
+                        e.get("reason").cloned().unwrap_or(Value::Null),
+                        e.get("retries").cloned().unwrap_or(json!(0)),
+                    )
+                })
+                .unwrap_or((Value::Null, json!(0)));
+            json!({
+                "nodeBpmnId": node,
+                "reason": reason,
+                "retries": retries,
+                "since": t.updated_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
     json!({
         "id": snap.instance.id,
         "definitionKey": snap.instance.definition_key,
@@ -183,6 +210,8 @@ pub fn instance_view(snap: &InstanceSnapshot) -> Value {
         "variables": snap.instance.variables.to_json(),
         "parentInstanceId": snap.instance.parent_instance_id,
         "waitingSubflow": snap.tokens.iter().any(|t| matches!(t.state, TokenState::WaitingSubflow)),
+        "hasIncident": !incidents.is_empty(),
+        "incidents": incidents,
         "tokens": tokens,
         "tasks": tasks,
         "activeNodes": active,
@@ -212,18 +241,22 @@ pub fn node_kind_str(k: &NodeKind) -> &'static str {
     match k {
         NodeKind::StartEvent => "startEvent",
         NodeKind::EndEvent => "endEvent",
+        NodeKind::TerminateEndEvent => "terminateEndEvent",
         NodeKind::UserTask(_) => "userTask",
         NodeKind::ServiceTask(_) => "serviceTask",
         NodeKind::ExclusiveGateway => "exclusiveGateway",
         NodeKind::ParallelGateway => "parallelGateway",
+        NodeKind::InclusiveGateway => "inclusiveGateway",
         NodeKind::BoundaryTimerEvent(_) => "boundaryTimerEvent",
         NodeKind::CallActivity(_) => "callActivity",
+        NodeKind::MessageCatchEvent(_) => "messageCatchEvent",
     }
 }
 
 pub fn instance_state_str(s: InstanceState) -> &'static str {
     match s {
         InstanceState::Active => "ACTIVE",
+        InstanceState::Suspended => "SUSPENDED",
         InstanceState::Completed => "COMPLETED",
         InstanceState::Terminated => "TERMINATED",
     }
@@ -235,6 +268,9 @@ fn candidate_kind_str(k: CandidateKind) -> &'static str {
         CandidateKind::Role => "ROLE",
         CandidateKind::Position => "POSITION",
         CandidateKind::Org => "ORG",
+        CandidateKind::OrgLeader => "ORG_LEADER",
+        CandidateKind::Initiator => "INITIATOR",
+        CandidateKind::InitiatorLeader => "INITIATOR_LEADER",
     }
 }
 
@@ -244,6 +280,8 @@ fn token_state_str(s: TokenState) -> &'static str {
         TokenState::Waiting => "WAITING",
         TokenState::Joining => "JOINING",
         TokenState::WaitingSubflow => "WAITING_SUBFLOW",
+        TokenState::WaitingMessage => "WAITING_MESSAGE",
+        TokenState::Incident => "INCIDENT",
         TokenState::Ended => "ENDED",
     }
 }

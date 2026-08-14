@@ -27,6 +27,8 @@ cmx-flow-store-pg = { workspace = true }
 cmx-flow-def = { workspace = true }
 # 外部服务适配器（HttpAssigneeResolver/SubflowRouter/Delegate + Mock + AdapterConfig）
 cmx-flow-adapters = { workspace = true }
+# 可选内建身份模块（P0-c：FLOW_IDENTITY_MODE=local 时的 LocalAssigneeResolver + fid_* CRUD）
+cmx-flow-identity = { workspace = true }
 # infra（跨 workspace path 进 cmx-container）
 cmx-database-pg = { workspace = true }
 cmx-core = { workspace = true }
@@ -49,3 +51,5 @@ tokio-stream = { workspace = true }
 # OpenAPI 契约（S3）：注解 + swagger UI
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
+# 前端页 rev 内容哈希（xxhash64→16hex，字节对齐门户 cmx-jsonstore::content_rev）
+xxhash-rust = { workspace = true }

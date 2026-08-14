@@ -241,7 +241,28 @@ pub async fn save_definition_draft(
     }))))
 }
 
-/// 设计器：取单个定义详情（含草稿 XML，供重新加载编辑）。
+/// 设计器「校验」：只试编译 BPMN（真跑 compile + check_topology），**不落库**。
+///
+/// 与 save_draft 走同一道编译闸，但纯只读——设计器在保存前就能拿到真实诊断（无 start、
+/// 死循环、网关无出口、引擎不支持的元素等），而非假的「有没有 process 字样」。
+/// 语法/拓扑非法也回 HTTP 200 + `{valid:false,error}`，便于前端就地渲染，无需 catch。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidateDefReq {
+    /// 设计器导出的 BPMN 2.0 XML。
+    bpmn_xml: String,
+}
+
+pub async fn validate_definition(
+    Json(req): Json<ValidateDefReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    match cmx_flow_def::validate_bpmn(&req.bpmn_xml) {
+        Ok(key) => Ok(Json(ApiResp::ok(json!({ "valid": true, "key": key })))),
+        Err(e) => Ok(Json(ApiResp::ok(json!({ "valid": false, "error": e.to_string() })))),
+    }
+}
+
+
 /// 可选 ?version=N：取指定历史版本的 XML（版本切换用），不传则取当前草稿。
 #[derive(Deserialize)]
 pub struct DetailQuery {
@@ -307,7 +328,7 @@ pub struct PublishReq {
     published_by: Option<String>,
 }
 
-/// 设计器：发布（草稿 → 版本 +1）。新版下次服务重启装载生效。
+/// 设计器：发布（草稿 → 版本 +1）。**H1：发布即热装载到运行引擎，无需重启。**
 pub async fn publish_definition(
     Path(key): Path<String>,
     Json(req): Json<PublishReq>,
@@ -318,10 +339,40 @@ pub async fn publish_definition(
         .publish(&key, req.note, req.published_by)
         .await
         .map_err(def_err)?;
+
+    // H1 热装载：取刚发布版本的 XML → 编译 → deploy 到运行引擎（deploy 取 &self，Arc 后仍可热更）。
+    // 同步刷新 rt.definitions（前端画图列表）。任一步失败仅告警，不回滚发布（已落库）。
+    let mut hot_loaded = false;
+    match rt.def_svc.get_version(&key, version).await {
+        Ok(Some(ver)) => match cmx_flow_bpmn::compile(&ver.bpmn_xml) {
+            Ok(def) => {
+                if let Err(e) = rt.engine.deploy(def.clone()) {
+                    tracing::warn!(key = %key, error = %e, "热装载 deploy 失败");
+                } else {
+                    // 刷新前端定义列表：同 key 覆盖，否则追加（tokio RwLock）。
+                    {
+                        let mut defs = rt.definitions.write().await;
+                        if let Some(slot) = defs.iter_mut().find(|d| d.key == def.key) {
+                            *slot = def;
+                        } else {
+                            defs.push(def);
+                        }
+                    }
+                    hot_loaded = true;
+                    tracing::info!(key = %key, version, "已热装载新发布定义");
+                }
+            }
+            Err(e) => tracing::warn!(key = %key, error = %e, "热装载编译失败"),
+        },
+        Ok(None) => tracing::warn!(key = %key, version, "热装载取版本 XML 为空"),
+        Err(e) => tracing::warn!(key = %key, error = %e, "热装载取版本失败"),
+    }
+
     Ok(Json(ApiResp::ok(json!({
         "key": key,
         "version": version,
-        "note": "已发布；重启服务后引擎装载新版（热更列入后续阶段）",
+        "hotLoaded": hot_loaded,
+        "note": if hot_loaded { "已发布并热装载，立即生效" } else { "已发布；热装载失败，重启服务后生效" },
     }))))
 }
 
@@ -845,7 +896,200 @@ pub async fn transfer_task(
     load_view(&rt, &req.instance_id).await
 }
 
-/// 委派（M4.3）。
+/// 退回 / 驳回（P6）请求体。camelCase（对齐前端 instanceId 等）。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectReq {
+    instance_id: String,
+    #[serde(default)]
+    from_user: Option<String>,
+    /// 退回目标节点 bpmn id（可空 = 回退到直接前驱用户任务）。
+    #[serde(default)]
+    target_bpmn_id: Option<String>,
+    /// 驳回意见。
+    #[serde(default)]
+    reason: Option<String>,
+    /// 附带变量（如驳回原因码），办结前 merge 进实例。
+    #[serde(default)]
+    variables: Value,
+}
+
+/// 退回 / 驳回（P6）——把待办打回之前的节点重新办理。
+pub async fn reject_task(
+    Path(task_id): Path<String>,
+    Json(req): Json<RejectReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let vars = Variables::from_json(req.variables.clone());
+    rt.engine
+        .reject_task(
+            &req.instance_id,
+            &task_id,
+            req.from_user.as_deref().unwrap_or(""),
+            req.target_bpmn_id.as_deref(),
+            req.reason.as_deref(),
+            vars,
+        )
+        .await
+        .map_err(engine_err)?;
+    load_view(&rt, &req.instance_id).await
+}
+
+/// 重试 incident（H2）请求体。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryIncidentReq {
+    /// 重试前 merge 的修正变量（可空）。
+    #[serde(default)]
+    variables: Value,
+}
+
+/// 运维改变量（H4）请求体。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetVarsReq {
+    /// 要 merge 进实例的变量对象。
+    variables: Value,
+}
+
+/// 运维干预：改实例变量（H4）——修数据后可再 retry-incident。
+pub async fn set_instance_variables(
+    Path(instance_id): Path<String>,
+    Json(req): Json<SetVarsReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let vars = Variables::from_json(req.variables.clone());
+    rt.engine
+        .set_variables(&instance_id, vars)
+        .await
+        .map_err(engine_err)?;
+    load_view(&rt, &instance_id).await
+}
+
+/// 挂起实例（A7）。
+pub async fn suspend_instance(
+    Path(instance_id): Path<String>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    rt.engine.suspend_process(&instance_id).await.map_err(engine_err)?;
+    load_view(&rt, &instance_id).await
+}
+
+/// 恢复实例（A7）。
+pub async fn resume_instance(
+    Path(instance_id): Path<String>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    rt.engine.resume_process(&instance_id).await.map_err(engine_err)?;
+    load_view(&rt, &instance_id).await
+}
+
+/// 自由跳转（A7）请求体。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JumpReq {
+    /// 目标用户任务节点 bpmn id。
+    target_bpmn_id: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// 自由跳转（A7）——把实例令牌强制移到指定用户任务节点。
+pub async fn jump_instance(
+    Path(instance_id): Path<String>,
+    Json(req): Json<JumpReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    rt.engine
+        .jump_to(&instance_id, &req.target_bpmn_id, req.reason.as_deref())
+        .await
+        .map_err(engine_err)?;
+    load_view(&rt, &instance_id).await
+}
+
+/// 催办（A7）请求体。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UrgeReq {
+    instance_id: String,
+    #[serde(default)]
+    from_user: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+/// 催办（A7）——对待办任务当前办理人发催办知会。
+pub async fn urge_task(
+    Path(task_id): Path<String>,
+    Json(req): Json<UrgeReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    rt.engine
+        .urge_task(
+            &req.instance_id,
+            &task_id,
+            req.from_user.as_deref().unwrap_or(""),
+            req.message.as_deref(),
+        )
+        .await
+        .map_err(engine_err)?;
+    load_view(&rt, &req.instance_id).await
+}
+
+/// 相关消息（A4）请求体——外部系统投递消息唤醒等待中的流程。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrelateReq {
+    /// 消息名（对齐 BPMN message name / messageRef）。
+    message_name: String,
+    /// 目标实例 id（点对点回调；给了则只在该实例内找）。
+    #[serde(default)]
+    instance_id: Option<String>,
+    /// 相关键（跨实例路由：匹配实例 correlation_var 变量值）。
+    #[serde(default)]
+    correlation_key: Option<String>,
+    /// 随消息带入的变量（merge 进实例）。
+    #[serde(default)]
+    variables: Value,
+}
+
+/// 相关消息（A4）——外部系统回调唤醒停在消息中间捕获事件的流程。
+///
+/// `POST /flow/messages/correlate`：按消息名 + (实例 id | 相关键) 定位等待令牌，merge 变量后继续。
+pub async fn correlate_message(
+    Json(req): Json<CorrelateReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let vars = Variables::from_json(req.variables.clone());
+    let result = rt
+        .engine
+        .correlate_message(
+            req.instance_id.as_deref(),
+            &req.message_name,
+            req.correlation_key.as_deref(),
+            vars,
+        )
+        .await
+        .map_err(engine_err)?;
+    // 用返回的实例视图。
+    load_view(&rt, &result.instance_id).await
+}
+
+/// 重试 incident（H2）——把实例内所有异常挂起(Incident)令牌重新激活重跑。
+pub async fn retry_incident(
+    Path(instance_id): Path<String>,
+    Json(req): Json<RetryIncidentReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let vars = Variables::from_json(req.variables.clone());
+    rt.engine
+        .retry_incident(&instance_id, vars)
+        .await
+        .map_err(engine_err)?;
+    load_view(&rt, &instance_id).await
+}
+
+
 pub async fn delegate_task(
     Path(task_id): Path<String>,
     Json(req): Json<TransferReq>,

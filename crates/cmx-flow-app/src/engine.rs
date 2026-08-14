@@ -51,6 +51,16 @@ pub fn current_iam_db_id() -> String {
     TenancyConfig::global().iam_db_id(&current_tenant())
 }
 
+/// 是否启用内建身份模块（`FLOW_IDENTITY_MODE=local`）。默认 false → 外接 IAM（零回归）。
+///
+/// local 模式：候选人解析走 `LocalAssigneeResolver`（fid_* 表），并开放身份管理 CRUD 端点 +
+/// 四区工作台。external（默认）：继续用平台 IAM（Pg/Http/Mock），本模块完全不参与。
+pub fn identity_is_local() -> bool {
+    std::env::var("FLOW_IDENTITY_MODE")
+        .map(|v| v.eq_ignore_ascii_case("local"))
+        .unwrap_or(false)
+}
+
 /// 流程运行态聚合：共享引擎 + 已装载定义（供前端画图）+ 定义服务（设计器草稿/发布）。
 pub struct FlowRuntime {
     pub engine: Arc<Engine<PgRuntimeStore>>,
@@ -145,24 +155,36 @@ async fn build_for(
     let cfg = AdapterConfig::from_env();
     let mut engine = Engine::new(store);
 
-    // 候选人解析（身份）：pg 直连 IAM 库 / http 接外部身份服务 / mock 脱外部合成。
-    match cfg.identity_mode {
-        AdapterMode::Pg => {
-            engine.set_resolver(Arc::new(PgIamAssigneeResolver::new(iam_db_id)));
+    // 候选人解析（身份）：**先看 local 模式**（可选内建身份模块，fid_* 表）——独立部署且无外部
+    // IAM 时用。未设 local 则退回适配器 mode(pg 默认/http/mock)，行为与 P0 前完全一致（零回归）。
+    if identity_is_local() {
+        let fid_db = iam_db_id.to_string();
+        // 建 fid_* 表（幂等）。建表失败不致命：记日志后仍注入 resolver（表可能已由迁移建好）。
+        let store = cmx_flow_identity::IdentityStore::new(&fid_db);
+        if let Err(e) = store.ensure_schema().await {
+            tracing::warn!(error = %e, "内建身份 fid_* 建表失败（继续，表可能已存在）");
         }
-        AdapterMode::Http => match &cfg.identity_url {
-            Some(url) => {
-                tracing::info!(url, "候选人解析走外部身份服务(http)");
-                engine.set_resolver(Arc::new(HttpAssigneeResolver::new(url.clone())));
+        tracing::info!(db = %fid_db, "候选人解析走内建身份模块(local, fid_* 表)");
+        engine.set_resolver(Arc::new(cmx_flow_identity::LocalAssigneeResolver::new(fid_db)));
+    } else {
+        match cfg.identity_mode {
+            AdapterMode::Pg => {
+                engine.set_resolver(Arc::new(PgIamAssigneeResolver::new(iam_db_id)));
             }
-            None => {
-                tracing::warn!("FLOW_IDENTITY_MODE=http 但缺 FLOW_IDENTITY_URL，回退 mock");
+            AdapterMode::Http => match &cfg.identity_url {
+                Some(url) => {
+                    tracing::info!(url, "候选人解析走外部身份服务(http)");
+                    engine.set_resolver(Arc::new(HttpAssigneeResolver::new(url.clone())));
+                }
+                None => {
+                    tracing::warn!("FLOW_IDENTITY_MODE=http 但缺 FLOW_IDENTITY_URL，回退 mock");
+                    engine.set_resolver(Arc::new(MockAssigneeResolver));
+                }
+            },
+            AdapterMode::Mock => {
+                tracing::info!("候选人解析走 mock（脱外部）");
                 engine.set_resolver(Arc::new(MockAssigneeResolver));
             }
-        },
-        AdapterMode::Mock => {
-            tracing::info!("候选人解析走 mock（脱外部）");
-            engine.set_resolver(Arc::new(MockAssigneeResolver));
         }
     }
 

@@ -148,6 +148,10 @@ async fn main() -> cmx_web_chassis::Result<()> {
         .layer(axum::middleware::from_fn(cmx_flow_app::auth_middleware));
     let api_router = axum::Router::new()
         .merge(authed)
+        // 前端页只读投递（native + html）：流程微服务自持自己的 3 native + 1 html 页，字节对齐门户
+        // 信封，供门户 F3 反代取页请求；独立运行时也自投递自己的界面。免认证（静态内容，且门户
+        // 反代注入服务身份），故挂在 authed 之外、与 swagger 同层。
+        .merge(cmx_flow_app::frontend_pages::frontend_pages_routes::<()>())
         .merge(SwaggerUi::new("/flow/v1/docs").url("/flow/v1/openapi.json", flow_openapi()));
     let app_router = axum::Router::new()
         // 根路径 → 业务监控大盘（流程域：实例/待办/定义/协作…；免认证，轮询 /api/flow/v1/stats）。

@@ -186,6 +186,73 @@ pub async fn flow_stats() -> Result<Json<ApiResp<Value>>> {
     Ok(Json(ApiResp::ok(data)))
 }
 
+/// 节点耗时/瓶颈/SLA 分析查询参数（A6）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeTimingQuery {
+    /// 可选：只统计某流程定义。空 = 全部。
+    #[serde(default)]
+    definition_key: Option<String>,
+    /// SLA 阈值（秒）：耗时超过它的任务计入 slaBreached。默认 86400（1 天）。
+    #[serde(default)]
+    sla_secs: Option<i64>,
+}
+
+/// 节点耗时/瓶颈/SLA 分析（A6）—— 基于归档的 hi_task（节点级 created/completed/duration）。
+///
+/// `GET /flow/analytics/node-timing?definitionKey=&slaSecs=`：按 node_bpmn_id 聚合
+/// count/avg/max/min 耗时（毫秒）+ 超 SLA 任务数，avg 降序（瓶颈在前）。全部只读，表未建降级空。
+pub async fn node_timing(Query(q): Query<NodeTimingQuery>) -> Result<Json<ApiResp<Value>>> {
+    let db = current_flow_db_id();
+    let sla_ms = q.sla_secs.unwrap_or(86_400).max(0) * 1000;
+
+    // 归档任务的节点级耗时聚合。definitionKey 需 join 实例历史（hi_task 无 def 列）。
+    // 简化：hi_task 直接聚合（跨定义）；给了 definitionKey 则 join hi_instance 过滤。
+    let (sql, rows) = if let Some(key) = q.definition_key.clone().filter(|k| !k.is_empty()) {
+        let sql = format!(
+            "SELECT t.node_bpmn_id AS node, t.name AS name, count(*) AS cnt, \
+                    round(avg(t.duration_ms)) AS avg_ms, max(t.duration_ms) AS max_ms, \
+                    min(t.duration_ms) AS min_ms, \
+                    count(*) FILTER (WHERE t.duration_ms > {sla_ms}) AS sla_breached \
+             FROM cmx_flow_hi_task t \
+             JOIN cmx_flow_hi_instance i ON i.id = t.instance_id \
+             WHERE t.duration_ms IS NOT NULL AND i.definition_key = $1 \
+             GROUP BY t.node_bpmn_id, t.name ORDER BY avg_ms DESC NULLS LAST LIMIT 50"
+        );
+        (sql.clone(), query_rows_params(&db, &sql, key).await)
+    } else {
+        let sql = format!(
+            "SELECT node_bpmn_id AS node, name, count(*) AS cnt, \
+                    round(avg(duration_ms)) AS avg_ms, max(duration_ms) AS max_ms, \
+                    min(duration_ms) AS min_ms, \
+                    count(*) FILTER (WHERE duration_ms > {sla_ms}) AS sla_breached \
+             FROM cmx_flow_hi_task \
+             WHERE duration_ms IS NOT NULL \
+             GROUP BY node_bpmn_id, name ORDER BY avg_ms DESC NULLS LAST LIMIT 50"
+        );
+        (sql.clone(), query_rows(&db, &sql).await)
+    };
+    let _ = sql;
+
+    // 概览：总归档任务、超 SLA 总数（rows 的键 = SQL 列别名 snake_case）。
+    let total = rows
+        .iter()
+        .filter_map(|r| r.get("cnt").and_then(|v| v.as_i64()))
+        .sum::<i64>();
+    let breached = rows
+        .iter()
+        .filter_map(|r| r.get("sla_breached").and_then(|v| v.as_i64()))
+        .sum::<i64>();
+
+    Ok(Json(ApiResp::ok(json!({
+        "slaSecs": sla_ms / 1000,
+        "definitionKey": q.definition_key,
+        "totalTasks": total,
+        "slaBreachedTotal": breached,
+        "nodes": rows,
+    }))))
+}
+
 /// 取单值 count 标量。查询失败/空 → 0（表未建等，降级不报错）。
 async fn scalar(db: &str, sql: &str) -> i64 {
     match cmx_database_pg::query_sql(db, None, sql, "flow_stats").await {

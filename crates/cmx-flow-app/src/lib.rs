@@ -13,10 +13,13 @@
 
 pub mod auth;
 pub mod biz_link;
+pub mod conditions;
 pub mod dashboard;
 pub mod engine;
 pub mod events;
+pub mod frontend_pages;
 pub mod handlers;
+pub mod identity;
 pub mod observe;
 pub mod openapi;
 pub mod resp;
@@ -74,6 +77,7 @@ where
         .route("/definitions", get(handlers::get_definitions))
         .route("/design/definitions", get(handlers::list_design_definitions))
         .route("/definitions/draft", post(handlers::save_definition_draft))
+        .route("/definitions/validate", post(handlers::validate_definition))
         .route("/definitions/{key}", get(handlers::get_definition_detail))
         .route(
             "/definitions/{key}/publish",
@@ -100,6 +104,17 @@ where
         .route("/instances/{id}", get(handlers::get_instance))
         .route("/instances/{id}/children", get(handlers::get_children))
         .route("/instances/{id}/cancel", post(handlers::cancel_instance))
+        .route(
+            "/instances/{id}/retry-incident",
+            post(handlers::retry_incident),
+        )
+        .route(
+            "/instances/{id}/set-variables",
+            post(handlers::set_instance_variables),
+        )
+        .route("/instances/{id}/suspend", post(handlers::suspend_instance))
+        .route("/instances/{id}/resume", post(handlers::resume_instance))
+        .route("/instances/{id}/jump", post(handlers::jump_instance))
         // —— F1/F3：变量 / 单据关联 / 意见 ——
         .route(
             "/instances/{id}/variables",
@@ -129,10 +144,14 @@ where
         .route("/todos/done", get(handlers::get_done_todos))
         .route("/todos/filters", get(handlers::get_todo_filters))
         .route("/tasks/{id}/complete", post(handlers::complete_task))
+        .route("/tasks/{id}/reject", post(handlers::reject_task))
         .route("/tasks/{id}/claim", post(handlers::claim_task))
         .route("/tasks/{id}/transfer", post(handlers::transfer_task))
         .route("/tasks/{id}/delegate", post(handlers::delegate_task))
         .route("/tasks/{id}/addsign", post(handlers::add_sign_task))
+        .route("/tasks/{id}/urge", post(handlers::urge_task))
+        // —— A4：相关消息（外部回调唤醒等待中的流程） ——
+        .route("/messages/correlate", post(handlers::correlate_message))
         // —— 抄送 / 定时器 / 用户 ——
         .route("/users", get(handlers::list_users))
         .route("/cc", get(handlers::list_cc))
@@ -149,8 +168,25 @@ where
             "/subflow-bindings/id/{id}",
             delete(handlers::delete_subflow_binding),
         )
+        // —— 分支条件（可视化构造器后端：求值/语法校验/函数目录，纯函数） ——
+        .route("/conditions/eval", post(conditions::eval))
+        .route("/conditions/validate", post(conditions::validate))
+        .route("/conditions/functions", get(conditions::functions))
+        // —— 内建身份主数据（P0-c：仅 local 模式可写；external 只读/闲置） ——
+        .route("/identity/mode", get(identity::get_mode))
+        .route(
+            "/identity/users/{id}/roles",
+            post(identity::set_user_roles),
+        )
+        .route(
+            "/identity/{entity}",
+            get(identity::list).post(identity::upsert),
+        )
+        .route("/identity/{entity}/{id}", delete(identity::delete))
         // —— 监控大盘数据源（引擎全状态聚合，根路径大盘轮询） ——
         .route("/stats", get(stats::flow_stats))
+        // —— A6：节点耗时/瓶颈/SLA 分析（基于 hi_task 归档） ——
+        .route("/analytics/node-timing", get(stats::node_timing))
         // —— 大盘明细下钻（每数据点可点击 → 该维度明细行，每行全字段可展开） ——
         .route("/stats/detail", get(stats::stats_detail))
         // —— 客户端连接监控（连接数/协议/身份/方法/参数/返回值等全维度） ——
