@@ -727,6 +727,7 @@ version = "0.1.12"
 dependencies = [
  "cmx-flow-model",
  "roxmltree",
+ "serde_json",
  "thiserror 2.0.19",
  "tracing",
 ]

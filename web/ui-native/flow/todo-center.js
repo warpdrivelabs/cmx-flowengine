@@ -266,7 +266,7 @@ function todoCard (t) {
   if (cat === 'initiated') {
     // 我发起的（是实例，非任务）：查看轨迹 + 撤销（仅进行中）。不是办理人，无办理/转签。
     acts = `<button class="todo-btn" data-view="${esc(t.taskId)}">查看</button>` +
-      (t.state === 'ACTIVE' ? `<button class="todo-btn danger" data-cancel="${esc(t.instanceId)}">撤销</button>` : '')
+      (t.state === 'ACTIVE' ? `<button class="todo-btn" data-withdraw="${esc(t.instanceId)}" title="下游未处理时取回，可改后重交">取回</button><button class="todo-btn danger" data-cancel="${esc(t.instanceId)}">撤销</button>` : '')
   } else if (cat === 'cc') {
     acts = `<button class="todo-btn" data-view="${esc(t.taskId)}">查看</button>
             <button class="todo-btn" data-ccread="${esc(t.ccId || t.taskId)}">标记已读</button>`
@@ -288,6 +288,7 @@ function todoCard (t) {
         <span class="node"><ui5-icon name="workflow-tasks"></ui5-icon>${esc(t.nodeName || t.nodeBpmnId || '')}</span>
         ${t.applicant ? `<span><ui5-icon name="employee"></ui5-icon>${esc(t.applicant)}</span>` : ''}
         ${amount ? `<span><ui5-icon name="money-bills"></ui5-icon>${esc(amount)}</span>` : ''}
+        ${elementLabel(t.elementValue) ? `<span class="mi" title="本待办处理的明细项"><ui5-icon name="product"></ui5-icon>${esc(elementLabel(t.elementValue))}</span>` : ''}
         ${t.createdAt ? `<span><ui5-icon name="history"></ui5-icon>${esc(fmtTime(t.createdAt))}</span>` : ''}
       </div>
     </div>
@@ -298,6 +299,21 @@ function todoCard (t) {
 function fmtTime (iso) {
   if (!iso) return ''
   return String(iso).replace('T', ' ').slice(0, 16)
+}
+
+// 多实例子任务的元素（②）→ 卡片上的紧凑标签：对象取代表字段(name/title/sku/label/code/id)，
+// 否则 JSON 缩略；标量原样。null/空 → 空串（卡片不渲染该 chip）。
+function elementLabel (v) {
+  if (v == null) return ''
+  if (typeof v === 'object') {
+    if (Array.isArray(v)) return v.length ? `${v.length} 项` : ''
+    for (const k of ['name', 'title', 'sku', 'label', 'code', 'id']) {
+      if (v[k] != null && v[k] !== '') return String(v[k])
+    }
+    const s = JSON.stringify(v)
+    return s.length > 24 ? s.slice(0, 23) + '…' : s
+  }
+  return String(v)
 }
 
 // ————————————————————— property 区（轨迹 + 意见） —————————————————————
@@ -355,6 +371,7 @@ function bind (root, view, host) {
     root.querySelectorAll('[data-start]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); openStartForm(b.dataset.start, b) }))
     root.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); viewTodo(b.dataset.view, b) }))
     root.querySelectorAll('[data-cancel]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); cancelInstance(b.dataset.cancel) }))
+    root.querySelectorAll('[data-withdraw]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); withdrawInstance(b.dataset.withdraw) }))
     root.querySelectorAll('[data-ccread]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); markCcRead(b.dataset.ccread) }))
   }
 }
@@ -771,6 +788,21 @@ async function cancelInstance (instanceId) {
     toast('已撤销')
     loadTodos()
   } catch (e) { toast('撤销失败: ' + e.message) }
+}
+
+// 我发起的：取回 / 撤回（④）——下游未处理时拉回发起处（可改后重交）。后端护栏校验发起人 + 策略，
+// 不满足则返回原因，这里 toast 提示（区别于「撤销」的整单终止）。
+async function withdrawInstance (instanceId) {
+  if (!instanceId) return
+  if (!window.confirm('确认取回该流程？取回后流程回到你手中，可修改后重新提交。')) return
+  try {
+    await apiJson(`/api/flow/instances/${enc(instanceId)}/withdraw`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: currentUser(), reason: '发起人在待办中心取回' }),
+    })
+    toast('已取回，可修改后重新提交')
+    loadTodos()
+  } catch (e) { toast('取回失败: ' + e.message) }
 }
 
 // 抄送我的：标记一条抄送为已读。

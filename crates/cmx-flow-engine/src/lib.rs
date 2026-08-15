@@ -19,7 +19,7 @@ pub mod memory_store;
 
 pub use clock::{Clock, SystemClock, TestClock};
 pub use delegate::{DelegateContext, DelegateRegistry, JavaDelegate};
-pub use engine::{Engine, ExecutionResult, FiredTimer, TaskView};
+pub use engine::{Engine, ExecutionResult, FiredTimer, RejectTarget, RejectTargetInfo, TaskView};
 pub use error::{Error, Result};
 pub use memory_store::InMemoryStore;
 

@@ -268,17 +268,7 @@ function contentHtml (st) {
         <div class="tf-cmt-body">${esc(c.comment || '')}</div></div>`).join('')
     : '<div class="tf-hint">暂无审批意见</div>'
 
-  const approveArea = p.viewOnly
-    ? ''  // 查看态：只看单据/轨迹 + 意见历史，不出任何办结动作
-    : (noComment
-      ? `<div class="tf-actions"><button class="tf-btn ok" data-confirm>确认知悉（办结）</button></div>`
-      : `<label class="tf-label">我的意见</label>
-       <textarea class="tf-comment" data-comment placeholder="填写审批意见..."></textarea>
-       <div class="tf-actions">
-         <button class="tf-btn ok" data-approve>同意</button>
-         <button class="tf-btn danger" data-reject>驳回</button>
-         <button class="tf-btn" data-return title="退回到上一审批节点重新办理">退回上一步</button>
-       </div>`)
+  const approveArea = approveAreaHtml(p, noComment)
 
   return `<section class="tf">
     <div class="tf-bar">
@@ -299,6 +289,21 @@ function contentHtml (st) {
     </div>
     <div class="tf-toast"></div>
   </section>`
+}
+
+// 审批动作区（同意/驳回/退回上一步/退回到…），content 与 property 两处共用——改一处即可，防漂移。
+function approveAreaHtml (p, noComment) {
+  if (p.viewOnly) return ''  // 查看态：只看单据/轨迹 + 意见历史，不出任何办结动作
+  if (noComment) return '<div class="tf-actions"><button class="tf-btn ok" data-confirm>确认知悉（办结）</button></div>'
+  return `<label class="tf-label">我的意见</label>
+       <textarea class="tf-comment" data-comment placeholder="填写审批意见..."></textarea>
+       <div class="tf-actions">
+         <button class="tf-btn ok" data-approve>同意</button>
+         <button class="tf-btn danger" data-reject>驳回</button>
+         <button class="tf-btn" data-return title="退回到上一审批节点重新办理">退回上一步</button>
+         <button class="tf-btn" data-return-pick title="选择任意上游节点退回">退回到…</button>
+       </div>
+       <div class="tf-return-menu" data-return-menu hidden></div>`
 }
 
 function modeLabel (m) {
@@ -326,17 +331,7 @@ function trailHtml (st) {
           <em>${esc(fmtTime(c.createdAt))}</em></div>
         <div class="tf-cmt-body">${esc(c.comment || '')}</div></div>`).join('')
     : '<div class="tf-hint">暂无审批意见</div>'
-  const approveArea = p.viewOnly
-    ? ''  // 查看态：只看单据/轨迹 + 意见历史，不出任何办结动作
-    : (noComment
-      ? `<div class="tf-actions"><button class="tf-btn ok" data-confirm>确认知悉（办结）</button></div>`
-      : `<label class="tf-label">我的意见</label>
-       <textarea class="tf-comment" data-comment placeholder="填写审批意见..."></textarea>
-       <div class="tf-actions">
-         <button class="tf-btn ok" data-approve>同意</button>
-         <button class="tf-btn danger" data-reject>驳回</button>
-         <button class="tf-btn" data-return title="退回到上一审批节点重新办理">退回上一步</button>
-       </div>`)
+  const approveArea = approveAreaHtml(p, noComment)
   return `<section class="tf">
     <div class="tf-prop-head"><b>${esc(inst?.businessKey || p.instanceId || '')}</b><small>${esc(p.formKey || '')} · ${esc(modeLabel(p.formMode))}</small></div>
     <div class="tf-prop-body">
@@ -358,6 +353,7 @@ function bind (root, st, view, host) {
   root.querySelector('[data-approve]')?.addEventListener('click', () => complete(st, 'approve', host))
   root.querySelector('[data-reject]')?.addEventListener('click', () => complete(st, 'reject', host))
   root.querySelector('[data-return]')?.addEventListener('click', () => doReturn(st, host))
+  root.querySelector('[data-return-pick]')?.addEventListener('click', () => openReturnPicker(st, host, root))
   root.querySelector('[data-confirm]')?.addEventListener('click', () => complete(st, 'approve', host))
 }
 
@@ -395,7 +391,8 @@ async function complete (st, decision, host) {
 }
 
 // 退回上一步（P6）：调 reject_task 把任务打回前一审批节点重新办理（区别于「驳回」的决策位）。
-async function doReturn (st, host) {
+// targetBpmnId 省略 = 引擎默认回退直接前驱；传入 = 退回到指定上游节点（③）。
+async function doReturn (st, host, targetBpmnId) {
   if (st.busy) return
   const p = st.props
   let comment = ''
@@ -406,15 +403,49 @@ async function doReturn (st, host) {
   st.busy = true
   try {
     await apiJson(`/api/flow/tasks/${enc(p.taskId)}/reject`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instanceId: p.instanceId, reason: comment || '退回上一步' }),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        instanceId: p.instanceId,
+        reason: comment || (targetBpmnId ? '退回到指定节点' : '退回上一步'),
+        ...(targetBpmnId ? { targetBpmnId } : {}),
+      }),
     })
-    toast(st, '已退回上一步')
+    toast(st, targetBpmnId ? '已退回到指定节点' : '已退回上一步')
     CFG.onTaskDone({ taskId: p.taskId, instanceId: p.instanceId })
     setTimeout(() => closeSelf(p), 600)
   } catch (e) {
     st.busy = false
     toast(st, '退回失败: ' + e.message)
+  }
+}
+
+// 退回到任意上游节点（③）：拉 reject-targets 渲染可退节点菜单，选一个 → doReturn(target)。
+// 再点「退回到…」收起菜单。会签任务/首环节 → 提示不可退。
+async function openReturnPicker (st, host, root) {
+  const p = st.props
+  const menu = root.querySelector?.('[data-return-menu]')
+  if (!menu) return
+  if (!menu.hidden) { menu.hidden = true; menu.innerHTML = ''; return }
+  menu.innerHTML = '<div class="tf-hint">加载可退节点…</div>'
+  menu.hidden = false
+  try {
+    const r = await apiJson(`/api/flow/tasks/${enc(p.taskId)}/reject-targets?instanceId=${enc(p.instanceId)}`)
+    const targets = (r && r.targets) || []
+    if (!r || !r.rejectable || !targets.length) {
+      menu.innerHTML = '<div class="tf-hint">无可退节点（会签任务或已是首环节）</div>'
+      return
+    }
+    menu.innerHTML = targets.map((t) => {
+      const star = t.isDirectPredecessor ? '★ ' : ''
+      const dist = t.distance ? ` <em>上${t.distance}步</em>` : ''
+      return `<button class="tf-btn tf-return-item" data-return-to="${esc(t.bpmnId)}">${star}${esc(t.name || t.bpmnId)}${dist}</button>`
+    }).join('')
+    menu.querySelectorAll('[data-return-to]').forEach((b) => {
+      b.addEventListener('click', () => doReturn(st, host, b.dataset.returnTo))
+    })
+  } catch (e) {
+    menu.innerHTML = `<div class="tf-hint">加载失败: ${esc(e.message)}</div>`
   }
 }
 
@@ -454,7 +485,10 @@ function styleCss () {
   .tf-label{display:block;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:5px}
   .tf-comment{width:100%;min-height:70px;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;resize:vertical}
   .tf-comment:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
-  .tf-actions{display:flex;gap:9px;margin-top:12px}
+  .tf-actions{display:flex;gap:9px;margin-top:12px;flex-wrap:wrap}
+  .tf-return-menu{display:flex;flex-direction:column;gap:6px;margin-top:8px;padding:8px;border:1px solid var(--line-soft);border-radius:8px;background:#fafbfc}
+  .tf-return-item{text-align:left;font-weight:600}
+  .tf-return-item em{color:var(--muted);font-style:normal;font-size:11px}
   .tf-btn{font:inherit;font-size:13px;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:700}
   .tf-btn.ok{background:var(--ok);border-color:var(--ok);color:#fff} .tf-btn.danger{background:#fff;border-color:#e6b3ae;color:var(--red)} .tf-btn.danger:hover{background:#fdeceb}
   .tf-prop-head{height:47px;flex:0 0 auto;display:flex;flex-direction:column;justify-content:center;padding:0 14px;border-bottom:1px solid var(--line-soft)}

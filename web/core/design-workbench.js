@@ -64,6 +64,13 @@ const state = {
   utTab: 'assignee',     // 当前激活页签：basic|assignee|approval|form|cc
   idnCache: {},          // 身份选择器缓存 { orgs:[], roles:[], positions:[], users:[] }（懒加载）
   idnMode: null,         // 身份模式探测结果（'local'|'external'|null=未探）
+
+  // ⑤ 变量声明（设计态）。随定义 XML 走：openDiagram 从 <cmx:varSchema> 读入，getXml 注回。
+  varSchema: [],         // VarDecl[] 树（含对象 fields / 数组 item）
+  varValidation: '',     // 校验策略 strict|lenient|off（''=lenient 默认），随 process cmx:varValidation
+  varDialog: false,      // 全屏变量编辑器是否打开
+  varError: '',          // 变量编辑器内校验错误
+  varPaths: [],          // 摊平路径缓存（下拉数据源）；editSchema 变更时重算
 }
 
 const EMPTY_DIAGRAM = `<?xml version="1.0" encoding="UTF-8"?>
@@ -375,9 +382,17 @@ function propertyHtml () {
             (!state.defDam.domain || m.domain === state.defDam.domain) &&
             (!state.defDam.application || (m.application || m.app) === state.defDam.application)), state.defDam.module)}
         <div class="flow-hint">随「保存草稿」落库；explorer 顶部按此三段过滤定义列表。</div>
+        ${sec('流程变量')}
+        <div class="flow-var-summary">
+          ${state.varSchema.length
+            ? state.varSchema.map((d) => `<span class="flow-var-chip" title="${esc(d.description || d.label || d.name)}"><b>${esc(d.label || d.name)}</b><em>${esc(VAR_TYPE_LABEL[d.type] || d.type || '')}</em></span>`).join('')
+            : '<div class="flow-hint">未声明变量。声明后可在条件、办理人、会签、表单里直接下拉引用。</div>'}
+        </div>
+        <button class="flow-btn primary block" data-open-vars><ui5-icon name="course-book"></ui5-icon> 编辑变量声明${state.varSchema.length ? `（${state.varSchema.length}）` : ''}</button>
         <div class="flow-sec">元素属性</div>
         <cmx-empty-state icon="detail-view" title="点击画布上的节点" description="在此配置属性" size="sm"></cmx-empty-state>
       </div>
+      ${varDialogHtml()}
     </section>`
   }
   const b = el.businessObject || {}
@@ -520,19 +535,34 @@ function userTaskTabsHtml (el, b) {
 
 function assigneeTabHtml (b) {
   const cur = readAssignee(b)
+  // ②：多实例节点 → 引导逐元素派人写法（用「表达式」类型引用 elementVariable 字段）。
+  const mi = readMultiInstance(b)
+  let miHint = ''
+  if (mi) {
+    const ev = mi.elementVariable || 'item'
+    const col = mi.collection || '(集合变量)'
+    const q = (s) => '${' + ev + s + '}'
+    miHint = `<div style="border:1px solid var(--line-soft,#eaeef2);border-radius:8px;padding:8px 10px;margin-bottom:10px;background:#f6f8fa;font-size:12px;line-height:1.8">
+      <b><ui5-icon name="multiselect-all"></ui5-icon> 会签/或签逐元素派人（②）</b>
+      <div>本节点按「<code>${esc(col)}</code>」展开，每个元素派一人。选「表达式」类型，引用元素 <code>${esc(ev)}</code> 的字段：</div>
+      <div>· 直派该元素的负责人：<code>${esc(q('.ownerUser'))}</code></div>
+      <div>· 按该元素的角色解析：<code>role(${esc(q('.ownerRole'))})</code></div>
+      <div>· 集合本身即人员列表：<code>${esc(q(''))}</code></div>
+    </div>`
+  }
   const kinds = ASSIGNEE_KINDS.map((k) => `<button class="flow-akind ${cur.kind === k.key ? 'on' : ''}" data-akind="${k.key}" title="${esc(k.hint)}">${esc(k.label)}</button>`).join('')
   const def = ASSIGNEE_KINDS.find((k) => k.key === cur.kind) || ASSIGNEE_KINDS[0]
   let picker = ''
   if (def.key === 'initiator' || def.key === 'initiatorLeader') {
     picker = `<div class="flow-hint">无需选择：运行期按流程发起人自动解析。</div>`
   } else if (def.key === 'expr') {
-    picker = `<input data-akind-val value="${esc(cur.value)}" placeholder="如 role(fin),position(cfo)，逗号分隔混合">`
+    picker = `<input data-akind-val value="${esc(cur.value)}" placeholder="如 role(fin),position(cfo)，逗号分隔混合；多实例可用 ${'${'}item.field}">`
   } else if (def.key === 'orgLeader') {
     picker = `<div class="flow-hint" style="margin-bottom:5px">选部门 = 该部门领导；留空 = 实例发起组织的领导。</div>${idnSelectHtml('orgs', cur.value)}`
   } else {
     picker = idnSelectHtml(def.ent, cur.value)
   }
-  return `<div class="flow-field"><label>办理人类型</label><div class="flow-akinds">${kinds}</div>
+  return `${miHint}<div class="flow-field"><label>办理人类型</label><div class="flow-akinds">${kinds}</div>
     <div class="flow-hint">${esc(def.hint)}</div></div>
     <div class="flow-field"><label>${esc(def.label)}${def.ent ? '（联动身份库）' : ''}</label>${picker}</div>`
 }
@@ -549,8 +579,9 @@ function approvalTabHtml (b) {
   let detail = ''
   if (cur !== 'single') {
     detail = `<div class="flow-field"><label>集合变量 (collection)</label>
-        <input data-mi-f="collection" value="${esc(mi ? mi.collection : '')}" placeholder="如 approvers；其值为数组，按元素展开办理人">
-        <div class="flow-hint">会签/或签按此数组变量的元素个数展开子任务。</div></div>
+        <input data-mi-f="collection" value="${esc(mi ? mi.collection : '')}" placeholder="如 approvers；其值为数组，按元素展开办理人" list="flow-mi-collections">
+        <datalist id="flow-mi-collections">${varPathOptionsHtml({ collectionOnly: true })}</datalist>
+        <div class="flow-hint">会签/或签按此数组变量的元素个数展开子任务。${state.varPaths.some((p) => p.isCollection) ? '↑ 可从已声明的数组变量选。' : '（声明数组类型变量后可下拉选）'}</div></div>
       <div class="flow-field"><label>元素变量 (elementVariable)</label>
         <input data-mi-f="elementVariable" value="${esc(mi ? mi.elementVariable : '')}" placeholder="如 approver；每个子任务把当前元素写入此变量"></div>
       <div class="flow-field"><label>完成条件 (completionCondition)</label>
@@ -686,11 +717,19 @@ function compileCondRows (rows) {
   return '${' + parts.join(' ') + '}'
 }
 
-// 变量下拉选项：来自已声明的流程变量（若加载了 var schema）+ 用户手填保留。当前先给自由输入 +
-// datalist 提示（变量声明工作台是 P1 前端，未落地；这里用 input+datalist 兼容手填与未来联动）。
+// 变量下拉选项：来自已声明的流程变量（state.varPaths，随定义 XML 的 <cmx:varSchema> 摊平而来）。
+// datalist 提示 + 保留用户手填（未声明的变量仍可手打）。⑤ P3：条件构造器变量列联动。
 function condVarDatalistHtml () {
-  // 目前无前端变量声明源，给几个常见占位提示；P1 前端落地后改读 state 变量池。
-  return ''
+  return varPathOptionsHtml()
+}
+
+// 摊平路径 → <option> 列表（datalist 用）。label/type 作提示文本。scalar-only 参数时过滤掉对象/数组。
+function varPathOptionsHtml (opts = {}) {
+  const paths = state.varPaths || []
+  const list = opts.collectionOnly
+    ? paths.filter((p) => p.isCollection)
+    : (opts.leafOnly ? paths.filter((p) => p.type !== 'OBJECT' && p.type !== 'ARRAY') : paths)
+  return list.map((p) => `<option value="${esc(p.path)}">${esc(p.label || p.path)}${p.type ? ` · ${esc(VAR_TYPE_LABEL[p.type] || p.type)}` : ''}</option>`).join('')
 }
 
 function fnOptionsHtml (cur) {
@@ -817,18 +856,203 @@ function bindingDialogHtml () {
   </div>`
 }
 
+// ═══════════════════ ⑤ 变量声明（设计态 VarSchema）═══════════════════
+//
+// 变量声明随定义 XML 走（写进 <process><extensionElements><cmx:varSchema>JSON</cmx:varSchema>）。
+// bpmn-js 不认这个扩展元素会在 saveXML 丢弃，故模块外维护 state.varSchema：openDiagram 从 XML
+// 读入、getXml 注回。全屏编辑器可视化编辑；对象/数组递归子字段；四处下拉从摊平路径取。
+
+const VAR_TYPES = [
+  { v: 'STRING', label: '字符串' }, { v: 'NUMBER', label: '数值' },
+  { v: 'BOOLEAN', label: '布尔' }, { v: 'DATE', label: '日期' },
+  { v: 'ENUM', label: '枚举' }, { v: 'OBJECT', label: '对象' }, { v: 'ARRAY', label: '数组' },
+]
+const VAR_TYPE_LABEL = Object.fromEntries(VAR_TYPES.map((t) => [t.v, t.label]))
+
+// 从 XML 抽 <cmx:varSchema> JSON → state.varSchema；同时读 process 的 cmx:varValidation。空 → []。
+function readVarSchemaFromXml (xml) {
+  state.varSchema = []
+  state.varValidation = ''
+  try {
+    const m = xml.match(/<(?:\w+:)?varSchema\b[^>]*>([\s\S]*?)<\/(?:\w+:)?varSchema>/)
+    if (m && m[1].trim()) {
+      const parsed = JSON.parse(m[1].trim())
+      if (Array.isArray(parsed)) state.varSchema = parsed
+    }
+    const vv = xml.match(/<(?:bpmn:)?process\b[^>]*\bcmx:varValidation="([^"]*)"/)
+    if (vv) state.varValidation = vv[1]
+  } catch (e) { console.warn('读取 varSchema 失败:', e) }
+  recomputeVarPaths()
+}
+
+// 把 state.varSchema 注回 XML 的 <process><extensionElements>。空 schema → 移除既有声明。
+function injectVarSchemaIntoXml (xml) {
+  // 先移除已有 <cmx:varSchema>…</cmx:varSchema>（避免重复）。
+  let out = xml.replace(/\s*<(?:\w+:)?varSchema\b[^>]*>[\s\S]*?<\/(?:\w+:)?varSchema>/g, '')
+  // 写/清 process 的 cmx:varValidation 属性。
+  out = out.replace(/(<(?:bpmn:)?process\b[^>]*?)\s*cmx:varValidation="[^"]*"/, '$1')
+  if (state.varValidation) {
+    out = out.replace(/(<(?:bpmn:)?process\b)(\s)/, `$1 cmx:varValidation="${esc(state.varValidation)}"$2`)
+  }
+  if (!state.varSchema.length) return out
+  const json = JSON.stringify(state.varSchema)
+  const frag = `<cmx:varSchema>${json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</cmx:varSchema>`
+  // 有 extensionElements → 插入其内；否则在 <process ...> 开标签后新建一个。
+  if (/<(?:bpmn:)?extensionElements\b[^>]*>/.test(out)) {
+    out = out.replace(/(<(?:bpmn:)?extensionElements\b[^>]*>)/, `$1${frag}`)
+  } else {
+    out = out.replace(/(<(?:bpmn:)?process\b[^>]*>)/, `$1<bpmn:extensionElements>${frag}</bpmn:extensionElements>`)
+  }
+  return out
+}
+
+// 摊平 state.varSchema → 点路径列表（下拉数据源）。对象 a.b、数组元素 a[].b。
+function recomputeVarPaths () {
+  const out = []
+  const walk = (decls, prefix, depth) => {
+    if (depth > 16) return
+    for (const d of decls || []) {
+      if (!d || !d.name) continue
+      const path = prefix ? `${prefix}.${d.name}` : d.name
+      out.push({ path, type: d.type, label: d.label || d.name, description: d.description || '', isCollection: d.type === 'ARRAY', enumOptions: d.enumOptions || [] })
+      if (d.type === 'OBJECT') walk(d.fields, path, depth + 1)
+      if (d.type === 'ARRAY' && d.item && d.item.type === 'OBJECT') walk(d.item.fields, `${path}[]`, depth + 1)
+    }
+  }
+  walk(state.varSchema, '', 0)
+  state.varPaths = out
+}
+
+// 全屏变量编辑器 HTML。
+function varDialogHtml () {
+  if (!state.varDialog) return ''
+  const rows = state.varSchema.length
+    ? state.varSchema.map((d, i) => varRowHtml(d, String(i), 0)).join('')
+    : `<div class="flow-vempty"><ui5-icon name="add-product"></ui5-icon><b>还没有变量</b><span>点下方「新增变量」声明本流程用到的变量；对象/数组可展开定义字段结构。</span></div>`
+  const vv = state.varValidation || 'lenient'
+  return `<div class="flow-dialog-mask" data-var-mask>
+    <section class="flow-dialog flow-dialog-lg">
+      <div class="flow-dialog-head">
+        <span class="flow-dialog-ic"><ui5-icon name="course-book"></ui5-icon></span>
+        <div><b>流程变量声明</b><em>${esc(state.name || state.selectedKey || '未保存')} · 定义名称/类型/结构/说明（值在发起时传）</em></div>
+        <button class="flow-icon-btn" data-var-close title="关闭"><ui5-icon name="decline"></ui5-icon></button>
+      </div>
+      ${state.varError ? `<div class="flow-dialog-err">${esc(state.varError)}</div>` : ''}
+      <div class="flow-dialog-body flow-var-body">
+        <div class="flow-var-list">${rows}</div>
+        <button class="flow-btn primary block" data-var-add><ui5-icon name="add"></ui5-icon> 新增变量</button>
+      </div>
+      <div class="flow-var-foot">
+        <label class="flow-var-policy">发起校验
+          <select data-var-policy>
+            <option value="lenient" ${vv === 'lenient' ? 'selected' : ''}>宽松（违规仅提示）</option>
+            <option value="strict" ${vv === 'strict' ? 'selected' : ''}>严格（违规拒绝发起）</option>
+            <option value="off" ${vv === 'off' ? 'selected' : ''}>关闭（不校验）</option>
+          </select>
+        </label>
+        <div class="flow-var-foot-act">
+          <button class="flow-btn" data-var-close>取消</button>
+          <button class="flow-btn primary" data-var-save><ui5-icon name="accept"></ui5-icon> 保存声明</button>
+        </div>
+      </div>
+    </section>
+  </div>`
+}
+
+// 单条变量行（path = 树内定位路径，如 "0" / "0.fields.1" / "2.item.fields.0"；depth 控缩进）。
+function varRowHtml (d, path, depth) {
+  const t = d.type || 'STRING'
+  const isObj = t === 'OBJECT'
+  const isArr = t === 'ARRAY'
+  const isEnum = t === 'ENUM'
+  const typeOpts = VAR_TYPES.map((o) => `<option value="${o.v}" ${o.v === t ? 'selected' : ''}>${o.label}</option>`).join('')
+  let sub = ''
+  if (isEnum) {
+    sub = `<div class="flow-var-sub"><label class="flow-field"><span>候选值（逗号分隔）</span>
+      <input data-var-enum="${path}" value="${esc((d.enumOptions || []).join(', '))}" placeholder="如 north, south"></label></div>`
+  } else if (isObj) {
+    const fields = (d.fields || []).map((f, i) => varRowHtml(f, `${path}.fields.${i}`, depth + 1)).join('')
+    sub = `<div class="flow-var-sub"><div class="flow-var-subhead"><ui5-icon name="tree"></ui5-icon> 对象字段
+      <button class="flow-btn slim" data-var-addfield="${path}"><ui5-icon name="add"></ui5-icon> 字段</button></div>
+      ${fields || '<div class="flow-hint">暂无字段，点「字段」添加</div>'}</div>`
+  } else if (isArr) {
+    const it = d.item || { name: 'item', type: 'OBJECT', fields: [] }
+    const itemTypeOpts = VAR_TYPES.map((o) => `<option value="${o.v}" ${o.v === (it.type || 'OBJECT') ? 'selected' : ''}>${o.label}</option>`).join('')
+    let itemFields = ''
+    if ((it.type || 'OBJECT') === 'OBJECT') {
+      const fields = (it.fields || []).map((f, i) => varRowHtml(f, `${path}.item.fields.${i}`, depth + 1)).join('')
+      itemFields = `<div class="flow-var-subhead"><ui5-icon name="tree"></ui5-icon> 元素字段
+        <button class="flow-btn slim" data-var-addfield="${path}.item"><ui5-icon name="add"></ui5-icon> 字段</button></div>
+        ${fields || '<div class="flow-hint">暂无字段，点「字段」添加</div>'}`
+    }
+    sub = `<div class="flow-var-sub">
+      <label class="flow-field"><span>元素类型</span><select data-var-itemtype="${path}">${itemTypeOpts}</select></label>
+      ${itemFields}</div>`
+  }
+  return `<div class="flow-var-row" style="--d:${depth}">
+    <div class="flow-var-main">
+      <input class="flow-var-name" data-var-name="${path}" value="${esc(d.name || '')}" placeholder="变量名（英文）">
+      <select class="flow-var-type" data-var-type="${path}">${typeOpts}</select>
+      <input class="flow-var-label" data-var-label="${path}" value="${esc(d.label || '')}" placeholder="标签（中文名）">
+      <label class="flow-var-req" title="必填"><input type="checkbox" data-var-req="${path}" ${d.required ? 'checked' : ''}>必填</label>
+      <button class="flow-btn slim danger" data-var-del="${path}" title="删除"><ui5-icon name="delete"></ui5-icon></button>
+    </div>
+    <input class="flow-var-desc" data-var-desc="${path}" value="${esc(d.description || '')}" placeholder="说明（这个变量是什么、从哪来）">
+    ${sub}
+  </div>`
+}
+
 function field (label, prop, val, hint) {
   return `<div class="flow-field"><label>${esc(label)}</label>` +
     `<input data-prop="${esc(prop)}" value="${esc(val)}">` +
     (hint ? `<div class="flow-hint">${esc(hint)}</div>` : '') + `</div>`
-}
-function selectField (label, prop, opts, cur, hint) {
+}function selectField (label, prop, opts, cur, hint) {
   const o = opts.map((v) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(v)}</option>`).join('')
   return `<div class="flow-field"><label>${esc(label)}</label>` +
     `<select data-prop="${esc(prop)}">${o}</select>` +
     (hint ? `<div class="flow-hint">${esc(hint)}</div>` : '') + `</div>`
 }
 function sec (t) { return `<div class="flow-sec">${esc(t)}</div>` }
+
+// —— ⑤ 变量树导航/变更（path 如 "0" / "0.fields.1" / "2.item.fields.0"）——
+//
+// path 语义：数字 = 数组下标；"fields" = 进入当前 decl 的 fields 数组；"item" = 进入数组的 item decl。
+// 故 path 结构恒为 [idx] 或 [...,"fields",idx] 或 [...,"item"] 或 [...,"item","fields",idx]。
+
+// 定位到容器数组（decl 所在的 Vec）+ 该 decl 的下标；"item" 结尾则返回 {itemOf: 父数组decl}。
+function varLocate (path) {
+  const parts = path.split('.')
+  let arr = state.varSchema   // 当前容器数组
+  let node = null             // 当前 decl
+  let i = 0
+  while (i < parts.length) {
+    const seg = parts[i]
+    if (seg === 'fields') { arr = node.fields || (node.fields = []); i++; continue }
+    if (seg === 'item') {
+      node = node.item || (node.item = { name: 'item', type: 'OBJECT', fields: [] })
+      arr = null
+      i++
+      // "item" 是路径末段（元素类型编辑）→ 返回 item 节点，无容器下标。
+      if (i === parts.length) return { arr: null, idx: -1, node }
+      continue
+    }
+    const idx = Number(seg)
+    node = arr[idx]
+    if (i === parts.length - 1) return { arr, idx, node }
+    i++
+  }
+  return { arr, idx: -1, node }
+}
+
+function normalizeDecl (d) {
+  // 切换类型时清理不相关字段，保持数据干净。
+  if (d.type !== 'ENUM') delete d.enumOptions
+  if (d.type !== 'OBJECT') delete d.fields
+  if (d.type !== 'ARRAY') delete d.item
+  if (d.type === 'OBJECT' && !d.fields) d.fields = []
+  if (d.type === 'ARRAY' && !d.item) d.item = { name: 'item', type: 'OBJECT', fields: [] }
+}
+
 
 // cmx:calledKey 是自定义命名空间属性，bpmn-js 未注册 moddle 扩展，故落在 businessObject.$attrs
 // （不是 .get('cmx:calledKey')）。读写都走 $attrs 才对；引擎 compile 认 cmx:calledKey。
@@ -966,6 +1190,9 @@ function bind (root, view, host) {
     })
     // 打开工作区节点对话框编辑本节点的表单工作台。
     root.querySelector('[data-edit-ws-node]')?.addEventListener('click', (e) => openWsNodeEditor(e.currentTarget))
+    // ⑤ 变量声明：打开全屏编辑器（流程属性面板）+ 编辑器内事件。
+    root.querySelector('[data-open-vars]')?.addEventListener('click', () => openVarDialog())
+    bindVarDialog(root)
     bindVarMapping(root)
     bindBindingDialog(root)
   }
@@ -1108,6 +1335,77 @@ function closeBindingDialog () {
   state.bindingDialog = null
   state.bindingError = ''
   refreshView('property')
+}
+
+// ————————————————————— ⑤ 变量声明编辑器：开/关/存 + 事件 —————————————————————
+
+function openVarDialog () {
+  state.varDialog = true
+  state.varError = ''
+  refreshView('property')
+}
+function closeVarDialog () {
+  state.varDialog = false
+  state.varError = ''
+  refreshView('property')
+}
+
+// 保存声明：前端先 recompute + 后端 shape 校验，通过则写进 XML（getXml 注入）并存草稿。
+async function saveVarSchema () {
+  recomputeVarPaths()
+  try {
+    const r = await apiJson('/api/flow/definitions/variables/validate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schema: state.varSchema }),
+    })
+    if (r && r.valid === false) {
+      state.varError = '声明有误：' + (r.violations || []).map((v) => v.message).join('；')
+      refreshView('property')
+      return
+    }
+  } catch (e) { state.varError = '校验失败: ' + e.message; refreshView('property'); return }
+  state.varDialog = false
+  state.varError = ''
+  toast(`变量声明已更新（${state.varSchema.length} 个）；随「保存草稿/发布」写入定义`)
+  refreshView('property')
+}
+
+// 变量编辑器事件（每次重渲对话框后重绑）。
+function bindVarDialog (root) {
+  root.querySelector('[data-var-mask]')?.addEventListener('click', (e) => { if (e.target === e.currentTarget) closeVarDialog() })
+  root.querySelectorAll('[data-var-close]').forEach((b) => b.addEventListener('click', () => closeVarDialog()))
+  root.querySelector('[data-var-save]')?.addEventListener('click', () => saveVarSchema())
+  root.querySelector('[data-var-add]')?.addEventListener('click', () => {
+    state.varSchema.push({ name: '', type: 'STRING', label: '' })
+    refreshView('property')
+  })
+  root.querySelector('[data-var-policy]')?.addEventListener('change', (e) => { state.varValidation = e.target.value })
+  // 字段级编辑（name/type/label/desc/req/enum/itemtype/add字段/删）。
+  root.querySelectorAll('[data-var-name]').forEach((i) => i.addEventListener('change', (e) => { varLocate(i.dataset.varName).node.name = e.target.value.trim(); recomputeVarPaths() }))
+  root.querySelectorAll('[data-var-label]').forEach((i) => i.addEventListener('change', (e) => { varLocate(i.dataset.varLabel).node.label = e.target.value }))
+  root.querySelectorAll('[data-var-desc]').forEach((i) => i.addEventListener('change', (e) => { varLocate(i.dataset.varDesc).node.description = e.target.value }))
+  root.querySelectorAll('[data-var-req]').forEach((i) => i.addEventListener('change', (e) => { varLocate(i.dataset.varReq).node.required = e.target.checked }))
+  root.querySelectorAll('[data-var-type]').forEach((s) => s.addEventListener('change', (e) => {
+    const n = varLocate(s.dataset.varType).node; n.type = e.target.value; normalizeDecl(n); recomputeVarPaths(); refreshView('property')
+  }))
+  root.querySelectorAll('[data-var-enum]').forEach((i) => i.addEventListener('change', (e) => {
+    varLocate(i.dataset.varEnum).node.enumOptions = e.target.value.split(',').map((s) => s.trim()).filter(Boolean); recomputeVarPaths()
+  }))
+  root.querySelectorAll('[data-var-itemtype]').forEach((s) => s.addEventListener('change', (e) => {
+    const arr = varLocate(s.dataset.varItemtype).node
+    arr.item = arr.item || { name: 'item', type: 'OBJECT', fields: [] }
+    arr.item.type = e.target.value; normalizeDecl(arr.item); recomputeVarPaths(); refreshView('property')
+  }))
+  root.querySelectorAll('[data-var-addfield]').forEach((b) => b.addEventListener('click', () => {
+    const target = varLocate(b.dataset.varAddfield).node   // OBJECT decl 或 array.item
+    target.fields = target.fields || []
+    target.fields.push({ name: '', type: 'STRING', label: '' })
+    refreshView('property')
+  }))
+  root.querySelectorAll('[data-var-del]').forEach((b) => b.addEventListener('click', () => {
+    const { arr, idx } = varLocate(b.dataset.varDel)
+    if (arr && idx >= 0) { arr.splice(idx, 1); recomputeVarPaths(); refreshView('property') }
+  }))
 }
 
 async function reloadBindings (calledKey) {
@@ -1390,6 +1688,9 @@ async function bootCanvas (root, host) {
     })
     state.modeler.on('element.changed', (e) => {
       if (state.selectedElement && state.selectedElement.id === e.element.id) refreshView('property')
+      // ① 徽章随节点属性变化即时更新（办理人/会签/子流程 key 改了立刻反映）。去抖到下一帧。
+      if (state.__badgeRaf) cancelAnimationFrame(state.__badgeRaf)
+      state.__badgeRaf = requestAnimationFrame(() => { state.__badgeRaf = null; renderNodeBadges() })
     })
     // 装当前选中定义 或 空白
     if (state.selectedKey) {
@@ -1432,11 +1733,96 @@ async function openDiagram (xml) {
     const noDI = !/BPMNDiagram|BPMNPlane/i.test(xml)
     let toImport = xml
     if (noDI) { toImport = layoutXml(xml) }
+    // ⑤ 从 XML 读出变量声明（模块外存 state.varSchema，避免 bpmn-js moddle 丢弃扩展元素）。
+    readVarSchemaFromXml(xml)
     await state.modeler.importXML(toImport)
     if (noDI) relayoutConnections()
     // 下一帧再 fit：importXML 后 bpmn-js 的图形 bbox 要等一帧才算准，同帧 fit 会读到空 bbox 只框住起点。
-    requestAnimationFrame(() => fitView())
+    requestAnimationFrame(() => { fitView(); renderNodeBadges() })
   } catch (err) { toast('加载失败: ' + err.message); console.error(err) }
+}
+
+// ① 业务化节点徽章：用 bpmn-js 官方 overlays 给节点叠加「一眼可辨」的类型徽标（会签/或签/
+// 定时器/子流程/消息/服务/规则）。overlay 是官方 HTML 注解，随缩放平移自动跟随，且**绝不
+// 会像自定义 renderer 那样因异常把画布画空**——安全增强。每次重画先清本类 overlay 再叠。
+const BADGE_TYPE = 'cmx-node-badge'
+function renderNodeBadges () {
+  if (!state.modeler) return
+  let overlays; let registry
+  try { overlays = state.modeler.get('overlays'); registry = state.modeler.get('elementRegistry') } catch { return }
+  try { overlays.remove({ type: BADGE_TYPE }) } catch {}
+  registry.getAll().forEach((el) => {
+    const badges = badgesFor(el)
+    if (!badges.length) return
+    const html = `<div class="cmx-badges">${badges.map((b) => `<span class="cmx-badge ${b.cls}" title="${esc(b.title)}"><ui5-icon name="${b.icon}"></ui5-icon>${b.text ? `<i>${esc(b.text)}</i>` : ''}</span>`).join('')}</div>`
+    try {
+      overlays.add(el.id, BADGE_TYPE, { position: { top: -12, left: -6 }, html })
+    } catch {}
+  })
+}
+
+// 判断一个元素该挂哪些徽章（读 businessObject，纯只读）。
+function badgesFor (el) {
+  const b = el.businessObject
+  if (!b) return []
+  const out = []
+  const t = el.type
+  // 会签 / 或签（多实例）。
+  if (t === 'bpmn:UserTask' && b.loopCharacteristics) {
+    out.push(b.loopCharacteristics.isSequential
+      ? { cls: 'seq', icon: 'sort', title: '顺序或签（逐个办理）', text: '或签' }
+      : { cls: 'par', icon: 'multiselect-all', title: '并行会签（同时办理）', text: '会签' })
+  }
+  // 用户任务办理人类型（角色/岗位/关系型）小标，帮助一眼看清「谁办」。
+  if (t === 'bpmn:UserTask') {
+    const who = assigneeBadge(b)
+    if (who) out.push(who)
+  }
+  // 服务任务。
+  if (t === 'bpmn:ServiceTask') out.push({ cls: 'svc', icon: 'settings', title: '服务任务（调外部/delegate）', text: '服务' })
+  // 业务规则任务（决策表）。
+  if (t === 'bpmn:BusinessRuleTask') out.push({ cls: 'rule', icon: 'table-view', title: '业务规则任务（决策表）', text: '规则' })
+  // 子流程调用。
+  if (t === 'bpmn:CallActivity') {
+    const key = getCalledKey(b)
+    out.push({ cls: 'sub', icon: 'process', title: key ? `子流程（按组织路由 ${key}）` : '子流程调用', text: '子流程' })
+  }
+  // 消息中间捕获事件。
+  if (t === 'bpmn:IntermediateCatchEvent' && hasEventDef(b, 'MessageEventDefinition')) {
+    out.push({ cls: 'msg', icon: 'email', title: '消息捕获（等外部回调唤醒）', text: '消息' })
+  }
+  // 边界定时器事件。
+  if (t === 'bpmn:BoundaryEvent' && hasEventDef(b, 'TimerEventDefinition')) {
+    const interrupting = b.cancelActivity !== false
+    out.push({ cls: 'timer', icon: 'history', title: interrupting ? '中断型边界定时器（超时中断升级）' : '非中断型边界定时器（超时旁路催办）', text: interrupting ? '限时' : '催办' })
+  }
+  // 终止结束事件。
+  if (t === 'bpmn:EndEvent' && hasEventDef(b, 'TerminateEventDefinition')) {
+    out.push({ cls: 'term', icon: 'sys-cancel', title: '终止事件（一票否决整个流程）', text: '终止' })
+  }
+  return out
+}
+
+// 从 userTask 反推办理人徽章（复用属性面板的 readAssignee 语义，只出「非静态人」的类型标）。
+function assigneeBadge (b) {
+  let cur
+  try { cur = readAssignee(b) } catch { return null }
+  if (!cur) return null
+  const map = {
+    role: { cls: 'who', icon: 'group', title: '按角色派单', text: '角色' },
+    position: { cls: 'who', icon: 'employee', title: '按岗位派单', text: '岗位' },
+    org: { cls: 'who', icon: 'org-chart', title: '按部门派单', text: '部门' },
+    orgLeader: { cls: 'who', icon: 'manager', title: '部门领导审批', text: '领导' },
+    initiator: { cls: 'who', icon: 'person-placeholder', title: '发起人本人', text: '发起人' },
+    initiatorLeader: { cls: 'who', icon: 'manager', title: '发起人上级', text: '上级' },
+  }
+  return map[cur.kind] || null
+}
+
+// businessObject 是否含某类 eventDefinition（前缀无关，按类名尾匹配）。
+function hasEventDef (b, defName) {
+  const defs = b.eventDefinitions || []
+  return defs.some((d) => (d.$type || '').endsWith(defName))
 }
 
 // 安全适应视口：容器尺寸非有限时 zoom fit-viewport 会抛 SVGMatrix non-finite。
@@ -1924,7 +2310,8 @@ async function loadDef (key, version) {
     refreshView('explorer')       // explorer 高亮当前选中 + 版本下拉同步
     refreshContentChrome()        // content 工具栏版本徽标/下拉同步（不销毁画布：openDiagram 会就地导入）
     refreshView('property')       // property 区 DAM 归属同步
-    await openDiagram(detail.bpmnXml)   // 就地把 XML 导入现有 modeler
+    await openDiagram(detail.bpmnXml)   // 就地把 XML 导入现有 modeler（内含 readVarSchemaFromXml）
+    refreshView('property')             // ⑤ varSchema 读入后刷新属性区（变量摘要/下拉数据源就位）
     toast('已加载: ' + (detail.name || key) + ' · ' + versionLabel(state.shownVersion))
   } catch (e) { toast('加载失败: ' + e.message) }
 }
@@ -1951,7 +2338,8 @@ async function newDiagram () {
 
 async function getXml () {
   const { xml } = await state.modeler.saveXML({ format: true })
-  return xml
+  // ⑤ 把模块外维护的变量声明注回 XML（bpmn-js 不认 <cmx:varSchema> 扩展元素，故 saveXML 后手工注入）。
+  return injectVarSchemaIntoXml(xml)
 }
 
 // ————————————————————— P4：导出 / 导入 / 另存为 —————————————————————
@@ -2131,6 +2519,16 @@ async function doSaveSilent () {
 function styleCss () {
   return `
   /* bpmn 图标字体的 @font-face 已注入主文档 head（shadow 内声明 font-face 无效，Chrome 限制）。 */
+  /* ① 节点业务徽章（overlays）：叠在节点左上角，随缩放平移跟随。 */
+  .cmx-badges{display:flex;gap:3px;flex-wrap:wrap;pointer-events:none;max-width:180px}
+  .cmx-badge{display:inline-flex;align-items:center;gap:2px;height:17px;padding:0 5px;border-radius:9px;font-size:10px;font-weight:600;line-height:1;color:#fff;white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,.18)}
+  .cmx-badge ui5-icon{width:10px;height:10px;color:#fff;min-width:10px}
+  .cmx-badge i{font-style:normal}
+  .cmx-badge.par{background:#8250df} .cmx-badge.seq{background:#6639ba}
+  .cmx-badge.who{background:#0969da} .cmx-badge.svc{background:#57606a}
+  .cmx-badge.rule{background:#bf8700} .cmx-badge.sub{background:#1a7f37}
+  .cmx-badge.msg{background:#bc4c00} .cmx-badge.timer{background:#cf222e}
+  .cmx-badge.term{background:#82071e}
   .flow{--brand:#0969da;--brand-d:#0a4d8c;--brand-soft:#ddf4ff;--ink:#1f2328;--muted:#656d76;--line:#d0d7de;--line-soft:#eaeef2;--ok:#1a7f37;--new:#bc4c00;--flow-bar-h:47px;
     font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);height:100%;box-sizing:border-box;display:flex;flex-direction:column}
   .flow *{box-sizing:border-box}
@@ -2181,6 +2579,32 @@ function styleCss () {
   .flow-dialog-head>div{flex:1;min-width:0} .flow-dialog-head b{display:block;font-size:14px} .flow-dialog-head em{display:block;font-style:normal;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .flow-dialog-err{margin:10px 14px 0;border:1px solid #e6b3ae;background:#fdeceb;color:#a10000;border-radius:7px;padding:7px 9px;font-size:12px}
   .flow-dialog-body{padding:12px 14px;overflow:auto}
+  /* ⑤ 变量声明面板 + 全屏编辑器 */
+  .flow-dialog-lg{width:min(760px,100%)}
+  .flow-var-summary{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px}
+  .flow-var-chip{display:inline-flex;align-items:baseline;gap:5px;border:1px solid #c7e0fb;background:#f1f8ff;border-radius:20px;padding:3px 11px;font-size:12px}
+  .flow-var-chip b{font-weight:600;color:var(--ink)} .flow-var-chip em{font-style:normal;font-size:10px;color:var(--brand-d,#0a4d8c);text-transform:uppercase;letter-spacing:.3px}
+  .flow-var-body{max-height:min(64vh,540px)}
+  .flow-var-list{display:flex;flex-direction:column;gap:9px;margin-bottom:12px}
+  .flow-var-row{border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:#fff;margin-left:calc(var(--d,0)*18px);box-shadow:0 1px 2px rgba(13,29,46,.04)}
+  .flow-var-row:hover{border-color:#a9cef3}
+  .flow-var-main{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .flow-var-name{flex:1 1 130px;min-width:110px;font-family:ui-monospace,Menlo,monospace;font-size:13px;border:1px solid var(--line);border-radius:7px;padding:6px 9px}
+  .flow-var-type{flex:0 0 88px;border:1px solid var(--line);border-radius:7px;padding:6px 6px;font-size:12px;background:#fff}
+  .flow-var-label{flex:1 1 130px;min-width:100px;border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:13px}
+  .flow-var-req{flex:0 0 auto;display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--muted);cursor:pointer;white-space:nowrap}
+  .flow-var-req input{margin:0}
+  .flow-var-desc{width:100%;margin-top:6px;border:1px dashed var(--line);border-radius:7px;padding:5px 9px;font-size:12px;color:#57606a}
+  .flow-var-sub{margin-top:8px;padding:8px 10px;border-left:2.5px solid #c7e0fb;background:#f7fafd;border-radius:0 8px 8px 0}
+  .flow-var-subhead{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--brand-d,#0a4d8c);margin-bottom:6px}
+  .flow-var-subhead .flow-btn.slim{margin-left:auto}
+  .flow-var-foot{display:flex;align-items:center;gap:12px;padding:11px 14px;border-top:1px solid var(--line-soft);background:#fafbfc}
+  .flow-var-policy{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+  .flow-var-policy select{border:1px solid var(--line);border-radius:7px;padding:5px 7px;font-size:12px}
+  .flow-var-foot-act{margin-left:auto;display:flex;gap:8px}
+  .flow-vempty{display:flex;flex-direction:column;align-items:center;gap:4px;padding:26px 12px;text-align:center;color:var(--muted)}
+  .flow-vempty b{font-size:13px;color:var(--ink)} .flow-vempty span{font-size:12px}
+  .flow-btn.slim{padding:3px 8px;font-size:11px}
   .flow-vlist-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px} .flow-vlist-head b{font-size:13px} .flow-vlist-head span{font-size:11px;color:var(--muted)}
   .flow-vlist{display:flex;flex-direction:column;gap:7px;max-height:260px;overflow:auto}
   .flow-vrow{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fafbfc}

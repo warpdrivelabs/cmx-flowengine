@@ -318,6 +318,79 @@ pub async fn get_definition_detail(
     }))))
 }
 
+/// ⑤：取一个定义的变量声明 + 摊平路径列表（设计器下拉的唯一数据源）。`?version=N` 看指定版本。
+///
+/// `GET /definitions/{key}/variables?version=N`
+pub async fn get_definition_variables(
+    Path(key): Path<String>,
+    Query(q): Query<DetailQuery>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let rec = rt
+        .def_svc
+        .get(&key)
+        .await
+        .map_err(def_err)?
+        .ok_or_else(|| msg_err(format!("定义不存在: {key}")))?;
+    let xml = if let Some(vn) = q.version {
+        rt.def_svc
+            .get_version(&key, vn)
+            .await
+            .map_err(def_err)?
+            .map(|v| v.bpmn_xml)
+            .ok_or_else(|| msg_err(format!("版本不存在: {key}@v{vn}")))?
+    } else {
+        rec.draft_xml
+            .clone()
+            .ok_or_else(|| msg_err(format!("定义 {key} 无草稿 XML")))?
+    };
+    // 编译取 var_schema（坏 XML → 空 schema，不阻断下拉）。
+    let schema = cmx_flow_bpmn::compile(&xml)
+        .ok()
+        .and_then(|d| d.var_schema)
+        .unwrap_or_default();
+    let paths: Vec<Value> = schema
+        .flatten_paths()
+        .iter()
+        .map(|p| {
+            json!({
+                "path": p.path,
+                "type": p.var_type.as_str(),
+                "label": p.label,
+                "description": p.description,
+                "required": p.required,
+                "isCollection": p.is_collection,
+                "enumOptions": p.enum_options,
+            })
+        })
+        .collect();
+    Ok(Json(ApiResp::ok(json!({
+        "key": key,
+        "schema": schema,
+        "paths": paths,
+    }))))
+}
+
+/// ⑤：校验一份变量声明的 shape（设计器保存前用）。body = { schema: [VarDecl...] }。
+#[derive(Deserialize)]
+pub struct ValidateVarsReq {
+    schema: cmx_flow_model::VarSchema,
+}
+
+pub async fn validate_definition_variables(
+    Json(req): Json<ValidateVarsReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let violations = req.schema.validate_shape();
+    let items: Vec<Value> = violations
+        .iter()
+        .map(|v| json!({ "var": v.var, "code": format!("{:?}", v.code), "message": v.message }))
+        .collect();
+    Ok(Json(ApiResp::ok(json!({
+        "valid": violations.is_empty(),
+        "violations": items,
+    }))))
+}
+
 /// 设计器：发布请求。note = 本次发布的变更说明（可空）。
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -616,6 +689,52 @@ pub async fn cancel_instance(
     // 出站 webhook：实例已终止（撤单/取消）。
     emit_instance_event(&rt, FlowEventKind::InstanceTerminated, &id).await;
     load_view(&rt, &id).await
+}
+
+/// 撤回 / 取回（④）请求体。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WithdrawReq {
+    /// 取回发起人（须为流程发起人）。
+    user: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// 撤回 / 取回一个流程实例（④）——发起人在下游未处理时拉回发起处，可改后重交。
+pub async fn withdraw_instance(
+    Path(id): Path<String>,
+    Json(req): Json<WithdrawReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let result = rt
+        .engine
+        .withdraw_process(&id, &req.user, req.reason.as_deref())
+        .await
+        .map_err(engine_err)?;
+    // 取回落点的新任务归发起人 → 发一条 task.reassigned 事件（供待办刷新）。
+    emit_task_events(&rt, FlowEventKind::TaskReassigned, &result).await;
+    load_view(&rt, &id).await
+}
+
+/// 是否可撤回查询（④）：`?user=<uid>`。
+#[derive(Deserialize)]
+pub struct WithdrawableQuery {
+    user: String,
+}
+
+/// 查一个实例是否可被某用户撤回（④，只读）——供前端「取回」按钮点亮/置灰 + 原因提示。
+pub async fn get_withdrawable(
+    Path(id): Path<String>,
+    Query(q): Query<WithdrawableQuery>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let (ok, reason) = rt
+        .engine
+        .can_withdraw(&id, &q.user)
+        .await
+        .map_err(engine_err)?;
+    Ok(Json(ApiResp::ok(json!({ "withdrawable": ok, "reason": reason }))))
 }
 
 // ————————————————————— F1：变量 / 单据关联 —————————————————————
@@ -935,6 +1054,47 @@ pub async fn reject_task(
     load_view(&rt, &req.instance_id).await
 }
 
+/// 退回可选目标查询（③）：`?instanceId=<iid>`。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectTargetsQuery {
+    instance_id: String,
+}
+
+/// 列举一个任务的全部合法退回目标（③，只读）——供前端「退回到…」选择器。
+///
+/// `GET /tasks/{taskId}/reject-targets?instanceId=<iid>`
+pub async fn get_reject_targets(
+    Path(task_id): Path<String>,
+    Query(q): Query<RejectTargetsQuery>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let info = rt
+        .engine
+        .reject_targets(&q.instance_id, &task_id)
+        .await
+        .map_err(engine_err)?;
+    let targets: Vec<Value> = info
+        .targets
+        .iter()
+        .map(|t| {
+            json!({
+                "bpmnId": t.bpmn_id,
+                "name": t.name,
+                "isDirectPredecessor": t.is_direct_predecessor,
+                "distance": t.distance,
+            })
+        })
+        .collect();
+    Ok(Json(ApiResp::ok(json!({
+        "taskId": info.task_id,
+        "currentNode": info.current_node,
+        "rejectable": info.rejectable,
+        "defaultTarget": info.default_target,
+        "targets": targets,
+    }))))
+}
+
 /// 重试 incident（H2）请求体。
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1236,6 +1396,11 @@ pub async fn get_my_tasks(
                 "bizId": vget("bizId"),
                 "applicant": vget("applicant"),
                 "amount": vget("amount"),
+                "elementValue": t
+                    .element_value
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                    .unwrap_or(Value::Null),
                 "claimable": t.claimable,
                 "createdAt": t.created_at,
             })

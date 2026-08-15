@@ -62,6 +62,10 @@ pub enum Error {
     #[error("推进步数超过上限 {0}，疑似存在无等待态环路")]
     StepLimitExceeded(usize),
 
+    /// 发起态变量校验未过（⑤：strict 策略下 var_schema 软校验有违规）。
+    #[error("变量校验未过: {0}")]
+    VarValidation(String),
+
     /// 持久化层错误。
     #[error(transparent)]
     Store(#[from] StoreError),

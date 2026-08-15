@@ -75,6 +75,63 @@ pub fn validate_syntax(expr: &str) -> Result<()> {
     Ok(())
 }
 
+/// 求值一条表达式为 `Value`（非布尔）。空表达式 → `Null`。
+///
+/// 与 `eval_condition` 同一解析/求值内核，只是不做 `truthy` 归一——供「多实例逐元素办理人」等
+/// 需要拿到具体值（字符串/数字）的场景（②）。
+pub fn eval_value(expr: &str, vars: &Variables) -> Result<Value> {
+    let src = strip_wrapper(expr.trim());
+    if src.is_empty() {
+        return Ok(Value::Null);
+    }
+    let tokens = tokenize(src)?;
+    let mut parser = Parser {
+        tokens: &tokens,
+        pos: 0,
+    };
+    let ast = parser.parse_expr()?;
+    parser.expect_end()?;
+    eval(&ast, vars)
+}
+
+/// 模板插值：把 `template` 里每个 `${expr}` 求值并字符串化后替换；无 `${}` 则**原样返回**
+/// （静态字面量零改动，保证老流程后向兼容）。
+///
+/// 整串即一个表达式（`${approver}`）与嵌入式（`user_${product.id}`）都支持。
+/// `${}` 内含 `}` 字面量的场景不支持（条件表达式子集本就不产生 `}`），遇缺闭合报语法错。
+/// Value 字符串化见 [`value_to_string`]。
+pub fn interpolate(template: &str, vars: &Variables) -> Result<String> {
+    if !template.contains("${") {
+        return Ok(template.to_string());
+    }
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(pos) = rest.find("${") {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + 2..];
+        let close = after
+            .find('}')
+            .ok_or_else(|| Error::ExprSyntax("插值 ${...} 缺少闭合 }".into()))?;
+        let inner = &after[..close];
+        let v = eval_value(inner, vars)?;
+        out.push_str(&value_to_string(&v));
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// 把求值出的 `Value` 转成办理人/文本字符串：字符串取本身，数字/布尔取字面量，`null` → 空串；
+/// 数组/对象 → 空串（办理人不应是复合值，宽容不报错，由上层按「空 = 无此人」兜底）。
+fn value_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// 内置函数目录项（供前端「函数列」下拉：名称 + 元数（参数个数，None=可变）+ 分类 + 说明）。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BuiltinFn {

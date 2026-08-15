@@ -308,6 +308,8 @@ pub struct RawTodo {
     pub claimable: bool,
     /// 实例列表用：当前活动节点 bpmn id（node_bpmn_id 位被状态占用，故单列）。cc/done 留空。
     pub current_node: Option<String>,
+    /// 多实例子任务携带的当前元素（jsonb 字符串；②：办理人看「审的是哪个产品」）。单实例为 None。
+    pub element_value: Option<String>,
 }
 
 /// 直派待办：走 idx_cmx_flow_task_open (assignee, completed)，只活跃实例。
@@ -367,7 +369,7 @@ async fn paged_todos(
     let total = query_one_i64(&count_sql, tag).await?;
     let sql = format!(
         "SELECT t.id AS task_id, t.instance_id AS instance_id, t.node_bpmn_id AS node_bpmn_id, \
-                t.name AS name, t.created_at AS created_at, \
+                t.name AS name, t.created_at AS created_at, t.element_value AS element_value, \
                 i.definition_key AS definition_key, i.business_key AS business_key, \
                 i.variables AS variables \
          {from} WHERE {cond} ORDER BY {order} LIMIT {size} OFFSET {offset}"
@@ -409,6 +411,7 @@ async fn rows_to_todos(sql: &str, tag: &str, claimable: bool) -> Result<Vec<RawT
             created_at: get_ts_rfc3339(row, schema, "created_at"),
             claimable,
             current_node: get_opt(row, schema, "node_bpmn_id"),
+            element_value: get_opt(row, schema, "element_value"),
         });
     }
     Ok(out)
@@ -462,6 +465,7 @@ pub async fn list_instances_paged(f: &TodoFilter) -> Result<TodoPage, String> {
             created_at: get_ts_rfc3339(row, schema, "created_at"),
             claimable: false,
             current_node: get_opt(row, schema, "current_node"),
+            element_value: None,
         })
         .collect();
     Ok(TodoPage { rows, total })
@@ -542,6 +546,7 @@ pub async fn list_cc_paged(user_id: &str, f: &TodoFilter) -> Result<TodoPage, St
             created_at: get_ts_rfc3339(row, schema, "created_at"),
             claimable: false,
             current_node: get_opt(row, schema, "node_bpmn_id"),
+            element_value: None,
         })
         .collect();
     Ok(TodoPage { rows, total })

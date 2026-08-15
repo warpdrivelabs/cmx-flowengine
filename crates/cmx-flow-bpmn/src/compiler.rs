@@ -63,6 +63,12 @@ pub fn compile(xml: &str) -> Result<ProcessDefinition> {
         index,
         // F4：起点表单（process 级 cmx:startFormKey，前缀无关，同 userTask 的 formKey）。
         start_form_key: local_attr(&process, "startFormKey"),
+        // ④：撤回策略（process 级 cmx:withdrawPolicy，strict|lenient，前缀无关）。
+        withdraw_policy: local_attr(&process, "withdrawPolicy"),
+        // ⑤：变量声明（process 级 <extensionElements><cmx:varSchema>JSON</cmx:varSchema>）。
+        var_schema: parse_var_schema(&process)?,
+        // ⑤：变量校验策略（process 级 cmx:varValidation，strict|lenient|off）。
+        var_validation: local_attr(&process, "varValidation"),
     };
     def.validate()?;
     Ok(def)
@@ -377,6 +383,37 @@ fn has_terminate_definition(node: &Node) -> bool {
     node.children()
         .filter(Node::is_element)
         .any(|n| n.tag_name().name() == "terminateEventDefinition")
+}
+
+/// 解析 process 级变量声明（⑤）：读 `<extensionElements><varSchema>JSON</varSchema>`（前缀无关），
+/// JSON 反序列化为 `VarSchema`。无该元素/空 → None。坏 JSON 或 shape 违规 → 编译报错（挡回非法定义）。
+fn parse_var_schema(process: &Node) -> Result<Option<cmx_flow_model::VarSchema>> {
+    let ext = process
+        .children()
+        .filter(Node::is_element)
+        .find(|n| n.tag_name().name() == "extensionElements");
+    let Some(ext) = ext else { return Ok(None) };
+    let vs = ext
+        .children()
+        .filter(Node::is_element)
+        .find(|n| n.tag_name().name() == "varSchema");
+    let Some(vs) = vs else { return Ok(None) };
+    let text = vs.text().unwrap_or("").trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let schema: cmx_flow_model::VarSchema = serde_json::from_str(text)
+        .map_err(|e| Error::Unsupported(format!("varSchema JSON 解析失败: {e}")))?;
+    let violations = schema.validate_shape();
+    if !violations.is_empty() {
+        let msg = violations
+            .iter()
+            .map(|v| format!("{}: {}", v.var, v.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(Error::Unsupported(format!("varSchema 声明非法: {msg}")));
+    }
+    Ok(Some(schema))
 }
 
 /// 解析 intermediateCatchEvent：仅支持 messageEventDefinition（A4 消息中间捕获）。
@@ -741,5 +778,61 @@ mod tests {
         let ca = call_activity_of(&xml);
         assert!(ca.input_vars.is_empty());
         assert!(ca.output_vars.is_empty());
+    }
+
+    // —— ⑤：process 级 varSchema 解析 —— //
+
+    fn flow_with_var_schema(schema_json: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:flowable="http://flowable.org/bpmn"
+             xmlns:cmx="http://cmx/flow">
+  <process id="vs" name="含变量声明" isExecutable="true">
+    <extensionElements><cmx:varSchema>{schema_json}</cmx:varSchema></extensionElements>
+    <startEvent id="start"/>
+    <sequenceFlow id="s0" sourceRef="start" targetRef="t"/>
+    <userTask id="t" name="办理" flowable:assignee="u"/>
+    <sequenceFlow id="s1" sourceRef="t" targetRef="done"/>
+    <endEvent id="done"/>
+  </process>
+</definitions>"#
+        )
+    }
+
+    #[test]
+    fn parses_var_schema_with_object_and_array() {
+        let json = r#"[
+          {"name":"amount","type":"NUMBER","label":"金额","required":true},
+          {"name":"products","type":"ARRAY","label":"明细",
+           "item":{"name":"p","type":"OBJECT","fields":[
+             {"name":"sku","type":"STRING"},{"name":"ownerUser","type":"STRING"}]}}
+        ]"#;
+        let def = compile(&flow_with_var_schema(json)).expect("应编译");
+        let schema = def.var_schema.expect("应有 var_schema");
+        assert_eq!(schema.decls.len(), 2);
+        let paths: Vec<String> = schema.flatten_paths().into_iter().map(|p| p.path).collect();
+        assert!(paths.contains(&"amount".to_string()));
+        assert!(paths.contains(&"products".to_string()));
+        assert!(paths.contains(&"products[].ownerUser".to_string()));
+    }
+
+    #[test]
+    fn no_var_schema_is_none() {
+        let xml = main_with_call(">");
+        assert!(compile(&xml).unwrap().var_schema.is_none(), "未声明 → None");
+    }
+
+    #[test]
+    fn bad_var_schema_json_rejected() {
+        let def = compile(&flow_with_var_schema("{not valid json"));
+        assert!(def.is_err(), "坏 JSON 应编译报错");
+    }
+
+    #[test]
+    fn invalid_var_schema_shape_rejected() {
+        // 枚举无候选 → shape 违规 → 编译报错。
+        let json = r#"[{"name":"e","type":"ENUM"}]"#;
+        assert!(compile(&flow_with_var_schema(json)).is_err(), "shape 违规应报错");
     }
 }

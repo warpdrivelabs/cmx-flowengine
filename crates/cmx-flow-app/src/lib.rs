@@ -80,6 +80,8 @@ where
         .route("/definitions/draft", post(handlers::save_definition_draft))
         .route("/definitions/validate", post(handlers::validate_definition))
         .route("/definitions/{key}", get(handlers::get_definition_detail))
+        .route("/definitions/{key}/variables", get(handlers::get_definition_variables))
+        .route("/definitions/variables/validate", post(handlers::validate_definition_variables))
         .route(
             "/definitions/{key}/publish",
             post(handlers::publish_definition),
@@ -105,6 +107,8 @@ where
         .route("/instances/{id}", get(handlers::get_instance))
         .route("/instances/{id}/children", get(handlers::get_children))
         .route("/instances/{id}/cancel", post(handlers::cancel_instance))
+        .route("/instances/{id}/withdraw", post(handlers::withdraw_instance))
+        .route("/instances/{id}/withdrawable", get(handlers::get_withdrawable))
         .route(
             "/instances/{id}/retry-incident",
             post(handlers::retry_incident),
@@ -146,6 +150,7 @@ where
         .route("/todos/filters", get(handlers::get_todo_filters))
         .route("/tasks/{id}/complete", post(handlers::complete_task))
         .route("/tasks/{id}/reject", post(handlers::reject_task))
+        .route("/tasks/{id}/reject-targets", get(handlers::get_reject_targets))
         .route("/tasks/{id}/claim", post(handlers::claim_task))
         .route("/tasks/{id}/transfer", post(handlers::transfer_task))
         .route("/tasks/{id}/delegate", post(handlers::delegate_task))

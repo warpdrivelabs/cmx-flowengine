@@ -26,7 +26,7 @@ pub mod variables;
 
 // —— 扁平化再导出，给消费方一个稳定的浅层 API —— //
 pub use error::{Error, Result};
-pub use expr::{BuiltinFn, builtin_catalog, eval_condition, validate_syntax};
+pub use expr::{BuiltinFn, builtin_catalog, eval_condition, eval_value, interpolate, validate_syntax};
 pub use ir::{
     BoundaryTimer, BusinessRule, CallActivity, CandidateKind, CandidateRef, FlowNode, MessageCatch,
     MultiInstance, NodeId, NodeKind, ProcessDefinition, SequenceFlow, ServiceTask, TimerDuration,
@@ -44,7 +44,7 @@ pub use runtime::{
 pub use store::{RuntimeStore, StoreError, StoreResult};
 pub use subflow::{RouteError, RouteResult, SubflowRouter};
 pub use var_schema::{
-    VarDecl, VarSchema, VarScope, VarSource, VarType, VarViolation, VarViolationCode,
+    VarDecl, VarPath, VarSchema, VarScope, VarSource, VarType, VarViolation, VarViolationCode,
 };
 pub use variables::Variables;
 
@@ -264,5 +264,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn expr_eval_value_returns_typed_value() {
+        let mut vars = Variables::new();
+        vars.set("n", serde_json::json!(42));
+        vars.set("s", serde_json::json!("hi"));
+        vars.set("obj", serde_json::json!({"k": "v"}));
+        assert_eq!(expr::eval_value("n", &vars).unwrap(), serde_json::json!(42)); // 裸变量返回原值
+        assert_eq!(expr::eval_value("s", &vars).unwrap(), serde_json::json!("hi"));
+        assert_eq!(expr::eval_value("obj.k", &vars).unwrap(), serde_json::json!("v"));
+        assert_eq!(expr::eval_value("", &vars).unwrap(), serde_json::Value::Null); // 空 → Null
+        assert_eq!(expr::eval_value("missing", &vars).unwrap(), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn expr_interpolate_templates() {
+        let mut vars = Variables::new();
+        vars.set("approver", serde_json::json!("u1"));
+        vars.set("product", serde_json::json!({"id": 42, "ownerUser": "u_a"}));
+        // 整串即表达式。
+        assert_eq!(expr::interpolate("${approver}", &vars).unwrap(), "u1");
+        assert_eq!(expr::interpolate("${product.ownerUser}", &vars).unwrap(), "u_a");
+        // 嵌入式（字面量 + 表达式）。
+        assert_eq!(expr::interpolate("user_${product.id}", &vars).unwrap(), "user_42");
+        // 无 ${} → 原样（静态字面量向后兼容）。
+        assert_eq!(expr::interpolate("mgr", &vars).unwrap(), "mgr");
+        // 求值 null → 空串。
+        assert_eq!(expr::interpolate("${product.missing}", &vars).unwrap(), "");
+        // 缺闭合 } → 语法错。
+        assert!(expr::interpolate("${approver", &vars).is_err());
     }
 }

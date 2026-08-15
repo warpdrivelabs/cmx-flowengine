@@ -303,7 +303,7 @@ pub struct SequenceFlow {
 /// 一份已编译、不可变、可执行的流程定义。
 ///
 /// 由 `cmx-flow-bpmn` 从 BPMN XML 编译产生；引擎只读地在其上跑令牌。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProcessDefinition {
     /// 流程 key（BPMN `process` 的 id），用于按 key 部署/启动。
     pub key: String,
@@ -319,6 +319,18 @@ pub struct ProcessDefinition {
     /// 起点表单逻辑名（F4：process 级 cmx:startFormKey）。发起时渲染此表单填单。空 = 无起点表单。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_form_key: Option<String>,
+    /// 撤回策略（④：process 级 cmx:withdrawPolicy）。`"lenient"` = 只要未办结即可取回；
+    /// 其它/空 = `strict`（下游完全未处理才可取回）。定义级可配。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withdraw_policy: Option<String>,
+    /// 变量声明（⑤：process 级 <cmx:varSchema> 里的设计态变量元信息）。None = 未声明（向后兼容）。
+    /// 引擎运行不依赖它；供设计器下拉联动 + 可选的发起态默认值物化/软校验。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub var_schema: Option<crate::var_schema::VarSchema>,
+    /// 变量校验策略（⑤：process 级 cmx:varValidation）。`"strict"` = 发起时违规即拒；
+    /// `"off"` = 不校验；其它/空 = `lenient`（违规仅 warn，照常发起）。仅当 var_schema 存在时有意义。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub var_validation: Option<String>,
 }
 
 impl ProcessDefinition {

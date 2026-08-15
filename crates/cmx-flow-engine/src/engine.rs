@@ -60,6 +60,34 @@ pub struct TaskView {
     pub assignee: Option<String>,
 }
 
+/// 退回目标：某任务可退回的一个上游用户任务（reject_targets 返回，供前端渲染选择器）。
+#[derive(Debug, Clone)]
+pub struct RejectTarget {
+    /// 目标节点 bpmn_id。
+    pub bpmn_id: String,
+    /// 目标节点名。
+    pub name: Option<String>,
+    /// 是否为默认退回目标（reject_task 省略 target 时会去的那个唯一直接前驱）。
+    pub is_direct_predecessor: bool,
+    /// 反向跳数（供前端「上 1 步 / 上 2 步」排序）。
+    pub distance: usize,
+}
+
+/// 一个任务的退回目标全集（reject_targets 返回）。
+#[derive(Debug, Clone)]
+pub struct RejectTargetInfo {
+    /// 任务 id。
+    pub task_id: String,
+    /// 任务当前所在节点 bpmn_id。
+    pub current_node: String,
+    /// 是否可退回（会签/或签域内任务、或无上游用户任务 → false）。
+    pub rejectable: bool,
+    /// 默认退回目标 bpmn_id（None = 无唯一直接前驱，须显式选一个）。
+    pub default_target: Option<String>,
+    /// 全部可退上游用户任务，按 distance 升序。
+    pub targets: Vec<RejectTarget>,
+}
+
 /// 一次定时器触发的结果（trigger_due_timers 返回，供日志/demo 展示）。
 #[derive(Debug, Clone)]
 pub struct FiredTimer {
@@ -155,6 +183,87 @@ impl<S: RuntimeStore> Engine<S> {
             .get("initiator")
             .and_then(|v| v.as_str().map(|s| s.to_string()));
         cmx_flow_model::ResolveContext::new(initiator, snapshot.instance.org_id.clone())
+    }
+
+    /// 展开一个多实例子实例（②）：按**当前元素**求值办理人后推入 token + task + 候选池。
+    ///
+    /// 支持三种写法（共用同一元素作用域求值）：
+    ///   A 元素插值  `assignee="${product.ownerUser}"` → 直派；
+    ///   B 候选表达式插值 `candidates="role(${product.ownerRole})"` → 解析(0 兜底/1 直派/≥2 候选池)；
+    ///   C 集合即人  `assignee="${approver}"`（元素为用户 id 标量）→ 直派。
+    ///
+    /// 求值作用域 = 实例变量 + `elementVariable`(当前元素) + `loopCounter`(下标)。
+    /// 借用纪律：先克隆出 scope/rctx/refs（owned）再 await 解析，await 期间不持 snapshot 读借用。
+    async fn expand_mi_element(
+        &self,
+        snapshot: &mut InstanceSnapshot,
+        node_bpmn: &str,
+        node_name: &Option<String>,
+        ut: &UserTask,
+        element: Value,
+        index: usize,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        // 1) 元素作用域：实例变量 + 元素变量 + loopCounter。
+        let mut scope = snapshot.instance.variables.clone();
+        if let Some(ev) = ut.multi_instance.as_ref().and_then(|mi| mi.element_var.as_ref()) {
+            scope.set(ev.clone(), element.clone());
+        }
+        scope.set("loopCounter", json!(index));
+        // 2) 解析上下文（读快照，得 owned）。
+        let rctx = Self::resolve_ctx_of(snapshot);
+        // 3) 插值静态 assignee（无 ${} 原样；求值空/无 assignee → None，视作「无此人」）。
+        let static_assignee = match &ut.assignee {
+            Some(a) => {
+                let s = cmx_flow_model::interpolate(a, &scope).map_err(Error::from)?;
+                if s.is_empty() { None } else { Some(s) }
+            }
+            None => None,
+        };
+        // 4) 逐条插值候选人 refs 的 value。
+        let mut refs: Vec<cmx_flow_model::CandidateRef> = Vec::with_capacity(ut.candidates.len());
+        for r in &ut.candidates {
+            refs.push(cmx_flow_model::CandidateRef {
+                kind: r.kind,
+                value: cmx_flow_model::interpolate(&r.value, &scope).map_err(Error::from)?,
+            });
+        }
+        // 5) 解析候选人（async；此刻不借 snapshot）。
+        let resolved = self.resolve_candidates(&refs, &rctx).await?;
+        // 6) 决定分派（0 兜底静态 assignee / 1 直派 / ≥2 候选池）。
+        let task_id = Uuid::new_v4().to_string();
+        let instance_id = snapshot.instance.id.clone();
+        let (assignee, candidates) =
+            decide_assignment(&task_id, &instance_id, &refs, &resolved, static_assignee);
+        // 7) 改 snapshot：push token + task + 候选池。
+        let token_id = Uuid::new_v4().to_string();
+        snapshot.tokens.push(Token {
+            id: token_id.clone(),
+            instance_id: instance_id.clone(),
+            node_bpmn_id: node_bpmn.to_string(),
+            state: TokenState::Waiting,
+            parent_id: None,
+            created_at: now,
+            updated_at: now,
+        });
+        snapshot.tasks.push(Task {
+            id: task_id,
+            instance_id,
+            token_id,
+            node_bpmn_id: node_bpmn.to_string(),
+            name: node_name.clone(),
+            assignee,
+            candidate_groups: ut.candidate_groups.clone(),
+            element_value: Some(element),
+            owner_user_id: None,
+            parent_task_id: None,
+            delegation_state: None,
+            completed: false,
+            created_at: now,
+            completed_at: None,
+        });
+        snapshot.candidates.extend(candidates);
+        Ok(())
     }
 
     /// 部署一份流程定义。会做 M1 拓扑子集校验（引擎声明自己支持的形态）。
@@ -315,6 +424,31 @@ impl<S: RuntimeStore> Engine<S> {
         parent_node_bpmn_id: Option<String>,
     ) -> Result<InstanceSnapshot> {
         let def = self.get_definition(definition_key)?;
+
+        // ⑤：按 var_schema 物化默认值 + 软校验（仅当声明了 schema）。运行核不看 schema，
+        // 校验只在此发起边界做——strict 拒绝、lenient 仅 warn、off 跳过。
+        let variables = match &def.var_schema {
+            Some(schema) if !schema.is_empty() => {
+                let filled = schema.materialize_defaults(&variables);
+                let policy = def.var_validation.as_deref().unwrap_or("lenient");
+                if policy != "off" {
+                    let violations = schema.validate_values(&filled);
+                    if !violations.is_empty() {
+                        let msg = violations
+                            .iter()
+                            .map(|v| v.message.clone())
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        if policy == "strict" {
+                            return Err(Error::VarValidation(msg));
+                        }
+                        tracing::warn!(instance_def = %definition_key, violations = %msg, "变量软校验有违规（lenient，照常发起）");
+                    }
+                }
+                filled
+            }
+            _ => variables,
+        };
 
         let now = self.clock.now();
         let instance_id = Uuid::new_v4().to_string();
@@ -659,8 +793,22 @@ impl<S: RuntimeStore> Engine<S> {
             }
             // 令牌不动（仍 Waiting 在本节点），流程不推进——父任务还没办。
         } else if is_mi {
-            // —— 多实例（会签/或签）：计数、判完成条件、收口或展开下一个 —— //
-            complete_mi_task(&def, &mut snapshot, &node_bpmn, &token_id, now)?;
+            // —— 多实例（会签/或签）：计数、判完成条件、收口或（顺序）展开下一个 —— //
+            // 展开须逐元素 async 解析办理人，故 complete_mi_task 只算出「待展开元素」，
+            // 由此处（有 &self）调 expand_mi_element 完成 async 展开（②）。
+            let pending = complete_mi_task(&def, &mut snapshot, &node_bpmn, &token_id, now)?;
+            if let Some(p) = pending {
+                self.expand_mi_element(
+                    &mut snapshot,
+                    &p.node_bpmn,
+                    &p.node_name,
+                    &p.ut,
+                    p.element,
+                    p.index,
+                    now,
+                )
+                .await?;
+            }
         } else {
             // —— 普通单实例：令牌离开 userTask 沿唯一出边，转 Active —— //
             let token_idx = snapshot
@@ -1077,6 +1225,62 @@ impl<S: RuntimeStore> Engine<S> {
         Ok(Self::result_of(&snapshot))
     }
 
+    /// 列举一个任务的**全部合法退回目标**（只读，不改运行态）——供前端渲染「退回到…」选择器。
+    ///
+    /// 退回目标 = 从任务当前节点沿入边**反向可达**的上游 userTask 集合（穿透网关/事件/服务任务，
+    /// 只收 userTask）。`is_direct_predecessor` 标出 reject_task 省略 target 时会去的那个（默认目标）。
+    /// 会签/或签域内任务不支持退回（引擎 reject 亦挡回）→ `rejectable=false`、`targets` 空。
+    pub async fn reject_targets(
+        &self,
+        instance_id: &str,
+        task_id: &str,
+    ) -> Result<RejectTargetInfo> {
+        let snapshot = self.store.load_snapshot(instance_id).await?;
+        let def = self.get_definition(&snapshot.instance.definition_key)?;
+
+        let task = snapshot
+            .tasks
+            .iter()
+            .find(|t| t.id == task_id && !t.completed)
+            .ok_or_else(|| {
+                Error::TaskNotActionable(format!("任务 {task_id} 不存在或已办结"))
+            })?;
+        let node_bpmn = task.node_bpmn_id.clone();
+
+        // 会签/或签域内任务：与 reject_task 一致挡回。
+        let in_mi = snapshot
+            .mi_scopes
+            .iter()
+            .any(|s| s.node_bpmn_id == node_bpmn && !s.finished);
+        if in_mi {
+            return Ok(RejectTargetInfo {
+                task_id: task_id.to_string(),
+                current_node: node_bpmn,
+                rejectable: false,
+                default_target: None,
+                targets: Vec::new(),
+            });
+        }
+
+        let mut targets = reachable_upstream_user_tasks(&def, &node_bpmn);
+        // 默认目标 = reject_task 省略 target 时的直接前驱（唯一上游 userTask，回溯跳网关）。
+        let default_target = predecessor_user_task(&def, &node_bpmn).ok();
+        if let Some(def_t) = &default_target {
+            for t in targets.iter_mut() {
+                if &t.bpmn_id == def_t {
+                    t.is_direct_predecessor = true;
+                }
+            }
+        }
+        Ok(RejectTargetInfo {
+            task_id: task_id.to_string(),
+            rejectable: !targets.is_empty(),
+            current_node: node_bpmn,
+            default_target,
+            targets,
+        })
+    }
+
     /// 运维干预：直接改实例变量（H4）——merge 传入变量到实例并落库，不推进令牌。
     ///
     /// 用于运维台修数据（如修正一个导致 incident 的错误值），改完可再 `retry_incident`。
@@ -1461,6 +1665,100 @@ impl<S: RuntimeStore> Engine<S> {
 
         self.store.save_snapshot(&snapshot).await?;
         Ok(Self::result_of(&snapshot))
+    }
+
+    /// 撤回 / 取回（④）：发起人在下游未处理时把流程拉回发起处，可改后重交。实例保持 ACTIVE。
+    ///
+    /// 护栏见 [`withdraw_denial`]（实例 ACTIVE + by_user 是发起人 + strict/lenient 策略判据）。
+    /// 落点 = start 后首个 userTask，**回派给发起人**（绕过 run_to_wait 候选解析，确保归发起人），
+    /// 令牌 Waiting 在此；发起人改数据后 complete 即沿正常流程重新前进。记 WITHDRAW 台账。
+    pub async fn withdraw_process(
+        &self,
+        instance_id: &str,
+        by_user: &str,
+        reason: Option<&str>,
+    ) -> Result<ExecutionResult> {
+        let mut snapshot = self.store.load_snapshot(instance_id).await?;
+        let def = self.get_definition(&snapshot.instance.definition_key)?;
+        if let Some(deny) = withdraw_denial(&snapshot, &def, by_user) {
+            return Err(Error::TaskNotActionable(deny));
+        }
+        let landing = first_user_task_from_start(&def).ok_or_else(|| {
+            Error::TaskNotActionable("流程无用户任务节点，无处可退回发起人".into())
+        })?;
+        let now = self.clock.now();
+
+        // 清理当前运行态（保留已办结任务供审计）。
+        for tok in snapshot.tokens.iter_mut() {
+            if tok.state != TokenState::Ended {
+                tok.state = TokenState::Ended;
+                tok.updated_at = now;
+            }
+        }
+        snapshot.tasks.retain(|t| t.completed);
+        for s in snapshot.mi_scopes.iter_mut() {
+            s.finished = true;
+        }
+        snapshot.jobs.clear();
+        snapshot.candidates.clear();
+
+        // 落点：新 Waiting 令牌 + 回派发起人的任务（直接建，绕过 run_to_wait 的候选解析）。
+        let landing_name = def.node_by_bpmn(&landing).and_then(|n| n.name.clone());
+        let token_id = Uuid::new_v4().to_string();
+        snapshot.tokens.push(Token {
+            id: token_id.clone(),
+            instance_id: instance_id.to_string(),
+            node_bpmn_id: landing.clone(),
+            state: TokenState::Waiting,
+            parent_id: None,
+            created_at: now,
+            updated_at: now,
+        });
+        let task_id = Uuid::new_v4().to_string();
+        snapshot.tasks.push(Task {
+            id: task_id.clone(),
+            instance_id: instance_id.to_string(),
+            token_id,
+            node_bpmn_id: landing,
+            name: landing_name,
+            assignee: Some(by_user.to_string()),
+            candidate_groups: None,
+            element_value: None,
+            owner_user_id: None,
+            parent_task_id: None,
+            delegation_state: None,
+            completed: false,
+            created_at: now,
+            completed_at: None,
+        });
+        snapshot.delegations.push(TaskDelegation {
+            id: Uuid::new_v4().to_string(),
+            task_id,
+            instance_id: instance_id.to_string(),
+            kind: "WITHDRAW".to_string(),
+            from_user_id: by_user.to_string(),
+            to_user_id: by_user.to_string(),
+            temp_task_id: None,
+            reason: reason.map(|s| s.to_string()),
+            created_at: now,
+        });
+        snapshot.instance.updated_at = now;
+        self.store.save_snapshot(&snapshot).await?;
+        Ok(Self::result_of(&snapshot))
+    }
+
+    /// 判断实例是否可被 by_user 撤回（④，只读）——供 /withdrawable 端点点亮/置灰按钮。
+    pub async fn can_withdraw(
+        &self,
+        instance_id: &str,
+        by_user: &str,
+    ) -> Result<(bool, Option<String>)> {
+        let snapshot = self.store.load_snapshot(instance_id).await?;
+        let def = self.get_definition(&snapshot.instance.definition_key)?;
+        match withdraw_denial(&snapshot, &def, by_user) {
+            Some(reason) => Ok((false, Some(reason))),
+            None => Ok((true, None)),
+        }
     }
 
     /// 推进所有到期的定时器作业（M2.5 的显式推进入口）。
@@ -1892,17 +2190,22 @@ impl<S: RuntimeStore> Engine<S> {
                                 finished: false,
                             };
 
-                            for element in collection.iter().take(expand_now) {
-                                push_mi_sub_instance(
+                            snapshot.mi_scopes.push(scope);
+                            // 逐元素展开：每个子任务按其元素求值办理人（②）。
+                            for (i, element) in
+                                collection.iter().take(expand_now).enumerate()
+                            {
+                                self.expand_mi_element(
                                     snapshot,
                                     &node_bpmn,
                                     &node_name,
                                     ut,
                                     element.clone(),
+                                    i,
                                     now,
-                                );
+                                )
+                                .await?;
                             }
-                            snapshot.mi_scopes.push(scope);
                         }
                     }
                 }
@@ -2053,6 +2356,52 @@ fn clear_incident(vars: &mut Variables, node_bpmn: &str) {
 ///   - 恰有一个前驱且是 userTask → 返回它；
 ///   - 前驱是网关/其它非人工节点 → 继续向其上游回溯（跳过网关，找到最近的 userTask）；
 ///   - 无前驱 / 多前驱无法确定 / 回溯不到 userTask → 报错，要求显式指定 target。
+/// 从 `node_bpmn` 沿入边**反向遍历**，收集全部可达的上游 userTask（穿透网关/事件/服务任务）。
+///
+/// 用 visited 集天然防环、防重（无需深度 guard）。`distance` = 首次到达的最小反向跳数。
+/// 结果按 distance 升序、同距按 bpmn_id 排序，便于前端「上 1 步 / 上 2 步」稳定展示。
+/// `is_direct_predecessor` 由调用方据 `predecessor_user_task` 标注（此处恒 false）。
+fn reachable_upstream_user_tasks(def: &ProcessDefinition, node_bpmn: &str) -> Vec<RejectTarget> {
+    // 反向邻接：谁的出边指向 cur。
+    fn preds(def: &ProcessDefinition, cur: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for n in &def.nodes {
+            for e in &n.outgoing {
+                if e.target_bpmn_id == cur {
+                    out.push(n.bpmn_id.clone());
+                }
+            }
+        }
+        out
+    }
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    visited.insert(node_bpmn.to_string());
+    let mut queue: std::collections::VecDeque<(String, usize)> = std::collections::VecDeque::new();
+    queue.push_back((node_bpmn.to_string(), 0));
+    let mut out: Vec<RejectTarget> = Vec::new();
+    while let Some((cur, dist)) = queue.pop_front() {
+        for p in preds(def, &cur) {
+            if !visited.insert(p.clone()) {
+                continue; // 已访问 → 跳过（防环/防重）。
+            }
+            if let Some(node) = def.node_by_bpmn(&p) {
+                if matches!(node.kind, NodeKind::UserTask(_)) {
+                    out.push(RejectTarget {
+                        bpmn_id: p.clone(),
+                        name: node.name.clone(),
+                        is_direct_predecessor: false,
+                        distance: dist + 1,
+                    });
+                }
+                // 无论是否 userTask，都继续向上游穿透（跳过网关/事件找更早的 userTask）。
+                queue.push_back((p, dist + 1));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.distance.cmp(&b.distance).then_with(|| a.bpmn_id.cmp(&b.bpmn_id)));
+    out
+}
+
 fn predecessor_user_task(def: &ProcessDefinition, node_bpmn: &str) -> Result<String> {
     // 反向邻接：谁的出边指向 cur。
     fn preds(def: &ProcessDefinition, cur: &str) -> Vec<String> {
@@ -2092,6 +2441,59 @@ fn predecessor_user_task(def: &ProcessDefinition, node_bpmn: &str) -> Result<Str
         // 前驱是网关/事件等非人工节点：继续向上游回溯，跳过它。
         cur = p.clone();
     }
+}
+
+/// 撤回护栏（④）：返回 None = 可撤回；Some(reason) = 拒绝原因。
+///
+/// 规则：实例 ACTIVE + `by_user` 是发起人（实例变量 `initiator`）+ 策略判据。
+/// 策略 strict（默认）需下游完全未办结；lenient（`cmx:withdrawPolicy="lenient"`）只需当前未办结。
+fn withdraw_denial(
+    snapshot: &InstanceSnapshot,
+    def: &ProcessDefinition,
+    by_user: &str,
+) -> Option<String> {
+    if snapshot.instance.state != InstanceState::Active {
+        return Some("实例非进行中，不可取回".into());
+    }
+    match snapshot
+        .instance
+        .variables
+        .get("initiator")
+        .and_then(|v| v.as_str())
+    {
+        Some(u) if u == by_user => {}
+        Some(_) => return Some("仅发起人可取回本流程".into()),
+        None => return Some("流程无发起人记录，无法确认取回权限".into()),
+    }
+    let lenient = def.withdraw_policy.as_deref() == Some("lenient");
+    if !lenient && snapshot.tasks.iter().any(|t| t.completed) {
+        return Some("下游已有环节办结，不可取回（strict 策略）".into());
+    }
+    None
+}
+
+/// start 后首个 userTask（撤回落点）——从 start 沿出边 BFS 找第一个用户任务。无则 None。
+fn first_user_task_from_start(def: &ProcessDefinition) -> Option<String> {
+    let start_bpmn = def.node(def.start).bpmn_id.clone();
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    visited.insert(start_bpmn.clone());
+    let mut q: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    q.push_back(start_bpmn);
+    while let Some(cur) = q.pop_front() {
+        let node = def.node_by_bpmn(&cur)?;
+        for e in &node.outgoing {
+            if !visited.insert(e.target_bpmn_id.clone()) {
+                continue;
+            }
+            if let Some(tn) = def.node_by_bpmn(&e.target_bpmn_id) {
+                if matches!(tn.kind, NodeKind::UserTask(_)) {
+                    return Some(e.target_bpmn_id.clone());
+                }
+                q.push_back(e.target_bpmn_id.clone());
+            }
+        }
+    }
+    None
 }
 
 /// 变量映射（M5）：按 mappings 把 src 里的变量拷成一个新 Variables。
@@ -2482,58 +2884,19 @@ fn read_mi_collection(
     }
 }
 
-/// 为多实例展开一个子实例：建一个 Waiting 令牌 + 一条携带当前元素的 Task。
-///
-/// element_value 存进 Task（每个办理人看到各自的数据）。variables 注入在办结时由业务提交，
-/// M3 简化为把元素放在 Task.element_value 供前端展示与业务读取。
-fn push_mi_sub_instance(
-    snapshot: &mut InstanceSnapshot,
-    node_bpmn: &str,
-    node_name: &Option<String>,
-    ut: &UserTask,
-    element: Value,
-    now: DateTime<Utc>,
-) {
-    let instance_id = snapshot.instance.id.clone();
-    let token_id = Uuid::new_v4().to_string();
-    snapshot.tokens.push(Token {
-        id: token_id.clone(),
-        instance_id: instance_id.clone(),
-        node_bpmn_id: node_bpmn.to_string(),
-        state: TokenState::Waiting,
-        parent_id: None,
-        created_at: now,
-        updated_at: now,
-    });
-    snapshot.tasks.push(Task {
-        id: Uuid::new_v4().to_string(),
-        instance_id,
-        token_id,
-        node_bpmn_id: node_bpmn.to_string(),
-        name: node_name.clone(),
-        assignee: ut.assignee.clone(),
-        candidate_groups: ut.candidate_groups.clone(),
-        element_value: Some(element),
-        owner_user_id: None,
-        parent_task_id: None,
-        delegation_state: None,
-        completed: false,
-        created_at: now,
-        completed_at: None,
-    });
-}
-
-/// 办结一个多实例子任务后的处理：计数 → 判 completionCondition → 收口或展开下一个。
+/// 办结一个多实例子任务后的处理：计数 → 判 completionCondition → 收口或（顺序）返回待展开元素。
 ///
 /// 收口（scope.finished）：作废本域其余未办结任务与其令牌，留一个「代表令牌」沿 MI 节点
 /// 唯一出边离开并置 Active，交回推进循环。与 M2 join 的「幸存者 + 删兄弟」模式同构。
+/// 顺序或签未收口：**不在此展开**（展开需 async 逐元素解析办理人），返回 `PendingMiExpand`
+/// 交由 `complete_task`（有 `&self`）调 `expand_mi_element` 完成展开（②）。
 fn complete_mi_task(
     def: &ProcessDefinition,
     snapshot: &mut InstanceSnapshot,
     node_bpmn: &str,
     completed_token_id: &str,
     now: DateTime<Utc>,
-) -> Result<()> {
+) -> Result<Option<PendingMiExpand>> {
     // 该子任务的令牌置 Ended（其位置已由 Task.completed 记录，令牌使命结束）。
     if let Some(tok) = snapshot.token_mut(completed_token_id) {
         tok.state = TokenState::Ended;
@@ -2541,7 +2904,7 @@ fn complete_mi_task(
     }
 
     // 更新域计数。
-    let (sequential, finished_now, next_element, element_var) = {
+    let (sequential, finished_now, next_element) = {
         // 用下标定位域，便于与 instance.variables 做不相交字段借用
         // （completionCondition 需同时读实例变量 + nrOf* 计数）。
         let scope_idx = snapshot
@@ -2562,11 +2925,12 @@ fn complete_mi_task(
         let finished_now = hit || all_done;
 
         let scope = &mut snapshot.mi_scopes[scope_idx];
-        // 顺序模式且未收口：取下一个待展开元素。
+        // 顺序模式且未收口：取下一个待展开元素（连同其下标，供 loopCounter/办理人求值）。
         let next_element = if !finished_now && scope.sequential && scope.next_index < scope.total {
-            let el = scope.collection[scope.next_index].clone();
+            let idx = scope.next_index;
+            let el = scope.collection[idx].clone();
             scope.next_index += 1;
-            Some(el)
+            Some((el, idx))
         } else {
             None
         };
@@ -2574,20 +2938,17 @@ fn complete_mi_task(
         if finished_now {
             scope.finished = true;
         }
-        (
-            scope.sequential,
-            finished_now,
-            next_element,
-            scope.element_var.clone(),
-        )
+        (scope.sequential, finished_now, next_element)
     };
 
     if finished_now {
         // —— 收口：作废本域其余未办结任务 + 其令牌，留代表令牌沿出边离开 —— //
         finish_mi_scope(def, snapshot, node_bpmn, now)?;
-    } else if sequential {
-        // —— 顺序或签：展开下一个子实例 —— //
-        if let Some(element) = next_element {
+        return Ok(None);
+    }
+    if sequential {
+        // —— 顺序或签：算出下一个待展开元素，交回调用方 async 展开（②）—— //
+        if let Some((element, index)) = next_element {
             let node = def
                 .node_by_bpmn(node_bpmn)
                 .ok_or_else(|| Error::IllegalTokenState(format!("节点 {node_bpmn} 不在定义中")))?;
@@ -2600,12 +2961,26 @@ fn complete_mi_task(
                     )));
                 }
             };
-            let _ = element_var; // 元素随 Task.element_value 承载，见 push_mi_sub_instance
-            push_mi_sub_instance(snapshot, node_bpmn, &node_name, &ut, element, now);
+            return Ok(Some(PendingMiExpand {
+                node_bpmn: node_bpmn.to_string(),
+                node_name,
+                ut,
+                element,
+                index,
+            }));
         }
     }
     // 并行会签且未收口：其余兄弟任务仍在等待，无需动作。
-    Ok(())
+    Ok(None)
+}
+
+/// 顺序或签「待展开的下一个子实例」——由 `complete_mi_task` 算出、`complete_task` async 展开（②）。
+struct PendingMiExpand {
+    node_bpmn: String,
+    node_name: Option<String>,
+    ut: UserTask,
+    element: Value,
+    index: usize,
 }
 
 /// 收口一个多实例域：清理本域残留（未办结任务作废、其令牌删除），留一个代表令牌沿 MI
