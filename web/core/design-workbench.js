@@ -64,6 +64,8 @@ const state = {
   utTab: 'assignee',     // 当前激活页签：basic|assignee|approval|form|cc
   idnCache: {},          // 身份选择器缓存 { orgs:[], roles:[], positions:[], users:[] }（懒加载）
   idnMode: null,         // 身份模式探测结果（'local'|'external'|null=未探）
+  subMode: {},           // callActivity 子流程模式显式记忆 { [elId]: 'org'|'fixed' }（修 F5 新建死循环）
+  dirty: false,          // U1：画布有未保存编辑（commandStack 变化置真，保存/载入清零）
 
   // ⑤ 变量声明（设计态）。随定义 XML 走：openDiagram 从 <cmx:varSchema> 读入，getXml 注回。
   varSchema: [],         // VarDecl[] 树（含对象 fields / 数组 item）
@@ -361,6 +363,11 @@ const TYPE_NAME = {
   StartEvent: '开始事件', EndEvent: '结束事件', UserTask: '用户任务', ServiceTask: '服务任务',
   ExclusiveGateway: '排他网关', ParallelGateway: '并行网关', InclusiveGateway: '包容网关',
   CallActivity: '子流程调用', SequenceFlow: '顺序流', Process: '流程', ScriptTask: '脚本任务',
+  BusinessRuleTask: '业务规则任务', BoundaryEvent: '边界事件', IntermediateCatchEvent: '中间捕获事件',
+  IntermediateThrowEvent: '中间抛出事件', SubProcess: '子流程', ManualTask: '手工任务',
+  SendTask: '发送任务', ReceiveTask: '接收任务', Task: '任务', ComplexGateway: '复杂网关',
+  EventBasedGateway: '事件网关', TextAnnotation: '文本注解', Group: '分组', DataObjectReference: '数据对象',
+  Participant: '参与者', Lane: '泳道', Transaction: '事务',
 }
 function typeName (el) {
   const t = (el && el.type || '').replace('bpmn:', '')
@@ -401,11 +408,59 @@ function propertyHtml () {
   if (el.type === 'bpmn:UserTask') {
     h += userTaskTabsHtml(el, b)
   }
+  if (el.type === 'bpmn:ServiceTask') {
+    h += sec('服务实现')
+    h += field('委托实现 (delegateExpression)', 'delegate', getServiceDelegate(b),
+      '引擎按此键在 delegate 注册表查执行体，或 http 模式外呼。如 ${riskDelegate}')
+    h += `<div class="flow-hint">服务任务必须指定委托实现，否则发布时编译失败。前缀无关（flowable/camunda/cmx 皆可）。</div>`
+  }
+  if (el.type === 'bpmn:BusinessRuleTask') {
+    h += sec('决策表')
+    h += field('决策表 key (decisionRef)', 'decisionRef', getRuleDecisionRef(b),
+      '如 approval_matrix；令牌到达时跑该决策表，输出写回变量供后续网关分支')
+    h += `<div class="flow-hint">业务规则任务必须指定决策表 key，否则发布时编译失败。决策表经 /decisions 注册。</div>`
+  }
+  if (el.type === 'bpmn:BoundaryEvent') {
+    h += sec('边界定时器')
+    h += field('超时时长 (timeDuration)', 'timerDuration', getTimerDuration(b),
+      'ISO 8601 相对时长：PT24H(24时)、PT30M(30分)、P1D(1天)、PT1H30M。仅支持相对时长')
+    const interrupting = getBoundaryInterrupting(b)
+    h += `<div class="flow-field"><label>触发方式</label>
+      <div class="flow-mode">
+        <button class="flow-mode-opt ${interrupting ? 'on' : ''}" data-boundary-mode="interrupt">
+          <b>中断型</b><small>超时中断宿主任务，令牌走升级分支</small></button>
+        <button class="flow-mode-opt ${!interrupting ? 'on' : ''}" data-boundary-mode="noninterrupt">
+          <b>非中断型</b><small>超时发旁路令牌（催办），宿主任务继续</small></button>
+      </div>
+      <div class="flow-hint">边界事件须先在画布上「附着」到某任务（拖到任务边框）。</div></div>`
+  }
+  if (el.type === 'bpmn:IntermediateCatchEvent') {
+    h += sec('消息捕获')
+    h += field('消息名 (message)', 'messageName', getMessageName(b),
+      '外部系统回调时用此名唤醒。如 verdictReceived')
+    h += field('相关键变量 (correlationVar)', 'correlationVar', getCorrelationVar(b),
+      '可空；跨实例定位时按此实例变量匹配相关键。如 orderId')
+    h += `<div class="flow-hint">令牌到此挂起等外部消息（POST /messages/correlate 唤醒）。</div>`
+  }
+  if (el.type === 'bpmn:EndEvent') {
+    const isTerminate = hasEventDefLocal(b, 'TerminateEventDefinition')
+    h += sec('结束类型')
+    h += `<div class="flow-mode">
+      <button class="flow-mode-opt ${!isTerminate ? 'on' : ''}" data-end-mode="normal">
+        <b>普通结束</b><small>本分支结束，其它分支继续</small></button>
+      <button class="flow-mode-opt ${isTerminate ? 'on' : ''}" data-end-mode="terminate">
+        <b>终止结束</b><small>一票否决：终止整个流程实例</small></button>
+    </div>`
+  }
+  if (el.type === 'bpmn:StartEvent') {
+    h += `<div class="flow-hint">起点事件。发起表单绑定在「流程属性」的 cmx:startFormKey（选中画布空白配置）。</div>`
+  }
   if (el.type === 'bpmn:CallActivity') {
     const calledKey = getCalledKey(b)
     const calledElement = b.get?.('calledElement') || ''
-    // 模式判定：有 calledElement 且无 calledKey → 固定；否则默认按组织路由（真实业务的常态）。
-    const fixedMode = !!calledElement && !calledKey
+    // 模式判定：显式记 state.subMode[el.id]（解决新建节点两者皆空时固定模式弹回的死循环 F5）。
+    const explicit = state.subMode[el.id]
+    const fixedMode = explicit ? explicit === 'fixed' : (!!calledElement && !calledKey)
     h += sec('子流程')
     h += `<div class="flow-mode">
       <button class="flow-mode-opt ${!fixedMode ? 'on' : ''}" data-sub-mode="org">
@@ -578,9 +633,13 @@ function approvalTabHtml (b) {
   const opts = modes.map((m) => `<button class="flow-akind ${cur === m.key ? 'on' : ''}" data-approval="${m.key}" title="${esc(m.hint)}">${esc(m.label)}</button>`).join('')
   let detail = ''
   if (cur !== 'single') {
+    const col = mi ? mi.collection : ''
+    // U7：常见错误——把集合写成表达式 ${xxx} 或带空格。给软提示（不阻断）。
+    const colWarn = /[$\s{}]/.test(col) ? '<div class="flow-hint" style="color:var(--red,#cf222e)">⚠ 集合变量应是纯变量名（如 approvers），不要写 ${} 或空格</div>' : ''
     detail = `<div class="flow-field"><label>集合变量 (collection)</label>
-        <input data-mi-f="collection" value="${esc(mi ? mi.collection : '')}" placeholder="如 approvers；其值为数组，按元素展开办理人" list="flow-mi-collections">
+        <input data-mi-f="collection" value="${esc(col)}" placeholder="如 approvers；其值为数组，按元素展开办理人" list="flow-mi-collections">
         <datalist id="flow-mi-collections">${varPathOptionsHtml({ collectionOnly: true })}</datalist>
+        ${colWarn}
         <div class="flow-hint">会签/或签按此数组变量的元素个数展开子任务。${state.varPaths.some((p) => p.isCollection) ? '↑ 可从已声明的数组变量选。' : '（声明数组类型变量后可下拉选）'}</div></div>
       <div class="flow-field"><label>元素变量 (elementVariable)</label>
         <input data-mi-f="elementVariable" value="${esc(mi ? mi.elementVariable : '')}" placeholder="如 approver；每个子任务把当前元素写入此变量"></div>
@@ -593,7 +652,9 @@ function approvalTabHtml (b) {
 
 function formTabHtml (el, b) {
   let h = field('绑定表单 (cmx:formKey)', 'formKey', getFormAttr(b, 'formKey'), '如 pay.review；办理人点开待办时渲染此表单')
-  h += selectField('表单模式 (formMode)', 'formMode', ['approve', 'edit', 'readonly'], getFormAttr(b, 'formMode') || 'approve')
+  h += selectField('表单模式 (formMode)', 'formMode',
+    [{ value: 'approve', label: '审批（同意/驳回）' }, { value: 'edit', label: '可编辑' }, { value: 'readonly', label: '只读' }],
+    getFormAttr(b, 'formMode') || 'approve')
   h += field('可写字段 (formFields)', 'formFields', getFormAttr(b, 'formFields'), '逗号分隔；限制本环节可改哪些字段（可空）')
   const fk = getFormAttr(b, 'formKey')
   const wsId = wsNodeIdFor(state.selectedKey, el.id)
@@ -791,9 +852,15 @@ function conditionBuilderHtml (raw) {
 
 // 网关默认流：下拉选一条出边作为 default（无条件兜底）。写 BPMN 的 default 属性。
 function defaultFlowFieldHtml (el, b) {
-  const outs = (b.outgoing || []).map((f) => ({ id: f.id, name: f.name || f.id }))
+  // F0：出边挂在**图元素** el.outgoing 上（SequenceFlow 连线元素），businessObject.outgoing 常为空。
+  // 从图元素取，回退 businessObject（兼容极端情形）。
+  const edges = (el && el.outgoing && el.outgoing.length) ? el.outgoing : (b.outgoing || [])
+  const outs = edges.map((f) => {
+    const bo = f.businessObject || f
+    return { id: bo.id || f.id, name: bo.name || bo.id || f.id }
+  })
   const cur = b.default ? b.default.id : ''
-  if (!outs.length) return `<div class="flow-hint">该网关暂无出边。</div>`
+  if (!outs.length) return `<div class="flow-hint">该网关暂无出边。先在画布上从网关拉出连线到目标节点，再回此设默认流。</div>`
   const opts = `<option value="">（不指定）</option>` +
     outs.map((o) => `<option value="${esc(o.id)}" ${o.id === cur ? 'selected' : ''}>${esc(o.name)}</option>`).join('')
   return `<div class="flow-field"><label>默认流出边</label>
@@ -815,7 +882,9 @@ function orgOptionsHtml (selected) {
 
 // 子流程定义下拉：从已加载定义列表取（排除主流程自身无意义，这里全列）。
 function subflowTargetOptionsHtml (selected) {
-  return `<option value="">选择目标子流程…</option>` + state.definitions.map((d) =>
+  // F8：排除当前正在编辑的定义自身（子流程绑定到自己会造成递归调用）。
+  const list = state.definitions.filter((d) => d.key !== state.selectedKey)
+  return `<option value="">选择目标子流程…</option>` + list.map((d) =>
     `<option value="${esc(d.key)}" ${d.key === selected ? 'selected' : ''}>${esc(d.name || d.key)} (${esc(d.key)})</option>`).join('')
 }
 
@@ -876,7 +945,10 @@ function readVarSchemaFromXml (xml) {
   try {
     const m = xml.match(/<(?:\w+:)?varSchema\b[^>]*>([\s\S]*?)<\/(?:\w+:)?varSchema>/)
     if (m && m[1].trim()) {
-      const parsed = JSON.parse(m[1].trim())
+      // E2：注入时把 & < > 转义成实体（injectVarSchemaIntoXml），读回须反转义，否则 label/description
+      // 里的 & < > 每存取一轮多一层转义（&→&amp;→&amp;amp;）逐渐损坏。&amp; 最后解，避免二次替换。
+      const raw = m[1].trim().replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+      const parsed = JSON.parse(raw)
       if (Array.isArray(parsed)) state.varSchema = parsed
     }
     const vv = xml.match(/<(?:bpmn:)?process\b[^>]*\bcmx:varValidation="([^"]*)"/)
@@ -1007,7 +1079,12 @@ function field (label, prop, val, hint) {
     `<input data-prop="${esc(prop)}" value="${esc(val)}">` +
     (hint ? `<div class="flow-hint">${esc(hint)}</div>` : '') + `</div>`
 }function selectField (label, prop, opts, cur, hint) {
-  const o = opts.map((v) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(v)}</option>`).join('')
+  // opts 支持纯字符串数组，或 {value,label} 对象数组（D3：给 formMode 等中文标签）。
+  const o = opts.map((v) => {
+    const val = (v && typeof v === 'object') ? v.value : v
+    const lab = (v && typeof v === 'object') ? v.label : v
+    return `<option value="${esc(val)}" ${val === cur ? 'selected' : ''}>${esc(lab)}</option>`
+  }).join('')
   return `<div class="flow-field"><label>${esc(label)}</label>` +
     `<select data-prop="${esc(prop)}">${o}</select>` +
     (hint ? `<div class="flow-hint">${esc(hint)}</div>` : '') + `</div>`
@@ -1078,6 +1155,77 @@ function setFormAttr (el, name, value) {
   if (value) attrs['cmx:' + name] = value
   else { delete attrs['cmx:' + name]; delete attrs[name] }
   state.modeler.get('modeling').updateProperties(el, { $attrs: attrs })
+}
+
+// —— F1/F2 服务任务 delegate / 规则任务 decisionRef：走 $attrs（前缀无关，编译器按本地名读）——
+function getServiceDelegate (b) {
+  const a = b && b.$attrs
+  return (a && (a['flowable:delegateExpression'] || a.delegateExpression || a['flowable:class'] || a.class ||
+    a['cmx:delegate'] || a.delegate || a.type)) || ''
+}
+function setAttrKey (el, key, value, clearKeys) {
+  const b = el.businessObject
+  const attrs = { ...(b.$attrs || {}) }
+  ;(clearKeys || []).forEach((k) => delete attrs[k])
+  if (value) attrs[key] = value
+  state.modeler.get('modeling').updateProperties(el, { $attrs: attrs })
+}
+function getRuleDecisionRef (b) {
+  const a = b && b.$attrs
+  return (a && (a['flowable:decisionRef'] || a.decisionRef || a['cmx:decision'] || a.decision)) || ''
+}
+
+// —— F3 消息捕获：消息名/相关键走 cmx: 属性（编译器支持 cmx:message / cmx:correlationVar 回退）——
+function getMessageName (b) {
+  const a = b && b.$attrs
+  // 优先结构化 messageEventDefinition.messageRef（若有），否则 cmx:message 属性。
+  const def = (b.eventDefinitions || []).find((d) => (d.$type || '').endsWith('MessageEventDefinition'))
+  const ref = def && (def.messageRef && (def.messageRef.name || def.messageRef.id))
+  return ref || (a && (a['cmx:message'] || a.message)) || ''
+}
+function getCorrelationVar (b) {
+  const a = b && b.$attrs
+  return (a && (a['cmx:correlationVar'] || a.correlationVar)) || ''
+}
+
+// —— F3 边界定时器：读时长（timerEventDefinition/timeDuration）+ 中断性（cancelActivity）——
+function getTimerDuration (b) {
+  const def = (b.eventDefinitions || []).find((d) => (d.$type || '').endsWith('TimerEventDefinition'))
+  const td = def && def.timeDuration
+  return (td && (td.body || (typeof td === 'string' ? td : ''))) || ''
+}
+function getBoundaryInterrupting (b) {
+  return b.cancelActivity !== false   // 缺省 true = 中断型
+}
+// businessObject 是否含某类 eventDefinition（本地名尾匹配）。
+function hasEventDefLocal (b, defName) {
+  return (b.eventDefinitions || []).some((d) => (d.$type || '').endsWith(defName))
+}
+
+// —— F3 写边界定时器时长：确保有 TimerEventDefinition + FormalExpression timeDuration ——
+function setTimerDuration (el, value) {
+  const modeling = state.modeler.get('modeling')
+  const moddle = state.modeler.get('moddle')
+  const b = el.businessObject
+  let defs = (b.eventDefinitions || []).slice()
+  let timer = defs.find((d) => (d.$type || '').endsWith('TimerEventDefinition'))
+  if (!timer) { timer = moddle.create('bpmn:TimerEventDefinition', {}); defs = [timer] }
+  if (value) timer.timeDuration = moddle.create('bpmn:FormalExpression', { body: value })
+  else timer.timeDuration = undefined
+  modeling.updateProperties(el, { eventDefinitions: defs })
+}
+// —— F3 写中断性 ——
+function setBoundaryInterrupting (el, interrupting) {
+  state.modeler.get('modeling').updateProperties(el, { cancelActivity: interrupting })
+}
+// —— F4 写终止/普通结束：加/删 TerminateEventDefinition ——
+function setEndTerminate (el, terminate) {
+  const modeling = state.modeler.get('modeling')
+  const moddle = state.modeler.get('moddle')
+  const b = el.businessObject
+  const kept = (b.eventDefinitions || []).filter((d) => !(d.$type || '').endsWith('TerminateEventDefinition'))
+  const defs = terminate ? [...kept, moddle.create('bpmn:TerminateEventDefinition', {})] : kept
+  modeling.updateProperties(el, { eventDefinitions: defs.length ? defs : undefined })
 }
 
 // 本节点表单工作台的确定性 id（清洗成 SAFE_ID：仅 [A-Za-z0-9._-]，无冒号/尖括号）。
@@ -1182,6 +1330,16 @@ function bind (root, view, host) {
     root.querySelectorAll('[data-sub-mode]').forEach((btn) => btn.addEventListener('click', () => {
       setSubflowMode(btn.dataset.subMode)
     }))
+    // F3 边界定时器触发方式（中断/非中断）。
+    root.querySelectorAll('[data-boundary-mode]').forEach((btn) => btn.addEventListener('click', () => {
+      const el = state.selectedElement
+      if (el) { setBoundaryInterrupting(el, btn.dataset.boundaryMode === 'interrupt'); refreshView('property') }
+    }))
+    // F4 结束类型（普通/终止）。
+    root.querySelectorAll('[data-end-mode]').forEach((btn) => btn.addEventListener('click', () => {
+      const el = state.selectedElement
+      if (el) { setEndTerminate(el, btn.dataset.endMode === 'terminate'); refreshView('property') }
+    }))
     // 打开组织绑定对话框（挂在 property 区）。
     root.querySelector('[data-open-bindings]')?.addEventListener('click', () => {
       const el = state.selectedElement
@@ -1203,9 +1361,11 @@ function setSubflowMode (mode) {
   const el = state.selectedElement
   if (!el || !state.modeler) return
   const modeling = state.modeler.get('modeling')
+  // F5：显式记住用户选的模式（新建节点两者皆空时，仅靠 calledElement/calledKey 无法判定，会弹回 org）。
+  state.subMode[el.id] = mode
   try {
     if (mode === 'fixed') {
-      setCalledKey(el, '')
+      setCalledKey(el, '')   // 清逻辑 key；calledElement 由用户在固定模式输入框填
     } else {
       modeling.updateProperties(el, { calledElement: undefined })
     }
@@ -1366,7 +1526,10 @@ async function saveVarSchema () {
   } catch (e) { state.varError = '校验失败: ' + e.message; refreshView('property'); return }
   state.varDialog = false
   state.varError = ''
-  toast(`变量声明已更新（${state.varSchema.length} 个）；随「保存草稿/发布」写入定义`)
+  // F6：变量声明存在模块外 state（不经 commandStack），故手动置脏，让 U1 未保存保护能拦住离开；
+  // 声明随 getXml 注入 XML，「保存草稿/发布」时才真正落库——文案如实说明，避免误以为已存。
+  state.dirty = true
+  toast(`变量声明已更新（${state.varSchema.length} 个）。⚠ 尚未落库，请点工具栏「保存草稿」持久化`)
   refreshView('property')
 }
 
@@ -1421,6 +1584,12 @@ async function saveBinding (root) {
   const orgId = root.querySelector('[data-bind-org]')?.value || ''
   const targetKey = root.querySelector('[data-bind-target]')?.value || ''
   if (!targetKey) { state.bindingError = '请选择目标子流程'; refreshView('property'); return }
+  // U4：同组织已有绑定 → 保存会覆盖，先确认。orgId 空 = 默认兜底绑定。
+  const existing = (state.bindings || []).find((bd) => (bd.orgId || '') === orgId)
+  if (existing && existing.targetKey !== targetKey && typeof window !== 'undefined' && window.confirm) {
+    const who = orgId ? (existing.orgName || orgId) : '默认（兜底）'
+    if (!window.confirm(`「${who}」已绑定到「${existing.targetKey}」，保存将覆盖为「${targetKey}」。确定？`)) return
+  }
   try {
     await apiJson('/api/flow/subflow-bindings', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1436,6 +1605,8 @@ async function saveBinding (root) {
 async function deleteBinding (id) {
   const key = state.bindingDialog?.calledKey
   if (!key || !id) return
+  // U2：删除组织绑定不可恢复，加确认（对齐 deleteVersion）。
+  if (typeof window !== 'undefined' && window.confirm && !window.confirm('确认删除该组织绑定？删除后该组织将沿组织树继承或落默认绑定。')) return
   try {
     await apiJson('/api/flow/subflow-bindings/id/' + enc(id), { method: 'DELETE' })
     await reloadBindings(key)
@@ -1462,7 +1633,7 @@ async function activateVersion (version) {
   const key = state.versionDialog?.key || state.selectedKey
   if (!key) return
   try {
-    await apiJson('/api/flow/definitions/' + enc(key) + '/versions/' + version + '/activate', {
+    const r = await apiJson('/api/flow/definitions/' + enc(key) + '/versions/' + version + '/activate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
     })
     state.versionError = ''
@@ -1470,7 +1641,7 @@ async function activateVersion (version) {
     state.selectedVersion[key] = version
     await loadDef(key, version)       // 画布切到新当前版本
     refreshContentChrome()
-    toast('v' + version + ' 已设为当前版本（重启服务装载生效）')
+    toast('v' + version + (r && r.hotLoaded ? ' 已设为当前版本并热装载，立即生效' : ' 已设为当前版本（热装载失败，重启后生效）'))
   } catch (e) { state.versionError = '设为当前失败: ' + e.message; refreshContentChrome() }
 }
 
@@ -1692,6 +1863,8 @@ async function bootCanvas (root, host) {
       if (state.__badgeRaf) cancelAnimationFrame(state.__badgeRaf)
       state.__badgeRaf = requestAnimationFrame(() => { state.__badgeRaf = null; renderNodeBadges() })
     })
+    // U1：命令栈变化 = 有未保存编辑。用户操作（增删节点/连线/属性）都经 commandStack。
+    state.modeler.on('commandStack.changed', () => { if (!state.__loadingDiagram) state.dirty = true })
     // 装当前选中定义 或 空白
     if (state.selectedKey) {
       try {
@@ -1724,22 +1897,34 @@ function waitForSize (el, tries = 40) {
 async function openDiagram (xml) {
   if (!state.modeler) return
   try {
-    // 兼容旧图：DB 里此前存的图可能没声明 xmlns:cmx（本次修复前铸的），
-    // 一旦用户在其上重新绑定表单/子流程键，cmx:* 属性会在 saveXML 时被 moddle 静默丢弃。
-    // 载入前补声明该命名空间即可让 cmx:formKey / cmx:calledKey 等正常回写。幂等，已声明则不动。
+    // 兼容旧图/导入图：可能没声明 xmlns:cmx 或 xmlns:flowable。缺声明时在其上配办理人/子流程键/
+    // 会签集合，cmx:* 与 flowable:* 属性会在 saveXML 时被 bpmn-js moddle 静默丢弃（E1 静默数据丢失）。
+    // 载入前补齐两个命名空间声明即可正常回写。幂等，已声明则不动；兼容 <definitions> 各前缀。
+    const defTagRe = /<(?:\w+:)?definitions\b/
     if (!/xmlns:cmx\s*=/.test(xml)) {
-      xml = xml.replace(/(<bpmn:definitions\b)/, '$1 xmlns:cmx="http://cmx/flow"')
+      xml = xml.replace(defTagRe, '$& xmlns:cmx="http://cmx/flow"')
+    }
+    if (!/xmlns:flowable\s*=/.test(xml)) {
+      xml = xml.replace(defTagRe, '$& xmlns:flowable="http://flowable.org/bpmn"')
     }
     const noDI = !/BPMNDiagram|BPMNPlane/i.test(xml)
     let toImport = xml
     if (noDI) { toImport = layoutXml(xml) }
     // ⑤ 从 XML 读出变量声明（模块外存 state.varSchema，避免 bpmn-js moddle 丢弃扩展元素）。
     readVarSchemaFromXml(xml)
+    // U1：载入期间 commandStack 变化不算「用户编辑」，避免刚加载就标脏。
+    state.__loadingDiagram = true
     await state.modeler.importXML(toImport)
+    state.subMode = {}          // 换图清空子流程模式记忆（F5 的 per-el 记忆按当前图作用域）
     if (noDI) relayoutConnections()
     // 下一帧再 fit：importXML 后 bpmn-js 的图形 bbox 要等一帧才算准，同帧 fit 会读到空 bbox 只框住起点。
-    requestAnimationFrame(() => { fitView(); renderNodeBadges() })
-  } catch (err) { toast('加载失败: ' + err.message); console.error(err) }
+    requestAnimationFrame(() => { fitView(); renderNodeBadges(); state.__loadingDiagram = false; state.dirty = false })
+  } catch (err) {
+    state.__loadingDiagram = false
+    // E5：导入/加载失败画布可能留白，给明确指引（非法 BPMN 常见）。
+    toast('加载失败（画布可能空白）: ' + err.message + ' — 请检查 XML 合法性或点「新建」重来')
+    console.error(err)
+  }
 }
 
 // ① 业务化节点徽章：用 bpmn-js 官方 overlays 给节点叠加「一眼可辨」的类型徽标（会签/或签/
@@ -1979,6 +2164,11 @@ function applyProp (prop, value) {
     else if (prop === 'candidateGroups') modeling.updateProperties(el, { 'flowable:candidateGroups': value || undefined })
     else if (prop === 'calledElement') modeling.updateProperties(el, { calledElement: value || undefined })
     else if (prop === 'calledKey') setCalledKey(el, value)
+    else if (prop === 'delegate') setAttrKey(el, 'flowable:delegateExpression', value, ['flowable:delegateExpression', 'delegateExpression', 'flowable:class', 'class', 'cmx:delegate', 'delegate', 'type'])
+    else if (prop === 'decisionRef') setAttrKey(el, 'flowable:decisionRef', value, ['flowable:decisionRef', 'decisionRef', 'cmx:decision', 'decision'])
+    else if (prop === 'messageName') setAttrKey(el, 'cmx:message', value, ['cmx:message', 'message'])
+    else if (prop === 'correlationVar') setAttrKey(el, 'cmx:correlationVar', value, ['cmx:correlationVar', 'correlationVar'])
+    else if (prop === 'timerDuration') setTimerDuration(el, value)
     else if (prop === 'formKey' || prop === 'formMode' || prop === 'formFields') setFormAttr(el, prop, value)
     else if (prop === 'cc') {
       // 抄送：走 cmx:cc 扩展属性（编译器按本地名 cc 解析）。
@@ -2086,9 +2276,12 @@ function bindConditionBuilder (root) {
         const r = state.condRows[i]; if (!r) return
         r[f] = (inp.type === 'checkbox') ? inp.checked : inp.value
         pushCondToModel()
-        // 只在需要改变布局（valIsVar 影响 placeholder、fn 无影响）时重渲；变量/值输入避免打断输入焦点。
-        if (inp.type === 'checkbox' || f === 'op' || f === 'conn' || f === 'fn') updateCondPreview(root)
-        else updateCondPreview(root)
+        // F7：勾「变量」切换值输入框占位（值↔变量名）——就地改 placeholder，不整体重渲以保留焦点。
+        if (f === 'valIsVar') {
+          const valInp = rowEl.querySelector('[data-cond-f="val"]')
+          if (valInp) valInp.placeholder = r.valIsVar ? '变量名' : '值'
+        }
+        updateCondPreview(root)
       })
     })
   })
@@ -2294,7 +2487,16 @@ async function loadDefs () {
 
 // 加载定义到画布。version 传具体版本号则载入该历史版本（只读快照，可另存草稿覆盖）；
 // 不传/undefined 用该定义当前应展示版本（见 defVersion），null 明确取草稿。
+// U1：有未保存编辑时确认丢弃。返回 true=可继续（无脏或用户确认丢弃），false=取消。
+function confirmDiscard (action) {
+  if (!state.dirty) return true
+  const msg = `当前流程有未保存的改动，${action || '继续'}将丢弃这些改动。确定继续吗？`
+  try { return (typeof window !== 'undefined' && window.confirm) ? window.confirm(msg) : true }
+  catch { return true }
+}
+
 async function loadDef (key, version) {
+  if (!confirmDiscard('切换定义')) return
   try {
     const d = state.definitions.find((x) => x.key === key)
     let v = version
@@ -2327,6 +2529,7 @@ function syncNameInput () {
 }
 
 async function newDiagram () {
+  if (!confirmDiscard('新建流程')) return
   state.selectedKey = null
   state.name = '新建流程'
   // 新建流程默认继承 explorer 当前 DAM 过滤（在哪个模块下看，就归到哪个模块）。
@@ -2337,6 +2540,9 @@ async function newDiagram () {
 }
 
 async function getXml () {
+  // E4：modeler 未就绪时（bootCanvas 异步未完成就点保存/发布/导出/校验）给明确报错，
+  // 而非「Cannot read properties of null」这类困惑提示。
+  if (!state.modeler) throw new Error('画布尚未就绪，请稍候再试')
   const { xml } = await state.modeler.saveXML({ format: true })
   // ⑤ 把模块外维护的变量声明注回 XML（bpmn-js 不认 <cmx:varSchema> 扩展元素，故 saveXML 后手工注入）。
   return injectVarSchemaIntoXml(xml)
@@ -2362,6 +2568,7 @@ async function doExport () {
 // 导入 BPMN XML 文件 → 载入画布为新草稿（不覆盖现有定义；导入后另存为新流程）。
 async function doImport (file) {
   if (!file) return
+  if (!confirmDiscard('导入')) return
   try {
     const xml = await file.text()
     if (!/<(bpmn:)?definitions/i.test(xml)) { toast('导入失败: 不是 BPMN XML'); return }
@@ -2473,6 +2680,7 @@ async function doSave () {
       }),
     })
     state.selectedKey = r.key
+    state.dirty = false   // U1：保存成功清脏
     toast('草稿已保存: ' + r.key + '（后端编译校验通过）')
     await loadDefs()
     refreshContentChrome()
@@ -2629,7 +2837,7 @@ function styleCss () {
   .flow-field input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
   .flow-hint{font-size:11px;color:var(--muted);margin-top:3px} .flow-sec{font-size:11px;font-weight:800;color:var(--brand-d);text-transform:uppercase;margin:14px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--line-soft)}
   .flow-empty{display:flex;flex-direction:column;align-items:center;gap:8px;color:var(--muted);font-size:12.5px;padding:36px 16px;text-align:center}
-  .flow-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);background:#0d1117;color:#fff;padding:9px 16px;border-radius:9px;font-size:12.5px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s;z-index:20}
+  .flow-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);background:#0d1117;color:#fff;padding:9px 16px;border-radius:9px;font-size:12.5px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s;z-index:20;max-width:min(88%,520px);white-space:normal;line-height:1.5;text-align:center;box-shadow:0 6px 20px rgba(0,0,0,.28)}
   .flow-toast.show{opacity:1}
   /* 分支条件可视化构造器（P2-c） */
   .flow-cond{margin-bottom:12px}

@@ -401,6 +401,42 @@ pub struct PublishReq {
     published_by: Option<String>,
 }
 
+/// H1 热装载：取指定版本的 XML → 编译 → deploy 到运行引擎 + 刷新 rt.definitions。
+/// 返回是否成功热装载。任一步失败仅告警不回滚（版本已落库）。publish/activate 共用。
+async fn hot_load_version(rt: &FlowRuntime, key: &str, version: i32) -> bool {
+    match rt.def_svc.get_version(key, version).await {
+        Ok(Some(ver)) => match cmx_flow_bpmn::compile(&ver.bpmn_xml) {
+            Ok(def) => {
+                if let Err(e) = rt.engine.deploy(def.clone()) {
+                    tracing::warn!(key = %key, error = %e, "热装载 deploy 失败");
+                    false
+                } else {
+                    let mut defs = rt.definitions.write().await;
+                    if let Some(slot) = defs.iter_mut().find(|d| d.key == def.key) {
+                        *slot = def;
+                    } else {
+                        defs.push(def);
+                    }
+                    tracing::info!(key = %key, version, "已热装载定义版本");
+                    true
+                }
+            }
+            Err(e) => {
+                tracing::warn!(key = %key, error = %e, "热装载编译失败");
+                false
+            }
+        },
+        Ok(None) => {
+            tracing::warn!(key = %key, version, "热装载取版本 XML 为空");
+            false
+        }
+        Err(e) => {
+            tracing::warn!(key = %key, error = %e, "热装载取版本失败");
+            false
+        }
+    }
+}
+
 /// 设计器：发布（草稿 → 版本 +1）。**H1：发布即热装载到运行引擎，无需重启。**
 pub async fn publish_definition(
     Path(key): Path<String>,
@@ -413,33 +449,7 @@ pub async fn publish_definition(
         .await
         .map_err(def_err)?;
 
-    // H1 热装载：取刚发布版本的 XML → 编译 → deploy 到运行引擎（deploy 取 &self，Arc 后仍可热更）。
-    // 同步刷新 rt.definitions（前端画图列表）。任一步失败仅告警，不回滚发布（已落库）。
-    let mut hot_loaded = false;
-    match rt.def_svc.get_version(&key, version).await {
-        Ok(Some(ver)) => match cmx_flow_bpmn::compile(&ver.bpmn_xml) {
-            Ok(def) => {
-                if let Err(e) = rt.engine.deploy(def.clone()) {
-                    tracing::warn!(key = %key, error = %e, "热装载 deploy 失败");
-                } else {
-                    // 刷新前端定义列表：同 key 覆盖，否则追加（tokio RwLock）。
-                    {
-                        let mut defs = rt.definitions.write().await;
-                        if let Some(slot) = defs.iter_mut().find(|d| d.key == def.key) {
-                            *slot = def;
-                        } else {
-                            defs.push(def);
-                        }
-                    }
-                    hot_loaded = true;
-                    tracing::info!(key = %key, version, "已热装载新发布定义");
-                }
-            }
-            Err(e) => tracing::warn!(key = %key, error = %e, "热装载编译失败"),
-        },
-        Ok(None) => tracing::warn!(key = %key, version, "热装载取版本 XML 为空"),
-        Err(e) => tracing::warn!(key = %key, error = %e, "热装载取版本失败"),
-    }
+    let hot_loaded = hot_load_version(&rt, &key, version).await;
 
     Ok(Json(ApiResp::ok(json!({
         "key": key,
@@ -484,10 +494,13 @@ pub async fn activate_definition_version(
         .activate_version(&key, version)
         .await
         .map_err(def_err)?;
+    // U3：激活即热装载该版本到运行引擎（与 publish 一致），无需重启。
+    let hot_loaded = hot_load_version(&rt, &key, version).await;
     Ok(Json(ApiResp::ok(json!({
         "key": key,
         "activeVersion": version,
-        "note": "已设为当前版本；重启服务后引擎装载生效",
+        "hotLoaded": hot_loaded,
+        "note": if hot_loaded { "已设为当前版本并热装载，立即生效" } else { "已设为当前版本；热装载失败，重启后生效" },
     }))))
 }
 
