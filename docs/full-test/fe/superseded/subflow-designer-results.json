@@ -1,0 +1,80 @@
+[
+  {
+    "id": "SD-explorer-nomain",
+    "ok": true,
+    "desc": "explorer 含主流程(travel_expense 等)",
+    "detail": "mains present"
+  },
+  {
+    "id": "SD-explorer-nosubflow",
+    "ok": true,
+    "desc": "explorer 不含子流程(sub_*/fin_review_*)",
+    "detail": "subflows hidden"
+  },
+  {
+    "id": "SD-toggle-exists",
+    "ok": true,
+    "desc": "「显示子流程」开关存在",
+    "detail": ""
+  },
+  {
+    "id": "SD-toggle-shows",
+    "ok": true,
+    "desc": "开关打开后子流程出现",
+    "detail": "now 30 defs"
+  },
+  {
+    "id": "SD-callact-select",
+    "ok": true,
+    "desc": "选中 fin_review callActivity",
+    "detail": ""
+  },
+  {
+    "id": "SD-editbtn",
+    "ok": true,
+    "desc": "属性面板「编辑子流程」按钮存在且可用",
+    "detail": "present=true disabled=false"
+  },
+  {
+    "id": "SD-overlay-open",
+    "ok": true,
+    "desc": "全屏子流程编辑器浮层打开",
+    "detail": ""
+  },
+  {
+    "id": "SD-overlay-crumb",
+    "ok": true,
+    "desc": "面包屑显示 主流程›子流程",
+    "detail": "差旅报销申请 › 子流程(组织路由 fin_review) › 总部财务三级复核"
+  },
+  {
+    "id": "SD-variant-sidebar",
+    "ok": true,
+    "desc": "变体侧栏列出组织变体(≥2)",
+    "detail": "variants=[\"● 总部→ fin_review_hq\",\"○ 上海财务部→ fin_review_branch\",\"● 默认（兜底）→ fin_review_hq\"]"
+  },
+  {
+    "id": "SD-subcanvas",
+    "ok": true,
+    "desc": "子流程画布渲染 SVG",
+    "detail": "svg=3"
+  },
+  {
+    "id": "SD-variant-switch",
+    "ok": true,
+    "desc": "切换变体后画布仍渲染(载入了目标子流程)",
+    "detail": "switched→fin_review_branch on=fin_review_branch svg=3"
+  },
+  {
+    "id": "SD-close",
+    "ok": true,
+    "desc": "关闭浮层后主画布原样保留",
+    "detail": "maskGone=true mainFinReview=1"
+  },
+  {
+    "id": "SD-noerr",
+    "ok": true,
+    "desc": "全程无 pageerror",
+    "detail": ""
+  }
+]

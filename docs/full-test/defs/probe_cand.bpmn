@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:cmx="http://cmx.io/bpmn" xmlns:flowable="http://flowable.org/bpmn" targetNamespace="http://cmx.io/flow/test" id="d_probe_cand">
+  <bpmn:process id="probe_cand" name="候选人解析探针" isExecutable="true">
+    <bpmn:startEvent id="s"><bpmn:outgoing>f1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="t_role_pool" name="财务会办(角色多人)" cmx:candidates="role(finance)"><bpmn:incoming>f1</bpmn:incoming><bpmn:outgoing>f2</bpmn:outgoing></bpmn:userTask>
+    <bpmn:userTask id="t_role_one" name="出纳(角色单人)" cmx:candidates="role(cashier)"><bpmn:incoming>f2</bpmn:incoming><bpmn:outgoing>f3</bpmn:outgoing></bpmn:userTask>
+    <bpmn:userTask id="t_pos_one" name="CFO(岗位单人)" cmx:candidates="position(cfo)"><bpmn:incoming>f3</bpmn:incoming><bpmn:outgoing>f4</bpmn:outgoing></bpmn:userTask>
+    <bpmn:userTask id="t_org" name="北京财务部(部门)" cmx:candidates="org(fin_bj)"><bpmn:incoming>f4</bpmn:incoming><bpmn:outgoing>f5</bpmn:outgoing></bpmn:userTask>
+    <bpmn:userTask id="t_leader" name="部门领导" cmx:candidates="orgLeader(fin_bj)"><bpmn:incoming>f5</bpmn:incoming><bpmn:outgoing>f6</bpmn:outgoing></bpmn:userTask>
+    <bpmn:userTask id="t_init" name="回发起人" cmx:candidates="initiator"><bpmn:incoming>f6</bpmn:incoming><bpmn:outgoing>f7</bpmn:outgoing></bpmn:userTask>
+    <bpmn:endEvent id="e"><bpmn:incoming>f7</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="t_role_pool"/>
+    <bpmn:sequenceFlow id="f2" sourceRef="t_role_pool" targetRef="t_role_one"/>
+    <bpmn:sequenceFlow id="f3" sourceRef="t_role_one" targetRef="t_pos_one"/>
+    <bpmn:sequenceFlow id="f4" sourceRef="t_pos_one" targetRef="t_org"/>
+    <bpmn:sequenceFlow id="f5" sourceRef="t_org" targetRef="t_leader"/>
+    <bpmn:sequenceFlow id="f6" sourceRef="t_leader" targetRef="t_init"/>
+    <bpmn:sequenceFlow id="f7" sourceRef="t_init" targetRef="e"/>
+  </bpmn:process>
+</bpmn:definitions>

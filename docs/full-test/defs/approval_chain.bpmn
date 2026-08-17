@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:cmx="http://cmx.io/bpmn" xmlns:flowable="http://flowable.org/bpmn" targetNamespace="http://cmx.io/flow/test" id="d_approval_chain">
+  <bpmn:process id="approval_chain" name="三级审批链" isExecutable="true">
+    <bpmn:startEvent id="s"><bpmn:outgoing>f1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="l1" name="一级审批(专员)" flowable:assignee="u_fin1"><bpmn:incoming>f1</bpmn:incoming><bpmn:outgoing>f2</bpmn:outgoing></bpmn:userTask>
+    <bpmn:userTask id="l2" name="二级审批(经理)" flowable:assignee="u_bjlead"><bpmn:incoming>f2</bpmn:incoming><bpmn:outgoing>f3</bpmn:outgoing></bpmn:userTask>
+    <bpmn:userTask id="l3" name="三级审批(总监)" flowable:assignee="u_cfo"><bpmn:incoming>f3</bpmn:incoming><bpmn:outgoing>f4</bpmn:outgoing></bpmn:userTask>
+    <bpmn:endEvent id="e"><bpmn:incoming>f4</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="l1"/>
+    <bpmn:sequenceFlow id="f2" sourceRef="l1" targetRef="l2"/>
+    <bpmn:sequenceFlow id="f3" sourceRef="l2" targetRef="l3"/>
+    <bpmn:sequenceFlow id="f4" sourceRef="l3" targetRef="e"/>
+  </bpmn:process>
+</bpmn:definitions>

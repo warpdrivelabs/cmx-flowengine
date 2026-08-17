@@ -161,6 +161,27 @@ pub async fn list_design_definitions(
     let recs = rt.def_svc.list().await.map_err(def_err)?;
     // 一次取全部版本，按 def_key 分组（省 N+1）。
     let all_vers = rt.def_svc.list_all_versions().await.map_err(def_err)?;
+    // 「哪些定义是子流程」= 被引用为子流程目标的 key 集合（派生，零 schema）：
+    //   ① 固定引用：任一 callActivity 的 calledElement（遍历运行态 IR）。
+    //   ② 组织路由：任一 subflow_binding.target_definition_key（绑定表）。
+    // 被引用者不在主流程列表展示（前端据 isSubflow 过滤）。
+    let mut subflow_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    {
+        use cmx_flow_model::NodeKind;
+        let defs_ir = rt.definitions.read().await;
+        for d in defs_ir.iter() {
+            for n in &d.nodes {
+                if let NodeKind::CallActivity(ca) = &n.kind {
+                    if !ca.called_element.is_empty() {
+                        subflow_keys.insert(ca.called_element.clone());
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(targets) = rt.binding_store.list_all_target_keys().await {
+        subflow_keys.extend(targets);
+    }
     let defs: Vec<Value> = recs
         .iter()
         .map(|r| {
@@ -180,6 +201,7 @@ pub async fn list_design_definitions(
                 "versionCount": versions.len(),
                 "versions": versions,
                 "startable": true,
+                "isSubflow": subflow_keys.contains(&r.key),
             })
         })
         .collect();
@@ -910,6 +932,10 @@ pub struct CompleteReq {
     /// 审批意见（F3）：非空则随办结落意见留痕表 + 并入变量 comment。
     #[serde(default)]
     comment: Option<String>,
+    /// 办理人（谁办结的）：落审计留痕 `comment.user_id`。委托令牌模式下由平台注入登录用户；
+    /// 独立直连时由调用方传入。留空则留痕 user_id 为空（历史行为）。
+    #[serde(default)]
+    operator: Option<String>,
 }
 
 /// 办结一个任务。
@@ -933,13 +959,14 @@ pub async fn complete_task(
         .complete_task(&req.instance_id, &task_id, vars)
         .await
         .map_err(engine_err)?;
-    // F3：意见留痕（有意见/决策才记）。失败仅告警，不影响办结结果。
-    if req.comment.is_some() || req.decision.is_some() {
+    // F3：意见留痕（有意见/决策/办理人才记）。失败仅告警，不影响办结结果。
+    if req.comment.is_some() || req.decision.is_some() || req.operator.is_some() {
         let _ = crate::biz_link::insert_task_comment(
             &rt,
             &req.instance_id,
             &task_id,
             &node_bpmn_id,
+            req.operator.clone(),
             req.decision.clone(),
             req.comment.clone(),
         )
@@ -1346,6 +1373,7 @@ impl MyTasksQuery {
             definition_key: self.definition_key.clone(),
             node_bpmn_id: self.node_bpmn_id.clone(),
             state: None,
+            initiator: None,
             page: self.page.unwrap_or(1),
             page_size: self.page_size.unwrap_or(20),
         }
@@ -1363,15 +1391,33 @@ pub async fn get_my_tasks(
     let kind = q.kind.as_deref().unwrap_or("todo");
     let filter = q.to_filter();
 
-    // 分页在 DB 层做（每类独立分页；UI 不用 all 组合）。
-    let page = if kind == "claimable" {
-        crate::biz_link::claimable_tasks_by_user(&q.assignee, &filter)
+    // 分页在 DB 层做（每类独立分页）。all = 直派 + 可认领 的并集。
+    let page = match kind {
+        "claimable" => crate::biz_link::claimable_tasks_by_user(&q.assignee, &filter)
             .await
-            .map_err(msg_err)?
-    } else {
-        crate::biz_link::open_tasks_by_assignee(&q.assignee, &filter)
+            .map_err(msg_err)?,
+        "all" => {
+            // 「两者」：直派待办 ∪ 可认领（候选池）。二者天然不相交（池任务 assignee=None），
+            // 拼接 + 合计总数；仍按 task_id 轻量去重防御。
+            let mut direct = crate::biz_link::open_tasks_by_assignee(&q.assignee, &filter)
+                .await
+                .map_err(msg_err)?;
+            let claim = crate::biz_link::claimable_tasks_by_user(&q.assignee, &filter)
+                .await
+                .map_err(msg_err)?;
+            let seen: std::collections::HashSet<String> =
+                direct.rows.iter().map(|r| r.task_id.clone()).collect();
+            for r in claim.rows {
+                if !seen.contains(&r.task_id) {
+                    direct.rows.push(r);
+                }
+            }
+            direct.total += claim.total;
+            direct
+        }
+        _ => crate::biz_link::open_tasks_by_assignee(&q.assignee, &filter)
             .await
-            .map_err(msg_err)?
+            .map_err(msg_err)?,
     };
     let raws = page.rows;
 
@@ -1471,6 +1517,7 @@ impl ListQuery {
             definition_key: self.definition_key.clone(),
             node_bpmn_id: self.node_bpmn_id.clone(),
             state: self.state.clone(),
+            initiator: None,
             page: self.page.unwrap_or(1),
             page_size: self.page_size.unwrap_or(20),
         }
@@ -1535,7 +1582,9 @@ pub async fn get_initiated(
     Query(q): Query<ListQuery>,
 ) -> Result<Json<ApiResp<Value>>> {
     let rt = flow().await?;
-    let f = q.to_filter();
+    let mut f = q.to_filter();
+    // 「我发起的」= 按发起人过滤（缺陷修复：此前 user 入参被忽略，返回全部实例）。
+    f.initiator = q.user.clone().filter(|s| !s.trim().is_empty());
     let page = crate::biz_link::list_instances_paged(&f)
         .await
         .map_err(msg_err)?;

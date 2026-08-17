@@ -212,6 +212,28 @@ impl PgSubflowBindingStore {
             .collect())
     }
 
+    /// 列出所有被绑定为目标的子流程定义 key（去重）。用于「哪些定义是子流程」的判定：
+    /// 一个定义若被任一组织绑定引用为 target，即视为子流程（不在主流程列表展示）。
+    pub async fn list_all_target_keys(&self) -> Result<Vec<String>, String> {
+        let sql = "SELECT DISTINCT target_definition_key FROM cmx_flow_subflow_binding \
+                   WHERE target_definition_key IS NOT NULL AND target_definition_key <> ''";
+        let ds = query_sql(&self.db_id, None, sql, "subflow_target_keys")
+            .await
+            .map_err(|e| format!("查询子流程目标 key 失败: {e}"))?;
+        let schema = ds.schema.as_ref();
+        let mut out = Vec::with_capacity(ds.row_count());
+        for row in ds.iter() {
+            match row.get_by_name(schema, "target_definition_key") {
+                Some(DataValue::String(s)) => out.push(s.clone()),
+                Some(DataValue::ShortStr(s)) | Some(DataValue::LongStr(s)) => {
+                    out.push(s.to_string())
+                }
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
     /// upsert 一条绑定：同 (called_key, org_id) 视为同一绑定（改目标/启用/备注）。
     /// org_id 为 None 表示默认兜底绑定。返回绑定 id。
     #[allow(clippy::too_many_arguments)]

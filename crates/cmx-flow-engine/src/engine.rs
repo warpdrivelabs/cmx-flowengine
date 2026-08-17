@@ -562,6 +562,13 @@ impl<S: RuntimeStore> Engine<S> {
 
     /// 启动一个子实例：解析子流程定义 + 传入变量 → start_process_inner。若子实例立即完成，
     /// 递归调 complete_subflow 唤醒父令牌。
+    ///
+    /// 子流程解析失败（无组织绑定 / 目标未部署 / 未注入 router）**不再向上抛错**——否则父实例
+    /// 已落库、令牌停在 WaitingSubflow，start 却返回 Err 且拿不到 id，导致「不可见、不可恢复的
+    /// 僵尸实例」（Bug）。改为把该挂载点令牌停到 Incident 态并记 `__incident`（对齐 serviceTask
+    /// 失败语义）：实例保持 Active、`hasIncident=true`、运维台可见；修好绑定后 `retry_incident`
+    /// 重新激活令牌即可继续（retry 会把 Incident→Active，run_to_wait 复经 callActivity 重挂 →
+    /// launch_subflows_for 再次解析）。
     async fn launch_one_subflow(
         &self,
         parent_snap: &InstanceSnapshot,
@@ -586,24 +593,32 @@ impl<S: RuntimeStore> Engine<S> {
         // 解析子流程定义 key：
         // - called_key 非空（M5.2 逻辑名）→ 走 SubflowRouter 按组织路由；
         // - 否则用 called_element 写死值（M5.1 行为）。
+        // 解析/校验失败 → 把本挂载点令牌转 Incident（见方法注释），不抛错、不留僵尸。
         let sub_key = match &ca.called_key {
             Some(key) if !key.is_empty() => match &self.subflow_router {
-                Some(router) => router
-                    .resolve(key, org.as_deref())
-                    .await
-                    .map_err(Error::from)?,
+                Some(router) => match router.resolve(key, org.as_deref()).await {
+                    Ok(k) => k,
+                    Err(e) => {
+                        return self
+                            .mark_subflow_incident(&parent_snap.instance.id, node_bpmn, &e.to_string())
+                            .await;
+                    }
+                },
                 None => {
-                    return Err(Error::DefinitionNotFound(format!(
-                        "callActivity {node_bpmn} 用逻辑 key '{key}' 但未注入 SubflowRouter"
-                    )));
+                    let reason =
+                        format!("callActivity {node_bpmn} 用逻辑 key '{key}' 但未注入 SubflowRouter");
+                    return self
+                        .mark_subflow_incident(&parent_snap.instance.id, node_bpmn, &reason)
+                        .await;
                 }
             },
             _ => ca.called_element.clone(),
         };
         if !self.has_definition(&sub_key) {
-            return Err(Error::DefinitionNotFound(format!(
-                "子流程 {sub_key}（callActivity {node_bpmn} 调用）未部署"
-            )));
+            let reason = format!("子流程 {sub_key}（callActivity {node_bpmn} 调用）未部署");
+            return self
+                .mark_subflow_incident(&parent_snap.instance.id, node_bpmn, &reason)
+                .await;
         }
 
         // 输入变量映射：主 → 子。空映射 = 全量传递。
@@ -628,6 +643,33 @@ impl<S: RuntimeStore> Engine<S> {
             // 子实例自身也可能起始就有 callActivity，递归启动其子流程。
             self.launch_subflows_for(&child_snap.instance.id).await?;
         }
+        Ok(())
+    }
+
+    /// 子流程解析失败 → 把该 callActivity 挂载点的 WaitingSubflow 令牌转 Incident + 记原因。
+    /// 实例保持 Active、可见（hasIncident）、可 retry_incident 恢复。对齐 serviceTask 失败语义。
+    async fn mark_subflow_incident(
+        &self,
+        instance_id: &str,
+        node_bpmn: &str,
+        reason: &str,
+    ) -> Result<()> {
+        let mut snap = self.store.load_snapshot(instance_id).await?;
+        let now = self.clock.now();
+        let retries = record_incident(&mut snap.instance.variables, node_bpmn, reason);
+        // 把本挂载点（同一 callActivity 节点）仍在 WaitingSubflow 的令牌转 Incident。
+        for tok in snap.tokens.iter_mut() {
+            if tok.node_bpmn_id == node_bpmn && tok.state == TokenState::WaitingSubflow {
+                tok.state = TokenState::Incident;
+                tok.updated_at = now;
+            }
+        }
+        snap.instance.updated_at = now;
+        self.store.save_snapshot(&snap).await?;
+        tracing::warn!(
+            instance = %instance_id, node = %node_bpmn, retries, reason,
+            "子流程解析失败 → Incident（实例保留，修绑定后 retry_incident 恢复）"
+        );
         Ok(())
     }
 
@@ -1331,40 +1373,70 @@ impl<S: RuntimeStore> Engine<S> {
         self.run_to_wait(&def, &mut snapshot, now).await?;
         snapshot.instance.updated_at = now;
         self.store.save_snapshot(&snapshot).await?;
+        // 子流程解析类 incident：令牌重激活后经 run_to_wait 会重新停到 WaitingSubflow，
+        // 需再跑一遍子流程启动（绑定已修好则这次能解析成功）。对 serviceTask incident 无副作用。
+        let snapshot = self.launch_subflows_for(instance_id).await?;
         Ok(Self::result_of(&snapshot))
     }
 
     /// 挂起实例（A7）——暂停一个运行中实例：令牌/任务保留，拒绝一切办理动作，直到 resume。
     ///
     /// 幂等：非 Active 实例（已挂起/完成/终止）直接返回其视图。审批场景：争议冻结、等外部裁决。
-    pub async fn suspend_process(&self, instance_id: &str) -> Result<ExecutionResult> {
-        let mut snapshot = self.store.load_snapshot(instance_id).await?;
-        if snapshot.instance.state != InstanceState::Active {
-            return Ok(Self::result_of(&snapshot));
-        }
-        snapshot.instance.state = InstanceState::Suspended;
-        snapshot.instance.updated_at = self.clock.now();
-        self.store.save_snapshot(&snapshot).await?;
-        tracing::info!(instance = %instance_id, "实例已挂起");
-        Ok(Self::result_of(&snapshot))
+    pub fn suspend_process<'a>(
+        &'a self,
+        instance_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ExecutionResult>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let mut snapshot = self.store.load_snapshot(instance_id).await?;
+            if snapshot.instance.state != InstanceState::Active {
+                return Ok(Self::result_of(&snapshot));
+            }
+            // 级联挂起运行中的子实例（父冻结，子也该冻结，否则子仍可办理）。
+            let children = self.store.find_child_instances(instance_id).await?;
+            for child in &children {
+                if child.state == InstanceState::Active {
+                    self.suspend_process(&child.id).await?;
+                }
+            }
+            snapshot.instance.state = InstanceState::Suspended;
+            snapshot.instance.updated_at = self.clock.now();
+            self.store.save_snapshot(&snapshot).await?;
+            tracing::info!(instance = %instance_id, "实例已挂起（含级联子实例）");
+            Ok(Self::result_of(&snapshot))
+        })
     }
 
     /// 恢复实例（A7）——把挂起的实例转回 Active，可继续办理。
     ///
     /// 幂等：非 Suspended 实例直接返回其视图。恢复后推进任何 Active 令牌。
-    pub async fn resume_process(&self, instance_id: &str) -> Result<ExecutionResult> {
-        let mut snapshot = self.store.load_snapshot(instance_id).await?;
-        if snapshot.instance.state != InstanceState::Suspended {
-            return Ok(Self::result_of(&snapshot));
-        }
-        let def = self.get_definition(&snapshot.instance.definition_key)?;
-        let now = self.clock.now();
-        snapshot.instance.state = InstanceState::Active;
-        snapshot.instance.updated_at = now;
-        self.run_to_wait(&def, &mut snapshot, now).await?;
-        self.store.save_snapshot(&snapshot).await?;
-        tracing::info!(instance = %instance_id, "实例已恢复");
-        Ok(Self::result_of(&snapshot))
+    /// 级联：一并恢复因父挂起而被级联挂起的子实例（与 suspend 对称）。
+    pub fn resume_process<'a>(
+        &'a self,
+        instance_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ExecutionResult>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let mut snapshot = self.store.load_snapshot(instance_id).await?;
+            if snapshot.instance.state != InstanceState::Suspended {
+                return Ok(Self::result_of(&snapshot));
+            }
+            let def = self.get_definition(&snapshot.instance.definition_key)?;
+            let now = self.clock.now();
+            // 级联恢复被级联挂起的子实例。
+            let children = self.store.find_child_instances(instance_id).await?;
+            for child in &children {
+                if child.state == InstanceState::Suspended {
+                    self.resume_process(&child.id).await?;
+                }
+            }
+            snapshot.instance.state = InstanceState::Active;
+            snapshot.instance.updated_at = now;
+            self.run_to_wait(&def, &mut snapshot, now).await?;
+            self.store.save_snapshot(&snapshot).await?;
+            tracing::info!(instance = %instance_id, "实例已恢复（含级联子实例）");
+            Ok(Self::result_of(&snapshot))
+        })
     }
 
     /// 自由跳转（A7）——管理员把实例令牌强制移到任意用户任务节点重新办理。
@@ -1628,43 +1700,58 @@ impl<S: RuntimeStore> Engine<S> {
     }
 
     /// 幂等：已处于终态的实例直接返回其视图。
-    pub async fn cancel_process(
-        &self,
-        instance_id: &str,
+    ///
+    /// 级联：取消父实例时，其运行中（非终态）的子流程实例一并取消（递归到孙…）。否则子流程
+    /// 会被孤立（父 Terminated 而子仍 Active，继续占用待办）。用 Box::pin 支持递归 async。
+    pub fn cancel_process<'a>(
+        &'a self,
+        instance_id: &'a str,
         reason: Option<String>,
-    ) -> Result<ExecutionResult> {
-        let mut snapshot = self.store.load_snapshot(instance_id).await?;
-        if snapshot.instance.state.is_terminal() {
-            return Ok(Self::result_of(&snapshot));
-        }
-
-        let now = self.clock.now();
-        // 全部未结束令牌置 Ended。
-        for tok in snapshot.tokens.iter_mut() {
-            if tok.state != TokenState::Ended {
-                tok.state = TokenState::Ended;
-                tok.updated_at = now;
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ExecutionResult>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let mut snapshot = self.store.load_snapshot(instance_id).await?;
+            if snapshot.instance.state.is_terminal() {
+                return Ok(Self::result_of(&snapshot));
             }
-        }
-        // 丢弃未办结任务（作废）；已办结任务保留供归档。
-        snapshot.tasks.retain(|t| t.completed);
-        // 收口所有未完成的多实例域。
-        for s in snapshot.mi_scopes.iter_mut() {
-            s.finished = true;
-        }
-        // 清空所有未触发的定时器作业（实例已终止，定时器无意义）。
-        snapshot.jobs.clear();
-        // 清空候选池（实例已终止，待认领无意义）。
-        snapshot.candidates.clear();
-        if let Some(r) = reason {
-            snapshot.instance.variables.set("_cancelReason", json!(r));
-        }
-        snapshot.instance.state = InstanceState::Terminated;
-        snapshot.instance.ended_at = Some(now);
-        snapshot.instance.updated_at = now;
 
-        self.store.save_snapshot(&snapshot).await?;
-        Ok(Self::result_of(&snapshot))
+            let now = self.clock.now();
+            // 先级联取消运行中的子实例（父终止，子不该继续跑）。
+            let children = self.store.find_child_instances(instance_id).await?;
+            for child in &children {
+                if !child.state.is_terminal() {
+                    self.cancel_process(&child.id, Some("父实例取消，级联终止".into()))
+                        .await?;
+                }
+            }
+
+            // 全部未结束令牌置 Ended。
+            for tok in snapshot.tokens.iter_mut() {
+                if tok.state != TokenState::Ended {
+                    tok.state = TokenState::Ended;
+                    tok.updated_at = now;
+                }
+            }
+            // 丢弃未办结任务（作废）；已办结任务保留供归档。
+            snapshot.tasks.retain(|t| t.completed);
+            // 收口所有未完成的多实例域。
+            for s in snapshot.mi_scopes.iter_mut() {
+                s.finished = true;
+            }
+            // 清空所有未触发的定时器作业（实例已终止，定时器无意义）。
+            snapshot.jobs.clear();
+            // 清空候选池（实例已终止，待认领无意义）。
+            snapshot.candidates.clear();
+            if let Some(r) = reason {
+                snapshot.instance.variables.set("_cancelReason", json!(r));
+            }
+            snapshot.instance.state = InstanceState::Terminated;
+            snapshot.instance.ended_at = Some(now);
+            snapshot.instance.updated_at = now;
+
+            self.store.save_snapshot(&snapshot).await?;
+            Ok(Self::result_of(&snapshot))
+        })
     }
 
     /// 撤回 / 取回（④）：发起人在下游未处理时把流程拉回发起处，可改后重交。实例保持 ACTIVE。

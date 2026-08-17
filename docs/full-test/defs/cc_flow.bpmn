@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:cmx="http://cmx.io/bpmn" xmlns:flowable="http://flowable.org/bpmn" targetNamespace="http://cmx.io/flow/test" id="d_cc_flow">
+  <bpmn:process id="cc_flow" name="带抄送的审批" isExecutable="true">
+    <bpmn:startEvent id="s"><bpmn:outgoing>f1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="apply" name="经理审批(抄送审计)" flowable:assignee="u_bjlead" cmx:cc="u_auditor1">
+      <bpmn:incoming>f1</bpmn:incoming><bpmn:outgoing>f2</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:userTask id="final" name="终审(抄送角色auditor)" flowable:assignee="u_cfo" cmx:cc="role(auditor)">
+      <bpmn:incoming>f2</bpmn:incoming><bpmn:outgoing>f3</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="e"><bpmn:incoming>f3</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="apply"/>
+    <bpmn:sequenceFlow id="f2" sourceRef="apply" targetRef="final"/>
+    <bpmn:sequenceFlow id="f3" sourceRef="final" targetRef="e"/>
+  </bpmn:process>
+</bpmn:definitions>

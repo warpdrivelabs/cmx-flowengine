@@ -1,0 +1,109 @@
+########## cmx-flowengine 子流程全量测试 2026-08-16 17:10:14 ##########
+前置：确保 seed-iam.sql + seed-org-deep.sql 已灌、子流程定义已部署、dept_review 绑定已建
+════════ SUB1: 主流程上多个子流程（串行/并行多挂载）════════
+--- SUB1-A 串行 3 子流程（依次执行）---
+起始: {"state":"ACTIVE","active":["apply"]}
+[SUB1A-c1-only] PASS   串行:此刻仅1个子实例  (exp=1 act=1)
+[SUB1A-c1-def] PASS   ①挂载=sub_review  (exp=sub_review act=sub_review)
+[SUB1A-waiting] PASS   父在call1等待(waitingSubflow=true)  (exp=true act=true)
+[SUB1A-c2-def] PASS   ①完成后②挂载=sub_risk出现  (exp=true act=true)
+[SUB1A-c1-done] PASS   ①sub_review已COMPLETED  (exp=COMPLETED act=COMPLETED)
+[SUB1A-c3-routed] PASS   ③fin_review按zongbu路由→fin_review_hq  (exp=true act=true)
+[SUB1A-c3-done] PASS   ③子流程办结  (exp=COMPLETED act=COMPLETED)
+[SUB1A-parent-pay] PASS   全部子流程完→父到打款节点  (exp=pay act=pay)
+[SUB1A-done] PASS   串行多子流程主流程办结  (exp=COMPLETED act=COMPLETED)
+[SUB1A-3children] PASS   共产生3个子实例  (exp=3 act=3)
+--- SUB1-B 并行 2 子流程（同时并存）---
+[SUB1B-2children] PASS   并行:2子实例同时并存  (exp=2 act=2)
+并存子流程: [{"def":"fin_review_branch","state":"ACTIVE"},{"def":"sub_risk","state":"ACTIVE"}]
+[SUB1B-fin-routed] PASS   callFin按fin_sh路由→fin_review_branch  (exp=true act=true)
+[SUB1B-risk] PASS   callRisk→sub_risk并存  (exp=true act=true)
+[SUB1B-both-active] PASS   两子流程都ACTIVE  (exp=true act=true)
+[SUB1B-still-active] PASS   一支完另一支未完→主流程仍ACTIVE  (exp=ACTIVE act=ACTIVE)
+[SUB1B-done] PASS   两子流程齐→join合流→主流程办结  (exp=COMPLETED act=COMPLETED)
+======== 16 / 16 assertions passed ========
+PASS=16 TOTAL=16
+
+════════ SUB2: 按组织选择子流程（路由矩阵）════════
+--- SUB2-A 精确匹配 ---
+[SUB2-exact-zongbu] PASS   zongbu精确→sub_review  (exp=sub_review act=sub_review)
+[SUB2-exact-finsh] PASS   fin_sh精确→sub_risk  (exp=sub_risk act=sub_risk)
+[SUB2-exact-finbj] PASS   fin_bj精确→fin_review_hq  (exp=fin_review_hq act=fin_review_hq)
+--- SUB2-B 沿组织树 path 深层继承 ---
+  fin_bj_g1路由到: fin_review_hq
+[SUB2-inherit-deep] PASS   孙组织(自身禁用)→继承fin_bj→fin_review_hq  (exp=fin_review_hq act=fin_review_hq)
+--- SUB2-C 独立根不误继承总部 ---
+[SUB2-own-branch] PASS   广州(独立根)→自身fin_review_branch  (exp=fin_review_branch act=fin_review_branch)
+--- SUB2-D 默认兜底（无匹配组织）---
+  未绑定org路由到: sub_review
+[SUB2-default] PASS   无匹配组织→默认兜底sub_review  (exp=sub_review act=sub_review)
+--- SUB2-E 禁用绑定被跳过 ---
+[SUB2-disabled-skip] PASS   禁用的精确绑定不命中(→非sub_risk)  (exp=true act=true)
+--- SUB2-F 同 main 不同 org 走不同子流程（对照）---
+  路由对照: zongbu=sub_review fin_sh=sub_risk fin_bj=fin_review_hq branch_gz=fin_review_branch
+[SUB2-diverge] PASS   同一主流程按org路由到4种不同子流程  (exp=true act=true)
+--- SUB2-G 组织路由子流程可正常办结（端到端）---
+[SUB2-e2e-child-done] PASS   路由子流程办结  (exp=COMPLETED act=COMPLETED)
+[SUB2-e2e-parent-done] PASS   路由后父流程办结  (exp=COMPLETED act=COMPLETED)
+--- SUB2-H 多个逻辑key在同一主流程各自独立路由 ---
+  fin_review@fin_sh → fin_review_branch (dept_review@fin_sh → sub_risk, 独立)
+[SUB2-multikey-indep] PASS   fin_review与dept_review对同org路由独立(fin_review@fin_sh=branch)  (exp=fin_review_branch act=fin_review_branch)
+======== 11 / 11 assertions passed ========
+PASS=11 TOTAL=11
+
+════════ SUB3: 变量映射 + 嵌套 + 子流程退回 ════════
+--- SUB3-A 父子变量映射 ---
+  子实例变量: {"applicant":"vm_user","subAmount":8888}
+[SUB3A-in-mapped] PASS   in映射:子流程subAmount=8888  (exp=8888 act=8888)
+[SUB3A-in-samename] PASS   in映射:applicant同名透传=vm_user  (exp=vm_user act=vm_user)
+[SUB3A-in-notall] PASS   in映射:未列的amount不透传(null)  (exp=null act=null)
+  回写后父变量: {"amount":8888,"applicant":"vm_user","initiator":"u_vm","reviewResult":"APPROVED"}
+[SUB3A-out-mapped] PASS   out映射:父流程reviewResult=APPROVED  (exp=APPROVED act=APPROVED)
+[SUB3A-out-notall] PASS   out映射:未列的subResult不回写(null)  (exp=null act=null)
+[SUB3A-done] PASS   变量映射主流程办结  (exp=COMPLETED act=COMPLETED)
+--- SUB3-B 三级嵌套 ---
+[SUB3B-mid] PASS   main→挂载sub_middle  (exp=true act=true)
+[SUB3B-main-wait] PASS   main在callActivity等待  (exp=true act=true)
+  嵌套链: main(2a20f741-44a4-455b-aba1-dc91b8473cc7) → mid(5d16581d-a2e1-4652-a93b-6ad9b860ebd9) → gc(30d5ee6f-c5ac-4209-80a0-829d82f2b99e)
+[SUB3B-gc] PASS   sub_middle→挂载sub_grandchild(孙)  (exp=true act=true)
+[SUB3B-mid-wait] PASS   sub_middle在其callActivity等待  (exp=true act=true)
+[SUB3B-gc-done] PASS   孙子流程办结  (exp=COMPLETED act=COMPLETED)
+[SUB3B-mid-done] PASS   孙完成逐级唤醒→中间子流程办结  (exp=COMPLETED act=COMPLETED)
+[SUB3B-main-done] PASS   逐级唤醒到顶→主流程办结  (exp=COMPLETED act=COMPLETED)
+--- SUB3-C 子流程内退回 ---
+  子流程(三级)=a90f7be1-1655-409e-b03d-5c087711e2c7
+[SUB3C-at-fin3] PASS   子流程推进到fin3  (exp=fin3 act=fin3)
+[SUB3C-sub-back] PASS   子流程内fin3退回→回到fin1  (exp=fin1 act=fin1)
+[SUB3C-parent-wait] PASS   退回期间父在call3等待不受影响  (exp=true act=true)
+[SUB3C-sub-active] PASS   退回后子流程仍ACTIVE  (exp=ACTIVE act=ACTIVE)
+======== 17 / 17 assertions passed ========
+PASS=17 TOTAL=17
+
+════════ SUB4: 子流程边界/异常 ════════
+--- SUB4-A 无绑定 ---
+  起 main_nobinding => code=1 msg=子流程路由错误: 子流程路由无解: called_key=ghost_key_no_binding or
+[SUB4A-nobind-signaled] PASS   无绑定被明确信号(code=1 或 实例卡waitingSubflow)  (exp=true act=true)
+--- SUB4-B 补绑定后重驱 ---
+  补绑定后起: code=0
+[SUB4B-rebind-ok] PASS   补默认绑定后可正常起流程(code=0)  (exp=0 act=0)
+[SUB4B-rebind-child] PASS   补绑定后子流程挂载=sub_review  (exp=sub_review act=sub_review)
+--- SUB4-C 父取消 → 子流程状态 ---
+  父=6eca5c13-1b0a-4a6b-b969-d6daad76ecfb 子=82584ec7-85b9-467e-a3e2-64fea909f97b(fin_review_hq) 取消前子态=ACTIVE
+  取消后: 父=TERMINATED 子=ACTIVE
+[SUB4C-parent-terminated] PASS   父取消→父TERMINATED  (exp=TERMINATED act=TERMINATED)
+[SUB4C-child-state-recorded] PASS   记录:父取消后子流程状态=ACTIVE(当前引擎不级联)  (exp=true act=true)
+  【设计观察】父取消未级联终止子流程(子=ACTIVE)——见报告 §设计观察
+--- SUB4-D 父挂起 → 子流程状态 ---
+  父挂起后: 父=SUSPENDED 子=ACTIVE
+[SUB4D-parent-suspended] PASS   父挂起→父SUSPENDED  (exp=SUSPENDED act=SUSPENDED)
+[SUB4D-child-recorded] PASS   记录:父挂起后子流程状态=ACTIVE(当前引擎不级联)  (exp=true act=true)
+[SUB4D-resume-flow] PASS   父恢复+子办结→父被唤醒办结  (exp=COMPLETED act=COMPLETED)
+--- SUB4-E 组织路由到单节点子流程正常收口 ---
+[SUB4E-waiting] PASS   单节点子流程:父仍WaitingSubflow(非空,不跳过)  (exp=true act=true)
+[SUB4E-done] PASS   单节点子流程办结→父办结  (exp=COMPLETED act=COMPLETED)
+======== 10 / 10 assertions passed ========
+PASS=10 TOTAL=10
+
+########## 子流程测试权威汇总 ##########
+awk: division by zero
+ source line number 1

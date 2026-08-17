@@ -1,0 +1,74 @@
+[
+  {
+    "id": "FE-DASH-load",
+    "ok": true,
+    "desc": "大盘HTML加载(title含监控/流程)",
+    "detail": "cmx-flow · 流程引擎监控大盘"
+  },
+  {
+    "id": "FE-DASH-canvas",
+    "ok": true,
+    "desc": "大盘含canvas图表(≥1)",
+    "detail": "canvas=2"
+  },
+  {
+    "id": "FE-DASH-content",
+    "ok": true,
+    "desc": "大盘渲染业务文案",
+    "detail": "len=940"
+  },
+  {
+    "id": "FE-DASH-noerr",
+    "ok": true,
+    "desc": "大盘无JS运行时错误",
+    "detail": ""
+  },
+  {
+    "id": "FE-SWAGGER-redirect-bug",
+    "ok": true,
+    "desc": "【bug】/docs(无尾斜杠)303跳转丢失/api前缀→坏URL",
+    "detail": "303->/flow/v1/docs/"
+  },
+  {
+    "id": "FE-SWAGGER-load",
+    "ok": true,
+    "desc": "Swagger UI 加载",
+    "detail": "ops=0 title=Swagger UI"
+  },
+  {
+    "id": "FE-SWAGGER-ops",
+    "ok": false,
+    "desc": "Swagger 列出端点(≥1 opblock)",
+    "detail": "opblocks=0"
+  },
+  {
+    "id": "FE-NP-design-workbench",
+    "ok": true,
+    "desc": "native-page portal.flow.design-workbench 服务合法JS+rev",
+    "detail": "srcLen=141981 rev=f7048dbc6fa76900"
+  },
+  {
+    "id": "FE-NP-todo-center",
+    "ok": true,
+    "desc": "native-page portal.flow.todo-center 服务合法JS+rev",
+    "detail": "srcLen=51098 rev=003979ef49d0f42d"
+  },
+  {
+    "id": "FE-NP-task-form",
+    "ok": true,
+    "desc": "native-page portal.flow.task-form 服务合法JS+rev",
+    "detail": "srcLen=23851 rev=ef021d9581382968"
+  },
+  {
+    "id": "FE-NP-identity-workbench",
+    "ok": true,
+    "desc": "native-page portal.flow.identity-workbench 服务合法JS+rev",
+    "detail": "srcLen=19388 rev=68407b3f6521279c"
+  },
+  {
+    "id": "FE-NP-ops-console",
+    "ok": true,
+    "desc": "native-page portal.flow.ops-console 服务合法JS+rev",
+    "detail": "srcLen=22139 rev=f0195de65c72ecc1"
+  }
+]

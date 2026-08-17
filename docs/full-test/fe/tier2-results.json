@@ -1,0 +1,37 @@
+[
+  {
+    "id": "FE-DSG-mount",
+    "ok": true,
+    "desc": "<flow-designer> 挂载并建立 shadowRoot"
+  },
+  {
+    "id": "FE-DSG-deflist",
+    "ok": true,
+    "desc": "explorer 列出并可点选定义(travel_expense)",
+    "detail": "差旅报销申请travel_expense · fico/报销/差旅\n    \n "
+  },
+  {
+    "id": "FE-DSG-canvas",
+    "ok": true,
+    "desc": "bpmn-js 画布渲染 SVG",
+    "detail": "svg=4"
+  },
+  {
+    "id": "FE-DSG-shapes",
+    "ok": true,
+    "desc": "BPMN 图元渲染(节点 shape)",
+    "detail": "shapes=4 ids=[\"new_process\",\"start\",\"start_label\"]"
+  },
+  {
+    "id": "FE-DSG-noerr",
+    "ok": true,
+    "desc": "设计器无 pageerror",
+    "detail": ""
+  },
+  {
+    "id": "FE-DSG-bpmn-loaded",
+    "ok": true,
+    "desc": "bpmn-js 库加载成功(无“加载失败”)",
+    "detail": "Failed to load resource: the server responded with a status of 404 (File not found) | Failed to load resource: the server responded with a status of 404 (File n"
+  }
+]

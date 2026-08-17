@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:flowable="http://flowable.org/bpmn" xmlns:cmx="http://cmx.io/bpmn" targetNamespace="http://cmx.io/flow/test" id="d_main_parallel_multi">
+  <bpmn:process id="main_parallel_multi" name="并行多子流程主流程" isExecutable="true">
+    <bpmn:startEvent id="s"><bpmn:outgoing>f0</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:parallelGateway id="fork" name="分发"><bpmn:incoming>f0</bpmn:incoming><bpmn:outgoing>fa</bpmn:outgoing><bpmn:outgoing>fb</bpmn:outgoing></bpmn:parallelGateway>
+    <bpmn:callActivity id="callFin" name="财务子流程(组织路由)" cmx:calledKey="fin_review"><bpmn:incoming>fa</bpmn:incoming><bpmn:outgoing>ja</bpmn:outgoing></bpmn:callActivity>
+    <bpmn:callActivity id="callRisk" name="风控子流程" calledElement="sub_risk"><bpmn:incoming>fb</bpmn:incoming><bpmn:outgoing>jb</bpmn:outgoing></bpmn:callActivity>
+    <bpmn:parallelGateway id="join" name="合流"><bpmn:incoming>ja</bpmn:incoming><bpmn:incoming>jb</bpmn:incoming><bpmn:outgoing>f9</bpmn:outgoing></bpmn:parallelGateway>
+    <bpmn:endEvent id="e"><bpmn:incoming>f9</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="f0" sourceRef="s" targetRef="fork"/>
+    <bpmn:sequenceFlow id="fa" sourceRef="fork" targetRef="callFin"/>
+    <bpmn:sequenceFlow id="fb" sourceRef="fork" targetRef="callRisk"/>
+    <bpmn:sequenceFlow id="ja" sourceRef="callFin" targetRef="join"/>
+    <bpmn:sequenceFlow id="jb" sourceRef="callRisk" targetRef="join"/>
+    <bpmn:sequenceFlow id="f9" sourceRef="join" targetRef="e"/>
+  </bpmn:process>
+</bpmn:definitions>

@@ -198,6 +198,7 @@ pub async fn insert_task_comment(
     instance_id: &str,
     task_id: &str,
     node_bpmn_id: &str,
+    operator: Option<String>,
     decision: Option<String>,
     comment: Option<String>,
 ) -> Result<(), String> {
@@ -213,7 +214,7 @@ pub async fn insert_task_comment(
         } else {
             Some(node_bpmn_id.to_string())
         }),
-        DataValue::Null, // user_id：F3 接入登录态后填当前用户
+        opt_str(operator.filter(|s| !s.trim().is_empty())), // user_id：办理人（谁办结/审批的）
         opt_str(decision),
         opt_str(comment),
         DataValue::DateTime(Utc::now()),
@@ -262,6 +263,8 @@ pub struct TodoFilter {
     pub node_bpmn_id: Option<String>,
     /// 按实例状态过滤（ACTIVE/COMPLETED/TERMINATED，仅实例类列表）。
     pub state: Option<String>,
+    /// 按发起人过滤（仅「我发起的」实例列表用；匹配实例变量 `initiator`）。空 = 不过滤。
+    pub initiator: Option<String>,
     /// 页码（1 起）。
     pub page: i64,
     /// 每页条数。
@@ -430,6 +433,13 @@ pub async fn list_instances_paged(f: &TodoFilter) -> Result<TodoPage, String> {
     }
     if let Some(st) = f.state.as_ref().filter(|s| !s.trim().is_empty()) {
         cond.push_str(&format!(" AND state = '{}'", esc(st)));
+    }
+    // 「我发起的」按发起人过滤：发起人按约定存实例变量 `initiator`（与 withdraw 护栏同源）。
+    if let Some(init) = f.initiator.as_ref().filter(|s| !s.trim().is_empty()) {
+        cond.push_str(&format!(
+            " AND (variables ->> 'initiator') = '{}'",
+            esc(init)
+        ));
     }
     if let Some(like) = f.like() {
         cond.push_str(&format!(

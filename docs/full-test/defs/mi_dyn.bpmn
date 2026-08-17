@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:cmx="http://cmx.io/bpmn" xmlns:flowable="http://flowable.org/bpmn" targetNamespace="http://cmx.io/flow/test" id="d_mi_dyn">
+  <bpmn:process id="mi_dyn" name="产品逐元素派人会签" isExecutable="true">
+    <bpmn:startEvent id="s"><bpmn:outgoing>f1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="review" name="产品负责人审核" flowable:assignee="${product.owner}">
+      <bpmn:incoming>f1</bpmn:incoming><bpmn:outgoing>f2</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics isSequential="false" flowable:collection="products" flowable:elementVariable="product">
+        <bpmn:completionCondition>${nrOfCompletedInstances == nrOfInstances}</bpmn:completionCondition>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:userTask>
+    <bpmn:endEvent id="e"><bpmn:incoming>f2</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="review"/>
+    <bpmn:sequenceFlow id="f2" sourceRef="review" targetRef="e"/>
+  </bpmn:process>
+</bpmn:definitions>

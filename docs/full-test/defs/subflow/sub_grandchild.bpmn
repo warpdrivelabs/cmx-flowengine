@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:flowable="http://flowable.org/bpmn" xmlns:cmx="http://cmx.io/bpmn" targetNamespace="http://cmx.io/flow/test" id="d_sub_grandchild">
+  <bpmn:process id="sub_grandchild" name="孙子流程" isExecutable="true">
+    <bpmn:startEvent id="s"><bpmn:outgoing>f0</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="gc" name="孙级审批" flowable:assignee="u_cfo"><bpmn:incoming>f0</bpmn:incoming><bpmn:outgoing>f1</bpmn:outgoing></bpmn:userTask>
+    <bpmn:endEvent id="e"><bpmn:incoming>f1</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="f0" sourceRef="s" targetRef="gc"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="gc" targetRef="e"/>
+  </bpmn:process>
+</bpmn:definitions>

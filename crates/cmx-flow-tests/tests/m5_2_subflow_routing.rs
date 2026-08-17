@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use cmx_flow_bpmn::compile;
 use cmx_flow_engine::{
     Engine, InMemoryStore, InstanceState, RouteError, RouteResult, RuntimeStore, SubflowRouter,
+    TokenState,
     Variables,
 };
 
@@ -193,8 +194,8 @@ async fn routed_subflow_completes_and_returns_to_main() {
 }
 
 #[tokio::test]
-async fn logical_key_without_router_errors() {
-    // 用逻辑 key 但未注入路由器 → 报错。
+async fn logical_key_without_router_incidents_not_leaks() {
+    // 用逻辑 key 但未注入路由器 → 不再抛错留僵尸实例，而是把挂载点令牌转 Incident（可见可恢复）。
     let store = InMemoryStore::new();
     let mut engine = Engine::new(store.clone());
     for xml in [MAIN_BPMN, SUB_HQ, SUB_BRANCH] {
@@ -204,17 +205,54 @@ async fn logical_key_without_router_errors() {
     let r = engine
         .start_process_org("routed_main", Variables::new(), None, Some("hq".into()))
         .await;
-    assert!(r.is_err(), "逻辑 key 无路由器应报错");
+    assert!(r.is_ok(), "无路由器不应抛错（改为 incident），实际 {r:?}");
+    let main_id = r.unwrap().instance_id;
+    let snap = store.load_snapshot(&main_id).await.unwrap();
+    assert_eq!(
+        snap.instance.state,
+        InstanceState::Active,
+        "实例保留为 Active（非终止、非丢失）"
+    );
+    assert!(
+        snap.tokens.iter().any(|t| t.state == TokenState::Incident),
+        "挂载点令牌应转 Incident（可见）"
+    );
+    assert!(
+        !snap.tokens.iter().any(|t| t.state == TokenState::WaitingSubflow),
+        "不应遗留静默的 WaitingSubflow 令牌"
+    );
+    assert_eq!(
+        store.find_child_instances(&main_id).await.unwrap().len(),
+        0,
+        "解析失败不应产生子实例"
+    );
 }
 
 #[tokio::test]
-async fn no_binding_errors() {
-    // 路由器在，但该 org 无任何绑定（含默认）→ 报错。
+async fn no_binding_incidents_and_recovers_after_bind() {
+    // 路由器在但该 org 无绑定（含默认）→ incident（不抛错）；补绑定后 retry_incident 可恢复推进。
     let router = FakeRouter::default().bind("fin_review", "hq", "fin_review_hq");
-    let (engine, _store) = engine_with_router(router);
+    let (engine, store) = engine_with_router(router);
     // org=sh 无绑定，也无默认。
     let r = engine
         .start_process_org("routed_main", Variables::new(), None, Some("sh".into()))
         .await;
-    assert!(r.is_err(), "无绑定应报错");
+    assert!(r.is_ok(), "无绑定不应抛错（改为 incident），实际 {r:?}");
+    let main_id = r.unwrap().instance_id;
+    let snap = store.load_snapshot(&main_id).await.unwrap();
+    assert_eq!(snap.instance.state, InstanceState::Active, "实例保留");
+    assert!(
+        snap.tokens.iter().any(|t| t.state == TokenState::Incident),
+        "无绑定 → incident 可见"
+    );
+    // __incident 变量应记了原因。
+    assert!(
+        snap.instance.variables.get("__incident").is_some(),
+        "incident 原因应记入 __incident"
+    );
+    assert_eq!(
+        store.find_child_instances(&main_id).await.unwrap().len(),
+        0,
+        "无绑定不产生子实例"
+    );
 }

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:cmx="http://cmx.io/bpmn" xmlns:flowable="http://flowable.org/bpmn" targetNamespace="http://cmx.io/flow/test" id="d_cs_all">
+  <bpmn:process id="cs_all" name="并行会签(全票通过)" isExecutable="true">
+    <bpmn:startEvent id="s"><bpmn:outgoing>f1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="sign" name="并行会签" flowable:assignee="${approver}">
+      <bpmn:incoming>f1</bpmn:incoming><bpmn:outgoing>f2</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics isSequential="false" flowable:collection="approvers" flowable:elementVariable="approver">
+        <bpmn:completionCondition>${nrOfCompletedInstances == nrOfInstances}</bpmn:completionCondition>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:userTask>
+    <bpmn:endEvent id="e"><bpmn:incoming>f2</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="sign"/>
+    <bpmn:sequenceFlow id="f2" sourceRef="sign" targetRef="e"/>
+  </bpmn:process>
+</bpmn:definitions>

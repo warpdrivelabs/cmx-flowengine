@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:flowable="http://flowable.org/bpmn" xmlns:cmx="http://cmx.io/bpmn" targetNamespace="http://cmx.io/flow/test" id="d_main_serial_multi">
+  <bpmn:process id="main_serial_multi" name="串行多子流程主流程" isExecutable="true">
+    <bpmn:startEvent id="s"><bpmn:outgoing>f0</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="apply" name="申请" flowable:assignee="u_fin1"><bpmn:incoming>f0</bpmn:incoming><bpmn:outgoing>f1</bpmn:outgoing></bpmn:userTask>
+    <bpmn:callActivity id="call1" name="①通用复核" calledElement="sub_review"><bpmn:incoming>f1</bpmn:incoming><bpmn:outgoing>f2</bpmn:outgoing></bpmn:callActivity>
+    <bpmn:callActivity id="call2" name="②风控" calledElement="sub_risk"><bpmn:incoming>f2</bpmn:incoming><bpmn:outgoing>f3</bpmn:outgoing></bpmn:callActivity>
+    <bpmn:callActivity id="call3" name="③财务(组织路由)" cmx:calledKey="fin_review"><bpmn:incoming>f3</bpmn:incoming><bpmn:outgoing>f4</bpmn:outgoing></bpmn:callActivity>
+    <bpmn:userTask id="pay" name="打款" flowable:assignee="u_cashier1"><bpmn:incoming>f4</bpmn:incoming><bpmn:outgoing>f5</bpmn:outgoing></bpmn:userTask>
+    <bpmn:endEvent id="e"><bpmn:incoming>f5</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="f0" sourceRef="s" targetRef="apply"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="apply" targetRef="call1"/>
+    <bpmn:sequenceFlow id="f2" sourceRef="call1" targetRef="call2"/>
+    <bpmn:sequenceFlow id="f3" sourceRef="call2" targetRef="call3"/>
+    <bpmn:sequenceFlow id="f4" sourceRef="call3" targetRef="pay"/>
+    <bpmn:sequenceFlow id="f5" sourceRef="pay" targetRef="e"/>
+  </bpmn:process>
+</bpmn:definitions>

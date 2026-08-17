@@ -1,0 +1,140 @@
+[
+  {
+    "id": "T0-multiregion",
+    "ok": true,
+    "desc": "★门户级 3 个独立 shadow root（非 demo 单组件）+ property 窄区 ~320",
+    "detail": "roots=3 propW=320"
+  },
+  {
+    "id": "T-load-main",
+    "ok": true,
+    "desc": "主流程载入且有图元",
+    "detail": "shapes=21"
+  },
+  {
+    "id": "T-sel-callactivity",
+    "ok": true,
+    "desc": "选中 callActivity fin_review",
+    "detail": ""
+  },
+  {
+    "id": "T-edit-btn",
+    "ok": true,
+    "desc": "property 出现「编辑子流程」按钮",
+    "detail": ""
+  },
+  {
+    "id": "T1-no-fixed-overlay",
+    "ok": true,
+    "desc": "★进子流程后无覆盖全屏的 position:fixed 遮罩（失控根因已除）",
+    "detail": "bigFixed=[] mask=0"
+  },
+  {
+    "id": "T2-back-reachable",
+    "ok": true,
+    "desc": "★「← 返回主流程」在 content 工具栏内可见且落在视口内（未被裁/未失控）",
+    "detail": "{\"w\":89,\"h\":33,\"top\":7,\"left\":250,\"right\":339,\"bottom\":39}"
+  },
+  {
+    "id": "T3-breadcrumb",
+    "ok": true,
+    "desc": "面包屑显示 主流程名 › 子流程名",
+    "detail": "差旅报销申请 › 复核DD-test"
+  },
+  {
+    "id": "T4-canvas-sized",
+    "ok": true,
+    "desc": "★content 画布非零尺寸（钻入复用同一画布，非 0×0 被裁）",
+    "detail": "1120×953"
+  },
+  {
+    "id": "T4-sub-rendered",
+    "ok": true,
+    "desc": "子流程图元已渲染（≥3）",
+    "detail": "shapes=13"
+  },
+  {
+    "id": "P1-save-canvas-alive",
+    "ok": true,
+    "desc": "★保存子流程后画布存活(≥3图元)+无遮罩(旧Bug A:保存毁画布 已防)",
+    "detail": "shapes=13 fixed=0"
+  },
+  {
+    "id": "P1-save-persist",
+    "ok": true,
+    "desc": "★工具栏「保存」→ subSave 真落库（名称往返）",
+    "detail": "name=\"复核DD-test\""
+  },
+  {
+    "id": "P2-publish-version",
+    "ok": true,
+    "desc": "★工具栏「发布」→ subPublish → 版本号 +1",
+    "detail": "5→6"
+  },
+  {
+    "id": "P2-publish-canvas-alive",
+    "ok": true,
+    "desc": "发布后画布存活",
+    "detail": "shapes=13"
+  },
+  {
+    "id": "T5-explorer-variants",
+    "ok": true,
+    "desc": "explorer 列出组织变体（3）+ 返回 + 新增变体下拉",
+    "detail": "variants=3 back=true newsel=true"
+  },
+  {
+    "id": "T6-variant-switch",
+    "ok": true,
+    "desc": "切换到 fin_review_branch 变体：画布重载有图元 + 高亮切换",
+    "detail": "active=fin_review_branch shapes=9"
+  },
+  {
+    "id": "T7-new-variant",
+    "ok": true,
+    "desc": "为未绑定组织新建变体：载入空模板（图元远少于变体）+ 面包屑标「新建」",
+    "detail": "org=branch_gz shapes=4 crumbSub=＋ 新建子流程"
+  },
+  {
+    "id": "P3-newvar-unique-key",
+    "ok": true,
+    "desc": "★新变体唯一 key（非 new_process）",
+    "detail": "key=fin_review_branch_gz newDefs=[\"fin_review_branch_gz\"]"
+  },
+  {
+    "id": "P3-newvar-autobind",
+    "ok": true,
+    "desc": "★保存即自动绑定到该组织",
+    "detail": "org=branch_gz→fin_review_branch_gz"
+  },
+  {
+    "id": "P3-newvar-isSubflow",
+    "ok": true,
+    "desc": "★新子流程 isSubflow=true（主列表隐藏）",
+    "detail": "isSubflow=true"
+  },
+  {
+    "id": "P3-resave-nodup",
+    "ok": true,
+    "desc": "★重存同变体不重复建定义",
+    "detail": "31→31"
+  },
+  {
+    "id": "T8-datamodel-tab",
+    "ok": true,
+    "desc": "★property「数据模型」页签可见 + 新增变量生效（内联编辑器，非遮罩）",
+    "detail": "tab=true editor=true rows=1"
+  },
+  {
+    "id": "T9-back-to-main",
+    "ok": true,
+    "desc": "★点返回：主流程图元还原（fin_review 在）+ 面包屑消失 + 无遗留全屏遮罩",
+    "detail": "mainBack=true crumbGone=true bigFixed=0"
+  },
+  {
+    "id": "T-noerr",
+    "ok": true,
+    "desc": "全程无 pageerror / 真实 4xx（favicon + 可选 DAM 注册表噪声已滤）",
+    "detail": ""
+  }
+]

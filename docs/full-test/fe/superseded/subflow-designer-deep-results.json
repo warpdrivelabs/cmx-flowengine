@@ -1,0 +1,80 @@
+[
+  {
+    "id": "T1-publish-version",
+    "ok": true,
+    "desc": "发布子流程→版本号+1",
+    "detail": "4→5"
+  },
+  {
+    "id": "T1-overlay-after-publish",
+    "ok": true,
+    "desc": "发布后浮层+子画布存活",
+    "detail": "shapes=13"
+  },
+  {
+    "id": "T2-prop-select",
+    "ok": true,
+    "desc": "子画布选中 fin1 + 属性面板可编辑",
+    "detail": "sel=true nameInput=true"
+  },
+  {
+    "id": "T2-canvas-alive-after-edit",
+    "ok": true,
+    "desc": "改属性后子画布不掉(仍13图元)",
+    "detail": "shapes=13"
+  },
+  {
+    "id": "T2-prop-roundtrip",
+    "ok": true,
+    "desc": "★属性改动经保存持久化到 XML",
+    "detail": "name persisted"
+  },
+  {
+    "id": "T2-main-preserved",
+    "ok": true,
+    "desc": "关闭后主画布保留",
+    "detail": ""
+  },
+  {
+    "id": "T3-dblclick",
+    "ok": true,
+    "desc": "★双击 callActivity 打开子流程编辑器",
+    "detail": "overlay=true"
+  },
+  {
+    "id": "T4-pick",
+    "ok": true,
+    "desc": "newvar 下拉可选 branch_gz",
+    "detail": "ok"
+  },
+  {
+    "id": "T4-newvar-unique",
+    "ok": true,
+    "desc": "新变体唯一key(非new_process)",
+    "detail": "key=fin_review_branch_gz newDefs=[\"fin_review_branch_gz\"]"
+  },
+  {
+    "id": "T4-newvar-count",
+    "ok": true,
+    "desc": "首存产生1个新定义",
+    "detail": "+1"
+  },
+  {
+    "id": "T4-resave-nodup",
+    "ok": true,
+    "desc": "★重存同变体不重复建定义",
+    "detail": "31→31"
+  },
+  {
+    "id": "T4-newvar-hidden",
+    "ok": true,
+    "desc": "★新子流程 isSubflow=true(主列表隐藏)",
+    "detail": "isSubflow=true"
+  },
+  {
+    "id": "T-noerr",
+    "ok": true,
+    "desc": "全程无 pageerror",
+    "detail": ""
+  }
+]

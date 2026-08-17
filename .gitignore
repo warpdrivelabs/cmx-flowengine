@@ -12,3 +12,6 @@
 # 本地启动配置（含 API Key / JWT 密钥，dotenvy 加载；切勿提交）
 /.env
 /.env.*
+
+# 测试套件临时转录文件
+*.tmp

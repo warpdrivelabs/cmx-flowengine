@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:flowable="http://flowable.org/bpmn"
+                  xmlns:cmx="http://cmx.io/bpmn"
+                  targetNamespace="http://cmx.io/flow/biztest"
+                  id="defs_travel_expense">
+  <bpmn:process id="travel_expense" name="差旅报销申请" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="提交报销单">
+      <bpmn:outgoing>f_start</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:userTask id="mgr" name="部门经理审批" flowable:assignee="u_mgr">
+      <bpmn:incoming>f_start</bpmn:incoming>
+      <bpmn:outgoing>f_mgr</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:exclusiveGateway id="gw_amount" name="金额判断" default="f_small">
+      <bpmn:incoming>f_mgr</bpmn:incoming>
+      <bpmn:outgoing>f_big</bpmn:outgoing>
+      <bpmn:outgoing>f_small</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:userTask id="director" name="总监审批" flowable:assignee="u_director">
+      <bpmn:incoming>f_big</bpmn:incoming>
+      <bpmn:outgoing>f_director</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:callActivity id="fin_review" name="财务复核（按组织路由）" cmx:calledKey="fin_review">
+      <bpmn:incoming>f_small</bpmn:incoming>
+      <bpmn:incoming>f_director</bpmn:incoming>
+      <bpmn:outgoing>f_fin</bpmn:outgoing>
+    </bpmn:callActivity>
+
+    <bpmn:userTask id="cashier" name="出纳打款" flowable:assignee="u_cashier">
+      <bpmn:incoming>f_fin</bpmn:incoming>
+      <bpmn:outgoing>f_cashier</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:endEvent id="end" name="报销完成">
+      <bpmn:incoming>f_cashier</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="f_start" sourceRef="start" targetRef="mgr"/>
+    <bpmn:sequenceFlow id="f_mgr" sourceRef="mgr" targetRef="gw_amount"/>
+    <bpmn:sequenceFlow id="f_big" name="大额(&gt;20000)" sourceRef="gw_amount" targetRef="director">
+      <bpmn:conditionExpression>${amount &gt; 20000}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f_small" name="小额(默认)" sourceRef="gw_amount" targetRef="fin_review"/>
+    <bpmn:sequenceFlow id="f_director" sourceRef="director" targetRef="fin_review"/>
+    <bpmn:sequenceFlow id="f_fin" sourceRef="fin_review" targetRef="cashier"/>
+    <bpmn:sequenceFlow id="f_cashier" sourceRef="cashier" targetRef="end"/>
+
+  </bpmn:process>
+</bpmn:definitions>

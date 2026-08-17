@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:flowable="http://flowable.org/bpmn" xmlns:cmx="http://cmx.io/bpmn" targetNamespace="http://cmx.io/flow/test" id="d_sub_middle">
+  <bpmn:process id="sub_middle" name="中间子流程" isExecutable="true">
+    <bpmn:startEvent id="s"><bpmn:outgoing>f0</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="mid" name="中级审批" flowable:assignee="u_bjlead"><bpmn:incoming>f0</bpmn:incoming><bpmn:outgoing>f1</bpmn:outgoing></bpmn:userTask>
+    <bpmn:callActivity id="call_gc" name="调孙子流程" calledElement="sub_grandchild"><bpmn:incoming>f1</bpmn:incoming><bpmn:outgoing>f2</bpmn:outgoing></bpmn:callActivity>
+    <bpmn:endEvent id="e"><bpmn:incoming>f2</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="f0" sourceRef="s" targetRef="mid"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="mid" targetRef="call_gc"/>
+    <bpmn:sequenceFlow id="f2" sourceRef="call_gc" targetRef="e"/>
+  </bpmn:process>
+</bpmn:definitions>

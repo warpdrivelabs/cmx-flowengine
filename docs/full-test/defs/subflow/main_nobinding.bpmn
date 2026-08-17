@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:flowable="http://flowable.org/bpmn" xmlns:cmx="http://cmx.io/bpmn" targetNamespace="http://cmx.io/flow/test" id="d_main_nobinding">
+  <bpmn:process id="main_nobinding" name="无绑定主流程" isExecutable="true">
+    <bpmn:startEvent id="s"><bpmn:outgoing>f0</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:callActivity id="callGhost" name="幽灵子流程" cmx:calledKey="ghost_key_no_binding"><bpmn:incoming>f0</bpmn:incoming><bpmn:outgoing>f1</bpmn:outgoing></bpmn:callActivity>
+    <bpmn:endEvent id="e"><bpmn:incoming>f1</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="f0" sourceRef="s" targetRef="callGhost"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="callGhost" targetRef="e"/>
+  </bpmn:process>
+</bpmn:definitions>

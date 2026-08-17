@@ -1,0 +1,31 @@
+[
+  {
+    "id": "FE-TODO-mount",
+    "ok": true,
+    "desc": "<flow-todo> 挂载并建立 shadowRoot"
+  },
+  {
+    "id": "FE-TODO-render",
+    "ok": true,
+    "desc": "待办中心渲染业务内容",
+    "detail": "len=40497"
+  },
+  {
+    "id": "FE-TODO-tabs",
+    "ok": true,
+    "desc": "待办中心含分类页签(待办/已办/我发起/抄送)",
+    "detail": "tabs=[\"<flow-to\",\"我的待办直派给我\",\"我发起的我发起的\",\"抄送我的知会给我\",\"我已办我办结过的\"]"
+  },
+  {
+    "id": "FE-TODO-rows",
+    "ok": false,
+    "desc": "u_fin1 待办列表有任务行",
+    "detail": "rows=0"
+  },
+  {
+    "id": "FE-TODO-noerr",
+    "ok": true,
+    "desc": "待办中心无 pageerror",
+    "detail": ""
+  }
+]

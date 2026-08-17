@@ -1,0 +1,38 @@
+[
+  {
+    "id": "FE-WIP-load",
+    "ok": true,
+    "desc": "载入 travel_expense 且 mgr 节点渲染",
+    "detail": "mgrShapes=1"
+  },
+  {
+    "id": "FE-WIP-initial",
+    "ok": true,
+    "desc": "选中mgr→办理人页签渲染类型按钮",
+    "detail": "kinds=8 on=user val=null"
+  },
+  {
+    "id": "FE-WIP-role-sticky",
+    "ok": true,
+    "desc": "★切到「角色」不回弹(仍选中role)",
+    "detail": "on=role"
+  },
+  {
+    "id": "FE-WIP-role-valinput",
+    "ok": true,
+    "desc": "★切到「角色」出现值输入框",
+    "detail": "hasInput=true"
+  },
+  {
+    "id": "FE-WIP-position-sticky",
+    "ok": true,
+    "desc": "★切到「岗位」不回弹(仍选中position)",
+    "detail": "on=position"
+  },
+  {
+    "id": "FE-WIP-noerr",
+    "ok": true,
+    "desc": "设计器交互无 pageerror",
+    "detail": ""
+  }
+]

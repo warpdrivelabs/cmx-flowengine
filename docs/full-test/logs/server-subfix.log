@@ -1,0 +1,360 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running `target/debug/cmx-flow-server`
+2026-08-16T10:15:38.138861Z [1;32m INFO[0m main ThreadId(1) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-web-chassis/src/lib.rs[0m:[36m172[0m: 启动钩子执行中… [3mservice[0m[2m=[0mflow [3mhook[0m[2m=[0mdatasources
+2026-08-16T10:15:38.139202Z [1;32m INFO[0m main ThreadId(1) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-infra/cmx-database-pg/src/connection/mod.rs[0m:[36m493[0m: 创建 PostgreSQL 连接池(tokio-postgres)，连接池配置：PoolConfig { max_connections: 10, min_connections: 2, connect_timeout: 30, acquire_timeout: 30, idle_timeout: 600, max_lifetime: 1800 }
+2026-08-16T10:15:38.139509Z [1;32m INFO[0m main ThreadId(1) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-service-base/src/datasource.rs[0m:[36m22[0m: 成功注册 PG 数据源(新链路): fico-db
+2026-08-16T10:15:38.139540Z [1;32m INFO[0m main ThreadId(1) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-infra/cmx-database-pg/src/connection/mod.rs[0m:[36m493[0m: 创建 PostgreSQL 连接池(tokio-postgres)，连接池配置：PoolConfig { max_connections: 10, min_connections: 2, connect_timeout: 30, acquire_timeout: 30, idle_timeout: 600, max_lifetime: 1800 }
+2026-08-16T10:15:38.139584Z [1;32m INFO[0m main ThreadId(1) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-service-base/src/datasource.rs[0m:[36m22[0m: 成功注册 PG 数据源(新链路): primary
+2026-08-16T10:15:38.139622Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-server/src/main.rs[0m:[36m206[0m: ✅ 数据源已注册 [3mflow_db[0m[2m=[0m"fico-db" [3miam_db[0m[2m=[0m"primary"
+2026-08-16T10:15:38.139673Z [1;32m INFO[0m main ThreadId(1) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-web-chassis/src/lib.rs[0m:[36m172[0m: 启动钩子执行中… [3mservice[0m[2m=[0mflow [3mhook[0m[2m=[0mengine
+2026-08-16T10:15:38.147167Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "cmx_flow_instance" already exists, skipping
+2026-08-16T10:15:38.147852Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: column "org_id" of relation "cmx_flow_instance" already exists, skipping
+2026-08-16T10:15:38.149212Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: column "parent_instance_id" of relation "cmx_flow_instance" already exists, skipping
+2026-08-16T10:15:38.149801Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: column "parent_token_id" of relation "cmx_flow_instance" already exists, skipping
+2026-08-16T10:15:38.150242Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: column "parent_node_bpmn_id" of relation "cmx_flow_instance" already exists, skipping
+2026-08-16T10:15:38.150781Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "idx_cmx_flow_instance_defkey" already exists, skipping
+2026-08-16T10:15:38.151110Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "idx_cmx_flow_instance_bizkey" already exists, skipping
+2026-08-16T10:15:38.151389Z [1;32m INFO[0m tokio-rt-worker ThreadId(17): NOTICE: relation "idx_cmx_flow_instance_state" already exists, skipping
+2026-08-16T10:15:38.151681Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "idx_cmx_flow_instance_parent" already exists, skipping
+2026-08-16T10:15:38.152005Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "cmx_flow_token" already exists, skipping
+2026-08-16T10:15:38.152339Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "idx_cmx_flow_token_instance" already exists, skipping
+2026-08-16T10:15:38.152610Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "cmx_flow_task" already exists, skipping
+2026-08-16T10:15:38.152864Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: column "element_value" of relation "cmx_flow_task" already exists, skipping
+2026-08-16T10:15:38.153214Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: column "owner_user_id" of relation "cmx_flow_task" already exists, skipping
+2026-08-16T10:15:38.153567Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: column "parent_task_id" of relation "cmx_flow_task" already exists, skipping
+2026-08-16T10:15:38.153901Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: column "delegation_state" of relation "cmx_flow_task" already exists, skipping
+2026-08-16T10:15:38.154273Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "idx_cmx_flow_task_instance" already exists, skipping
+2026-08-16T10:15:38.154612Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "idx_cmx_flow_task_assignee" already exists, skipping
+2026-08-16T10:15:38.154992Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "idx_cmx_flow_task_open" already exists, skipping
+2026-08-16T10:15:38.155337Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "cmx_flow_mi_scope" already exists, skipping
+2026-08-16T10:15:38.155708Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_mi_scope_instance" already exists, skipping
+2026-08-16T10:15:38.156045Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "cmx_flow_job" already exists, skipping
+2026-08-16T10:15:38.156376Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_job_instance" already exists, skipping
+2026-08-16T10:15:38.156716Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_job_due" already exists, skipping
+2026-08-16T10:15:38.156993Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "cmx_flow_task_candidate" already exists, skipping
+2026-08-16T10:15:38.157316Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_task_candidate_instance" already exists, skipping
+2026-08-16T10:15:38.157588Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_task_candidate_user" already exists, skipping
+2026-08-16T10:15:38.157886Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_task_candidate_task" already exists, skipping
+2026-08-16T10:15:38.158198Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "cmx_flow_cc" already exists, skipping
+2026-08-16T10:15:38.158521Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_cc_instance" already exists, skipping
+2026-08-16T10:15:38.158832Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_cc_to_user" already exists, skipping
+2026-08-16T10:15:38.159143Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "cmx_flow_task_delegation" already exists, skipping
+2026-08-16T10:15:38.159449Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_task_delegation_instance" already exists, skipping
+2026-08-16T10:15:38.159723Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_task_delegation_task" already exists, skipping
+2026-08-16T10:15:38.160006Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "cmx_flow_hi_instance" already exists, skipping
+2026-08-16T10:15:38.160332Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_hi_instance_defkey" already exists, skipping
+2026-08-16T10:15:38.160644Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_hi_instance_bizkey" already exists, skipping
+2026-08-16T10:15:38.160908Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "cmx_flow_hi_task" already exists, skipping
+2026-08-16T10:15:38.161160Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_hi_task_instance" already exists, skipping
+2026-08-16T10:15:38.161387Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_hi_task_assignee" already exists, skipping
+2026-08-16T10:15:38.161669Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "cmx_flow_subflow_binding" already exists, skipping
+2026-08-16T10:15:38.161963Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_subflow_binding_key" already exists, skipping
+2026-08-16T10:15:38.162223Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_subflow_binding_org" already exists, skipping
+2026-08-16T10:15:38.162542Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "cmx_flow_definition" already exists, skipping
+2026-08-16T10:15:38.162812Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: column "domain" of relation "cmx_flow_definition" already exists, skipping
+2026-08-16T10:15:38.163119Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: column "application" of relation "cmx_flow_definition" already exists, skipping
+2026-08-16T10:15:38.163411Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_definition_module" already exists, skipping
+2026-08-16T10:15:38.163696Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_definition_dam" already exists, skipping
+2026-08-16T10:15:38.163969Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_definition_state" already exists, skipping
+2026-08-16T10:15:38.164235Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "cmx_flow_definition_version" already exists, skipping
+2026-08-16T10:15:38.164489Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: column "note" of relation "cmx_flow_definition_version" already exists, skipping
+2026-08-16T10:15:38.164820Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "uq_cmx_flow_def_version" already exists, skipping
+2026-08-16T10:15:38.165115Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_def_version_key" already exists, skipping
+2026-08-16T10:15:38.169916Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "cmx_flow_subflow_binding" already exists, skipping
+2026-08-16T10:15:38.170496Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: relation "idx_cmx_flow_subflow_binding_key" already exists, skipping
+2026-08-16T10:15:38.170872Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "cmx_flow_biz_link" already exists, skipping
+2026-08-16T10:15:38.171183Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "idx_cmx_flow_biz_link_instance" already exists, skipping
+2026-08-16T10:15:38.171456Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "uq_cmx_flow_biz_link_biz" already exists, skipping
+2026-08-16T10:15:38.171710Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "cmx_flow_task_comment" already exists, skipping
+2026-08-16T10:15:38.171981Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "idx_cmx_flow_task_comment_instance" already exists, skipping
+2026-08-16T10:15:38.172226Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: relation "cmx_flow_form_binding" already exists, skipping
+2026-08-16T10:15:38.172472Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: column "native_view" of relation "cmx_flow_form_binding" already exists, skipping
+2026-08-16T10:15:38.172767Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: column "file" of relation "cmx_flow_form_binding" already exists, skipping
+2026-08-16T10:15:38.173030Z [1;32m INFO[0m tokio-rt-worker ThreadId(15): NOTICE: column "pk_field" of relation "cmx_flow_form_binding" already exists, skipping
+2026-08-16T10:15:38.173254Z [1;32m INFO[0m tokio-rt-worker ThreadId(3): NOTICE: column "workspace_node" of relation "cmx_flow_form_binding" already exists, skipping
+2026-08-16T10:15:38.181138Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mss_demo
+2026-08-16T10:15:38.181227Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mss_demo [3mnodes[0m[2m=[0m4
+2026-08-16T10:15:38.181254Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mmock_cand
+2026-08-16T10:15:38.181283Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmock_cand [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.181307Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mmi_live
+2026-08-16T10:15:38.181329Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_live [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.181351Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mvs_live
+2026-08-16T10:15:38.181387Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mvs_live [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.181414Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mdw_rt
+2026-08-16T10:15:38.181440Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mdw_rt [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.181462Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mbadge_demo
+2026-08-16T10:15:38.181485Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mbadge_demo [3mnodes[0m[2m=[0m6
+2026-08-16T10:15:38.181507Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mgw_demo
+2026-08-16T10:15:38.181529Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mgw_demo [3mnodes[0m[2m=[0m4
+2026-08-16T10:15:38.181550Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mtravel_expense
+2026-08-16T10:15:38.181573Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mtravel_expense [3mnodes[0m[2m=[0m7
+2026-08-16T10:15:38.181598Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mfin_review_hq
+2026-08-16T10:15:38.181620Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mfin_review_hq [3mnodes[0m[2m=[0m5
+2026-08-16T10:15:38.181643Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mfin_review_branch
+2026-08-16T10:15:38.181664Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mfin_review_branch [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.181686Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mprobe_cand
+2026-08-16T10:15:38.181710Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:15:38.181731Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mcs_all
+2026-08-16T10:15:38.181752Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_all [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.181772Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mcs_majority
+2026-08-16T10:15:38.181800Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_majority [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.181821Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mcs_seq
+2026-08-16T10:15:38.181841Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_seq [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.181861Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mmi_dyn
+2026-08-16T10:15:38.181881Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.181910Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mcc_flow
+2026-08-16T10:15:38.181931Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcc_flow [3mnodes[0m[2m=[0m4
+2026-08-16T10:15:38.181951Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mmi_dyn_role
+2026-08-16T10:15:38.181972Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn_role [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.181992Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mpar_gw
+2026-08-16T10:15:38.182013Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mpar_gw [3mnodes[0m[2m=[0m6
+2026-08-16T10:15:38.182033Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mapproval_chain
+2026-08-16T10:15:38.182054Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mapproval_chain [3mnodes[0m[2m=[0m5
+2026-08-16T10:15:38.182074Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mmain_nested
+2026-08-16T10:15:38.182094Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmain_nested [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.182114Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mmain_nobinding
+2026-08-16T10:15:38.182135Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmain_nobinding [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.182155Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mmain_org_routed
+2026-08-16T10:15:38.182175Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmain_org_routed [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.182196Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mmain_parallel_multi
+2026-08-16T10:15:38.182217Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmain_parallel_multi [3mnodes[0m[2m=[0m6
+2026-08-16T10:15:38.182237Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mmain_serial_multi
+2026-08-16T10:15:38.182262Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmain_serial_multi [3mnodes[0m[2m=[0m7
+2026-08-16T10:15:38.182283Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0mmain_varmap
+2026-08-16T10:15:38.182303Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmain_varmap [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.182324Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0msub_grandchild
+2026-08-16T10:15:38.182343Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0msub_grandchild [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.182363Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0msub_middle
+2026-08-16T10:15:38.182386Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0msub_middle [3mnodes[0m[2m=[0m4
+2026-08-16T10:15:38.182407Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0msub_review
+2026-08-16T10:15:38.182427Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0msub_review [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.182447Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0msub_risk
+2026-08-16T10:15:38.182468Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0msub_risk [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.182501Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m259[0m: 装载已发布流程定义 [3mkey[0m[2m=[0msub_varchild
+2026-08-16T10:15:38.182521Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0msub_varchild [3mnodes[0m[2m=[0m3
+2026-08-16T10:15:38.182674Z [1;32m INFO[0m main ThreadId(1) [33mcrates/cmx-flow-app/src/engine.rs[0m:[36m334[0m: ✅ 流程引擎已就绪（多租户定时器 poller 已启动）
+2026-08-16T10:15:38.184617Z [1;32m INFO[0m main ThreadId(1) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-web-chassis/src/lib.rs[0m:[36m271[0m: ============================================================
+2026-08-16T10:15:38.184648Z [1;32m INFO[0m main ThreadId(1) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-web-chassis/src/lib.rs[0m:[36m272[0m: 🚀 flow 服务启动成功
+2026-08-16T10:15:38.184670Z [1;32m INFO[0m main ThreadId(1) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-web-chassis/src/lib.rs[0m:[36m273[0m: ============================================================
+2026-08-16T10:15:38.184691Z [1;32m INFO[0m main ThreadId(1) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-web-chassis/src/lib.rs[0m:[36m274[0m:    监听地址：0.0.0.0:8091
+2026-08-16T10:15:38.184724Z [1;32m INFO[0m main ThreadId(1) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-web-chassis/src/lib.rs[0m:[36m275[0m:    日志目录：logs
+2026-08-16T10:15:38.184747Z [1;32m INFO[0m main ThreadId(1) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-web-chassis/src/lib.rs[0m:[36m276[0m: ------------------------------------------------------------
+
+███╗   ███╗███████╗ ██████╗  █████╗     ███████╗██╗      ██████╗ ██╗    ██╗
+████╗ ████║██╔════╝██╔════╝ ██╔══██╗    ██╔════╝██║     ██╔═══██╗██║    ██║
+██╔████╔██║█████╗  ██║  ███╗███████║    █████╗  ██║     ██║   ██║██║ █╗ ██║
+██║╚██╔╝██║██╔══╝  ██║   ██║██╔══██║    ██╔══╝  ██║     ██║   ██║██║███╗██║
+██║ ╚═╝ ██║███████╗╚██████╔╝██║  ██║    ██║     ███████╗╚██████╔╝╚███╔███╔╝
+╚═╝     ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝    ╚═╝     ╚══════╝ ╚═════╝  ╚══╝╚══╝
+
+  MEGA Flow · 流程引擎微服务 · cmx-web-chassis 
+by cmx-container
+2026-08-16T10:16:29.020540Z [1;33m WARN[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m669[0m: 子流程解析失败 → Incident（实例保留，修绑定后 retry_incident 恢复） [3minstance[0m[2m=[0md3d55db1-5253-4b0b-8e01-93cb8655c345 [3mnode[0m[2m=[0mcallGhost [3mretries[0m[2m=[0m1 [3mreason[0m[2m=[0m"子流程路由无解: called_key=ghost_key_no_binding org=Some(\"zongbu\")"
+2026-08-16T10:16:29.111715Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1371[0m: 重试 incident：重新激活令牌 [3minstance[0m[2m=[0md3d55db1-5253-4b0b-8e01-93cb8655c345 [3mreactivated[0m[2m=[0m1
+2026-08-16T10:16:29.552575Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1405[0m: 实例已挂起（含级联子实例） [3minstance[0m[2m=[0m6a0f8d32-0a75-4469-a0f0-92ec10f8b770
+2026-08-16T10:16:29.554461Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1405[0m: 实例已挂起（含级联子实例） [3minstance[0m[2m=[0m83d8cdb2-bcb8-4805-8df7-b07e657f7d0f
+2026-08-16T10:16:29.604196Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1437[0m: 实例已恢复（含级联子实例） [3minstance[0m[2m=[0m6a0f8d32-0a75-4469-a0f0-92ec10f8b770
+2026-08-16T10:16:29.606570Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1437[0m: 实例已恢复（含级联子实例） [3minstance[0m[2m=[0m83d8cdb2-bcb8-4805-8df7-b07e657f7d0f
+2026-08-16T10:17:53.771355Z [1;33m WARN[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m669[0m: 子流程解析失败 → Incident（实例保留，修绑定后 retry_incident 恢复） [3minstance[0m[2m=[0m854bb28c-65b0-4f67-b87a-0016602b6d27 [3mnode[0m[2m=[0mcallGhost [3mretries[0m[2m=[0m1 [3mreason[0m[2m=[0m"子流程路由无解: called_key=ghost_key_no_binding org=Some(\"zongbu\")"
+2026-08-16T10:17:53.829763Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1371[0m: 重试 incident：重新激活令牌 [3minstance[0m[2m=[0m854bb28c-65b0-4f67-b87a-0016602b6d27 [3mreactivated[0m[2m=[0m1
+2026-08-16T10:17:54.059028Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1405[0m: 实例已挂起（含级联子实例） [3minstance[0m[2m=[0m0c8d3fbe-b84c-466d-84ee-38583fa2fde2
+2026-08-16T10:17:54.061587Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1405[0m: 实例已挂起（含级联子实例） [3minstance[0m[2m=[0mca9a1a7d-d01e-40ef-aefa-7901d5593421
+2026-08-16T10:17:54.115880Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1437[0m: 实例已恢复（含级联子实例） [3minstance[0m[2m=[0m0c8d3fbe-b84c-466d-84ee-38583fa2fde2
+2026-08-16T10:17:54.118504Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1437[0m: 实例已恢复（含级联子实例） [3minstance[0m[2m=[0mca9a1a7d-d01e-40ef-aefa-7901d5593421
+2026-08-16T10:18:03.315912Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:03.315996Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m15
+2026-08-16T10:18:03.328100Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:03.328155Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m16
+2026-08-16T10:18:03.356517Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_all [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:03.356585Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_all [3mversion[0m[2m=[0m8
+2026-08-16T10:18:03.368546Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_all [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:03.368615Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_all [3mversion[0m[2m=[0m9
+2026-08-16T10:18:03.396681Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_majority [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:03.396756Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_majority [3mversion[0m[2m=[0m8
+2026-08-16T10:18:03.408099Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_majority [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:03.408161Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_majority [3mversion[0m[2m=[0m9
+2026-08-16T10:18:03.437193Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_seq [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:03.437263Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_seq [3mversion[0m[2m=[0m8
+2026-08-16T10:18:03.451209Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_seq [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:03.451268Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_seq [3mversion[0m[2m=[0m9
+2026-08-16T10:18:03.479098Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:03.479156Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn [3mversion[0m[2m=[0m8
+2026-08-16T10:18:03.489846Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:03.489896Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn [3mversion[0m[2m=[0m9
+2026-08-16T10:18:03.518364Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcc_flow [3mnodes[0m[2m=[0m4
+2026-08-16T10:18:03.518430Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcc_flow [3mversion[0m[2m=[0m8
+2026-08-16T10:18:03.528915Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcc_flow [3mnodes[0m[2m=[0m4
+2026-08-16T10:18:03.528974Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcc_flow [3mversion[0m[2m=[0m9
+2026-08-16T10:18:03.557482Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mpar_gw [3mnodes[0m[2m=[0m6
+2026-08-16T10:18:03.557541Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mpar_gw [3mversion[0m[2m=[0m8
+2026-08-16T10:18:03.568787Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mpar_gw [3mnodes[0m[2m=[0m6
+2026-08-16T10:18:03.568846Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mpar_gw [3mversion[0m[2m=[0m9
+2026-08-16T10:18:03.596620Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mapproval_chain [3mnodes[0m[2m=[0m5
+2026-08-16T10:18:03.596687Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mapproval_chain [3mversion[0m[2m=[0m8
+2026-08-16T10:18:03.607124Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mapproval_chain [3mnodes[0m[2m=[0m5
+2026-08-16T10:18:03.607178Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mapproval_chain [3mversion[0m[2m=[0m9
+2026-08-16T10:18:03.640048Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn_role [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:03.640126Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn_role [3mversion[0m[2m=[0m8
+2026-08-16T10:18:03.653589Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn_role [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:03.653651Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn_role [3mversion[0m[2m=[0m9
+2026-08-16T10:18:03.690084Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:03.690155Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m17
+2026-08-16T10:18:03.703553Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:03.703613Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m18
+2026-08-16T10:18:03.713713Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:03.713771Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m1
+2026-08-16T10:18:03.722206Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:03.722254Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m18
+2026-08-16T10:18:05.279273Z [1;31mERROR[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 下游已有环节办结，不可取回（strict 策略）")
+2026-08-16T10:18:05.408781Z [1;31mERROR[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 实例非进行中，不可取回")
+2026-08-16T10:18:05.441479Z [1;31mERROR[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 仅发起人可取回本流程")
+2026-08-16T10:18:06.815990Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1405[0m: 实例已挂起（含级联子实例） [3minstance[0m[2m=[0mad4a256f-01e1-41f0-be45-e3d176178b99
+2026-08-16T10:18:06.845561Z [1;31mERROR[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 实例 ad4a256f-01e1-41f0-be45-e3d176178b99 已挂起，恢复(resume)后方可办理")
+2026-08-16T10:18:06.857514Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1437[0m: 实例已恢复（含级联子实例） [3minstance[0m[2m=[0mad4a256f-01e1-41f0-be45-e3d176178b99
+2026-08-16T10:18:06.977088Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1512[0m: 自由跳转 [3minstance[0m[2m=[0maf9e0415-7f8f-4847-ba37-e4e2bec4bcb4 [3mtarget[0m[2m=[0ml3
+2026-08-16T10:18:07.209415Z [1;31mERROR[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务认领失败: 任务 b075ccd8-a0d6-4c3e-9c8d-f678d21da0b2 已被 u_fin1 认领")
+2026-08-16T10:18:07.226150Z [1;31mERROR[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: nonexistent-task-id-xyz")
+2026-08-16T10:18:07.238470Z [1;31mERROR[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("流程定义未部署: no_such_def_xyz")
+2026-08-16T10:18:07.248334Z [1;31mERROR[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("实例不存在: no-such-instance-999")
+2026-08-16T10:18:07.312904Z [1;31mERROR[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: e48e4c42-d1c7-4104-a1d4-947ebd06d7b6")
+2026-08-16T10:18:07.430659Z [1;33m WARN[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m2245[0m: 多实例集合为空，跳过该节点 [3mnode[0m[2m=[0msign [3mvar[0m[2m=[0mapprovers
+2026-08-16T10:18:07.498145Z [1;31mERROR[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 退回目标节点 no_such_node 不在定义中")
+2026-08-16T10:18:07.907765Z [1;31mERROR[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 无实例等待消息 'test_msg'（相关键 none）")
+2026-08-16T10:18:07.939475Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn_role [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:07.939546Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn_role [3mversion[0m[2m=[0m10
+2026-08-16T10:18:16.336298Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:16.336373Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m19
+2026-08-16T10:18:16.348158Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:16.348217Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m20
+2026-08-16T10:18:16.377646Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_all [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:16.377716Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_all [3mversion[0m[2m=[0m10
+2026-08-16T10:18:16.390890Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_all [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:16.390961Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_all [3mversion[0m[2m=[0m11
+2026-08-16T10:18:16.422434Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_majority [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:16.422503Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_majority [3mversion[0m[2m=[0m10
+2026-08-16T10:18:16.433743Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_majority [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:16.433797Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_majority [3mversion[0m[2m=[0m11
+2026-08-16T10:18:16.462386Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_seq [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:16.462453Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_seq [3mversion[0m[2m=[0m10
+2026-08-16T10:18:16.474370Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_seq [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:16.474426Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_seq [3mversion[0m[2m=[0m11
+2026-08-16T10:18:16.502631Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:16.502708Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn [3mversion[0m[2m=[0m10
+2026-08-16T10:18:16.515054Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:16.515118Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn [3mversion[0m[2m=[0m11
+2026-08-16T10:18:16.545085Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcc_flow [3mnodes[0m[2m=[0m4
+2026-08-16T10:18:16.545154Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcc_flow [3mversion[0m[2m=[0m10
+2026-08-16T10:18:16.556721Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcc_flow [3mnodes[0m[2m=[0m4
+2026-08-16T10:18:16.556776Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcc_flow [3mversion[0m[2m=[0m11
+2026-08-16T10:18:16.584876Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mpar_gw [3mnodes[0m[2m=[0m6
+2026-08-16T10:18:16.584933Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mpar_gw [3mversion[0m[2m=[0m10
+2026-08-16T10:18:16.595291Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mpar_gw [3mnodes[0m[2m=[0m6
+2026-08-16T10:18:16.595350Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mpar_gw [3mversion[0m[2m=[0m11
+2026-08-16T10:18:16.624476Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mapproval_chain [3mnodes[0m[2m=[0m5
+2026-08-16T10:18:16.624541Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mapproval_chain [3mversion[0m[2m=[0m10
+2026-08-16T10:18:16.636588Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mapproval_chain [3mnodes[0m[2m=[0m5
+2026-08-16T10:18:16.636656Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mapproval_chain [3mversion[0m[2m=[0m11
+2026-08-16T10:18:16.666742Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn_role [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:16.666803Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn_role [3mversion[0m[2m=[0m11
+2026-08-16T10:18:16.677508Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn_role [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:16.677578Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn_role [3mversion[0m[2m=[0m12
+2026-08-16T10:18:16.707855Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:16.707924Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m21
+2026-08-16T10:18:16.718677Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:16.718727Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m22
+2026-08-16T10:18:16.727355Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:16.727403Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m1
+2026-08-16T10:18:16.734961Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:16.734997Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m22
+2026-08-16T10:18:18.167486Z [1;31mERROR[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 下游已有环节办结，不可取回（strict 策略）")
+2026-08-16T10:18:18.303111Z [1;31mERROR[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 实例非进行中，不可取回")
+2026-08-16T10:18:18.337255Z [1;31mERROR[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 仅发起人可取回本流程")
+2026-08-16T10:18:19.693508Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1405[0m: 实例已挂起（含级联子实例） [3minstance[0m[2m=[0mb61a4708-3ee8-4dac-9d71-6c4c25412676
+2026-08-16T10:18:19.725047Z [1;31mERROR[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 实例 b61a4708-3ee8-4dac-9d71-6c4c25412676 已挂起，恢复(resume)后方可办理")
+2026-08-16T10:18:19.737832Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1437[0m: 实例已恢复（含级联子实例） [3minstance[0m[2m=[0mb61a4708-3ee8-4dac-9d71-6c4c25412676
+2026-08-16T10:18:19.861825Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1512[0m: 自由跳转 [3minstance[0m[2m=[0m505f7557-f4f1-4614-9e9c-8979ef85fc73 [3mtarget[0m[2m=[0ml3
+2026-08-16T10:18:20.094129Z [1;31mERROR[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务认领失败: 任务 14d41024-b769-46ce-9186-ec078bb34187 已被 u_fin1 认领")
+2026-08-16T10:18:20.110198Z [1;31mERROR[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: nonexistent-task-id-xyz")
+2026-08-16T10:18:20.122021Z [1;31mERROR[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("流程定义未部署: no_such_def_xyz")
+2026-08-16T10:18:20.131357Z [1;31mERROR[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("实例不存在: no-such-instance-999")
+2026-08-16T10:18:20.192428Z [1;31mERROR[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 1cdfb054-649a-41c1-8d78-f4a1d5993806")
+2026-08-16T10:18:20.310347Z [1;33m WARN[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m2245[0m: 多实例集合为空，跳过该节点 [3mnode[0m[2m=[0msign [3mvar[0m[2m=[0mapprovers
+2026-08-16T10:18:20.377194Z [1;31mERROR[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 退回目标节点 no_such_node 不在定义中")
+2026-08-16T10:18:20.798187Z [1;31mERROR[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 无实例等待消息 'test_msg'（相关键 none）")
+2026-08-16T10:18:20.829747Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn_role [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:20.829815Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn_role [3mversion[0m[2m=[0m13
+2026-08-16T10:18:47.447427Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:47.447527Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m23
+2026-08-16T10:18:47.460501Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:47.460573Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m24
+2026-08-16T10:18:47.504650Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_all [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:47.504717Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_all [3mversion[0m[2m=[0m12
+2026-08-16T10:18:47.516575Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_all [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:47.516634Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_all [3mversion[0m[2m=[0m13
+2026-08-16T10:18:47.545572Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_majority [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:47.545631Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_majority [3mversion[0m[2m=[0m12
+2026-08-16T10:18:47.556393Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_majority [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:47.556455Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_majority [3mversion[0m[2m=[0m13
+2026-08-16T10:18:47.583654Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_seq [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:47.583720Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_seq [3mversion[0m[2m=[0m12
+2026-08-16T10:18:47.594484Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcs_seq [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:47.594562Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcs_seq [3mversion[0m[2m=[0m13
+2026-08-16T10:18:47.623373Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:47.623444Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn [3mversion[0m[2m=[0m12
+2026-08-16T10:18:47.634000Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:47.634058Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn [3mversion[0m[2m=[0m13
+2026-08-16T10:18:47.662571Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcc_flow [3mnodes[0m[2m=[0m4
+2026-08-16T10:18:47.662633Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcc_flow [3mversion[0m[2m=[0m12
+2026-08-16T10:18:47.673395Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mcc_flow [3mnodes[0m[2m=[0m4
+2026-08-16T10:18:47.673453Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mcc_flow [3mversion[0m[2m=[0m13
+2026-08-16T10:18:47.702751Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mpar_gw [3mnodes[0m[2m=[0m6
+2026-08-16T10:18:47.702816Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mpar_gw [3mversion[0m[2m=[0m12
+2026-08-16T10:18:47.714763Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mpar_gw [3mnodes[0m[2m=[0m6
+2026-08-16T10:18:47.714833Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mpar_gw [3mversion[0m[2m=[0m13
+2026-08-16T10:18:47.743259Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mapproval_chain [3mnodes[0m[2m=[0m5
+2026-08-16T10:18:47.743323Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mapproval_chain [3mversion[0m[2m=[0m12
+2026-08-16T10:18:47.754103Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mapproval_chain [3mnodes[0m[2m=[0m5
+2026-08-16T10:18:47.754159Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mapproval_chain [3mversion[0m[2m=[0m13
+2026-08-16T10:18:47.782083Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn_role [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:47.782149Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn_role [3mversion[0m[2m=[0m14
+2026-08-16T10:18:47.792493Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn_role [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:47.792545Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn_role [3mversion[0m[2m=[0m15
+2026-08-16T10:18:47.822932Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:47.823000Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m25
+2026-08-16T10:18:47.834106Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:47.834162Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m26
+2026-08-16T10:18:47.843300Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:47.843363Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m1
+2026-08-16T10:18:47.852928Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mprobe_cand [3mnodes[0m[2m=[0m8
+2026-08-16T10:18:47.852981Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mprobe_cand [3mversion[0m[2m=[0m26
+2026-08-16T10:18:49.363961Z [1;31mERROR[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 下游已有环节办结，不可取回（strict 策略）")
+2026-08-16T10:18:49.584181Z [1;31mERROR[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 实例非进行中，不可取回")
+2026-08-16T10:18:49.635109Z [1;31mERROR[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 仅发起人可取回本流程")
+2026-08-16T10:18:51.041017Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1405[0m: 实例已挂起（含级联子实例） [3minstance[0m[2m=[0m22410b08-aed7-4558-bccc-e2ebee287bb2
+2026-08-16T10:18:51.073004Z [1;31mERROR[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 实例 22410b08-aed7-4558-bccc-e2ebee287bb2 已挂起，恢复(resume)后方可办理")
+2026-08-16T10:18:51.087470Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1437[0m: 实例已恢复（含级联子实例） [3minstance[0m[2m=[0m22410b08-aed7-4558-bccc-e2ebee287bb2
+2026-08-16T10:18:51.214679Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1512[0m: 自由跳转 [3minstance[0m[2m=[0m0640a9d1-7db7-40c6-b9ce-ff31e91d1459 [3mtarget[0m[2m=[0ml3
+2026-08-16T10:18:51.446757Z [1;31mERROR[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务认领失败: 任务 21f1ec1f-fa9d-4e5c-8881-4a9e0674dc22 已被 u_fin1 认领")
+2026-08-16T10:18:51.463527Z [1;31mERROR[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: nonexistent-task-id-xyz")
+2026-08-16T10:18:51.475002Z [1;31mERROR[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("流程定义未部署: no_such_def_xyz")
+2026-08-16T10:18:51.484713Z [1;31mERROR[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("实例不存在: no-such-instance-999")
+2026-08-16T10:18:51.546054Z [1;31mERROR[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 0cd8efb8-5db0-4400-9460-dbb21734cd29")
+2026-08-16T10:18:51.666551Z [1;33m WARN[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m2245[0m: 多实例集合为空，跳过该节点 [3mnode[0m[2m=[0msign [3mvar[0m[2m=[0mapprovers
+2026-08-16T10:18:51.735448Z [1;31mERROR[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 退回目标节点 no_such_node 不在定义中")
+2026-08-16T10:18:52.150492Z [1;31mERROR[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-app/src/resp.rs[0m:[36m98[0m: ERROR        - FlowError Business("任务不可办理: 无实例等待消息 'test_msg'（相关键 none）")
+2026-08-16T10:18:52.182518Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m276[0m: 部署流程定义 [3mkey[0m[2m=[0mmi_dyn_role [3mnodes[0m[2m=[0m3
+2026-08-16T10:18:52.182591Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-app/src/handlers.rs[0m:[36m420[0m: 已热装载定义版本 [3mkey[0m[2m=[0mmi_dyn_role [3mversion[0m[2m=[0m16
+2026-08-16T10:18:54.493622Z [1;33m WARN[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m669[0m: 子流程解析失败 → Incident（实例保留，修绑定后 retry_incident 恢复） [3minstance[0m[2m=[0m84383689-2ed9-4b9b-821a-ca546a62e0b6 [3mnode[0m[2m=[0mcallGhost [3mretries[0m[2m=[0m1 [3mreason[0m[2m=[0m"子流程路由无解: called_key=ghost_key_no_binding org=Some(\"zongbu\")"
+2026-08-16T10:18:54.550768Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1371[0m: 重试 incident：重新激活令牌 [3minstance[0m[2m=[0m84383689-2ed9-4b9b-821a-ca546a62e0b6 [3mreactivated[0m[2m=[0m1
+2026-08-16T10:18:54.785223Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1405[0m: 实例已挂起（含级联子实例） [3minstance[0m[2m=[0ma50bc4d6-7a33-4b79-a517-0538203f5d76
+2026-08-16T10:18:54.788579Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1405[0m: 实例已挂起（含级联子实例） [3minstance[0m[2m=[0mae9c36d3-feb4-4d76-821a-43d39fe937c8
+2026-08-16T10:18:54.848696Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1437[0m: 实例已恢复（含级联子实例） [3minstance[0m[2m=[0ma50bc4d6-7a33-4b79-a517-0538203f5d76
+2026-08-16T10:18:54.851019Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1437[0m: 实例已恢复（含级联子实例） [3minstance[0m[2m=[0mae9c36d3-feb4-4d76-821a-43d39fe937c8
+2026-08-16T10:18:55.165868Z [1;33m WARN[0m tokio-rt-worker ThreadId(15) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m669[0m: 子流程解析失败 → Incident（实例保留，修绑定后 retry_incident 恢复） [3minstance[0m[2m=[0m53773367-2d22-42f3-b8b6-11aaf3aca434 [3mnode[0m[2m=[0mcallGhost [3mretries[0m[2m=[0m1 [3mreason[0m[2m=[0m"子流程路由无解: called_key=ghost_key_no_binding org=Some(\"zongbu\")"
+2026-08-16T10:18:55.261158Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1371[0m: 重试 incident：重新激活令牌 [3minstance[0m[2m=[0m53773367-2d22-42f3-b8b6-11aaf3aca434 [3mreactivated[0m[2m=[0m1
+2026-08-16T10:18:55.763560Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1405[0m: 实例已挂起（含级联子实例） [3minstance[0m[2m=[0m39a35972-118c-4da6-9068-061372eb2d5a
+2026-08-16T10:18:55.766057Z [1;32m INFO[0m tokio-rt-worker ThreadId(17) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1405[0m: 实例已挂起（含级联子实例） [3minstance[0m[2m=[0m831327db-ebef-439d-8e2c-327db800c797
+2026-08-16T10:18:55.822294Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1437[0m: 实例已恢复（含级联子实例） [3minstance[0m[2m=[0m39a35972-118c-4da6-9068-061372eb2d5a
+2026-08-16T10:18:55.824965Z [1;32m INFO[0m tokio-rt-worker ThreadId(13) [33mcrates/cmx-flow-engine/src/engine.rs[0m:[36m1437[0m: 实例已恢复（含级联子实例） [3minstance[0m[2m=[0m831327db-ebef-439d-8e2c-327db800c797
+2026-08-16T12:04:23.026558Z [1;32m INFO[0m tokio-rt-worker ThreadId(15) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-web-chassis/src/shutdown.rs[0m:[36m27[0m: 收到 SIGTERM 信号，开始优雅关闭...
+2026-08-16T12:04:23.027241Z [1;32m INFO[0m main ThreadId(1) [33m/Users/nanomesh/Workspace/presentation/cmx-container/crates/libs/cmx-web-chassis/src/lib.rs[0m:[36m310[0m: 服务已优雅关闭

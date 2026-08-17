@@ -1,0 +1,159 @@
+DSN-probe_cand-valid	PASS	validate(probe_cand)通过编译+拓扑	exp=true	act=true
+DSN-probe_cand-key	PASS	deploy key=probe_cand	exp=probe_cand	act=probe_cand
+DSN-probe_cand-hot	PASS	发布热装载生效	exp=true	act=true
+DSN-cs_all-valid	PASS	validate(cs_all)通过编译+拓扑	exp=true	act=true
+DSN-cs_all-key	PASS	deploy key=cs_all	exp=cs_all	act=cs_all
+DSN-cs_all-hot	PASS	发布热装载生效	exp=true	act=true
+DSN-cs_majority-valid	PASS	validate(cs_majority)通过编译+拓扑	exp=true	act=true
+DSN-cs_majority-key	PASS	deploy key=cs_majority	exp=cs_majority	act=cs_majority
+DSN-cs_majority-hot	PASS	发布热装载生效	exp=true	act=true
+DSN-cs_seq-valid	PASS	validate(cs_seq)通过编译+拓扑	exp=true	act=true
+DSN-cs_seq-key	PASS	deploy key=cs_seq	exp=cs_seq	act=cs_seq
+DSN-cs_seq-hot	PASS	发布热装载生效	exp=true	act=true
+DSN-mi_dyn-valid	PASS	validate(mi_dyn)通过编译+拓扑	exp=true	act=true
+DSN-mi_dyn-key	PASS	deploy key=mi_dyn	exp=mi_dyn	act=mi_dyn
+DSN-mi_dyn-hot	PASS	发布热装载生效	exp=true	act=true
+DSN-cc_flow-valid	PASS	validate(cc_flow)通过编译+拓扑	exp=true	act=true
+DSN-cc_flow-key	PASS	deploy key=cc_flow	exp=cc_flow	act=cc_flow
+DSN-cc_flow-hot	PASS	发布热装载生效	exp=true	act=true
+DSN-par_gw-valid	PASS	validate(par_gw)通过编译+拓扑	exp=true	act=true
+DSN-par_gw-key	PASS	deploy key=par_gw	exp=par_gw	act=par_gw
+DSN-par_gw-hot	PASS	发布热装载生效	exp=true	act=true
+DSN-approval_chain-valid	PASS	validate(approval_chain)通过编译+拓扑	exp=true	act=true
+DSN-approval_chain-key	PASS	deploy key=approval_chain	exp=approval_chain	act=approval_chain
+DSN-approval_chain-hot	PASS	发布热装载生效	exp=true	act=true
+DSN-mi_dyn_role-valid	PASS	validate(mi_dyn_role)通过编译+拓扑	exp=true	act=true
+DSN-mi_dyn_role-key	PASS	deploy key=mi_dyn_role	exp=mi_dyn_role	act=mi_dyn_role
+DSN-mi_dyn_role-hot	PASS	发布热装载生效	exp=true	act=true
+DSN-neg-nostart	PASS	无start事件→valid=false	exp=false	act=false
+DSN-neg-xml	PASS	非法XML→valid=false	exp=false	act=false
+DSN-ver-bump	PASS	重复发布版本递增(��38)	exp=true	act=true
+DSN-ver-activate	PASS	激活历史版本v1 code=0	exp=0	act=0
+S2-rolepool-cand	PASS	role(finance)→池[u_fin1,u_fin2,u_fin3]	exp=["u_fin1","u_fin2","u_fin3"]	act=["u_fin1","u_fin2","u_fin3"]
+S2-rolepool-claim	PASS	u_fin2认领后assignee=u_fin2	exp=u_fin2	act=u_fin2
+S2-rolepool-claimed-gone	PASS	认领后他人不再可认领	exp=	act=
+S2-roleone-direct	PASS	role(cashier)单人→直派u_cashier1	exp=u_cashier1	act=u_cashier1
+S2-pos-direct	PASS	position(cfo)→直派u_cfo	exp=u_cfo	act=u_cfo
+S2-org-pool	PASS	org(fin_bj)→池5人(含子组fin_bj_g1的u_bjg1)	exp=["u_bjg1","u_bjlead","u_cashier1","u_fin1","u_fin2"]	act=["u_bjg1","u_bjlead","u_cashier1","u_fin1","u_fin2"]
+S2-leader-direct	PASS	orgLeader(fin_bj)→直派u_bjlead	exp=u_bjlead	act=u_bjlead
+S2-init-direct	PASS	initiator→直派发起人u_applicant	exp=u_applicant	act=u_applicant
+S2-completed	PASS	全类型走完→实例COMPLETED	exp=COMPLETED	act=COMPLETED
+S3A-start-mgr	PASS	起后停在经理审批	exp=mgr	act=mgr
+S3A-gw-big	PASS	大额>20000→走总监分支	exp=true	act=true
+S3A-subflow-hq	PASS	总部路由→子流程fin_review_hq	exp=fin_review_hq	act=fin_review_hq
+S3A-parent-wait	PASS	父在callActivity等待	exp=fin_review	act=fin_review
+S3A-sub-l2	PASS	子流程推进到fin2	exp=true	act=true
+S3A-sub-done	PASS	子流程办结COMPLETED	exp=COMPLETED	act=COMPLETED
+S3A-parent-wake	PASS	子完成唤醒父→出纳打款	exp=cashier	act=cashier
+S3A-done	PASS	主流程办结COMPLETED	exp=COMPLETED	act=COMPLETED
+S3B-skip-director	PASS	小额→跳过总监(director不开放)	exp=false	act=false
+S3B-subflow-branch	PASS	上海路由→子流程fin_review_branch	exp=fin_review_branch	act=fin_review_branch
+S3B-sub-done	PASS	分公司子流程办结	exp=COMPLETED	act=COMPLETED
+S3B-done	PASS	上海主流程办结	exp=COMPLETED	act=COMPLETED
+S3C-inherit	PASS	北京无绑定→沿path继承总部→hq	exp=fin_review_hq	act=fin_review_hq
+S4A-at-l3	PASS	推进到三级审批l3	exp=l3	act=l3
+S4A-rt-default	PASS	l3默认退回目标=l2	exp=l2	act=l2
+S4A-rt-list	PASS	l3可退目标={l1,l2}	exp=["l1","l2"]	act=["l1","l2"]
+S4A-back-l2	PASS	默认退回→回到l2	exp=l2	act=l2
+S4B-back-l1	PASS	指定退回→跨级回到l1	exp=l1	act=l1
+S4B-resume-l2	PASS	退回后重新推进到l2	exp=l2	act=l2
+S4C-first-empty	PASS	首节点l1 rejectable=false	exp=false	act=false
+S4C-first-tgts	PASS	首节点可退目标为空	exp=0	act=0
+S5A-can	PASS	发起人可取回=true	exp=true	act=true
+S5A-noninit	PASS	非发起人u_fin1不可取回	exp=false	act=false
+S5A-do	PASS	取回 code=0	exp=0	act=0
+S5A-active	PASS	取回后实例保持ACTIVE	exp=ACTIVE	act=ACTIVE
+S5A-landing	PASS	落回首节点l1	exp=l1	act=l1
+S5A-reassign	PASS	首节点回派发起人u_applicant	exp=u_applicant	act=u_applicant
+S5A-ledger	PASS	WITHDRAW台账留痕	exp=true	act=true
+S5A-resubmit	PASS	取回后重新提交→推进到l2	exp=l2	act=l2
+S5B-can-false	PASS	下游已办结→可取回=false	exp=false	act=false
+S5B-deny	PASS	strict取回被拒 code=1	exp=1	act=1
+S5C-done	PASS	已办结COMPLETED	exp=COMPLETED	act=COMPLETED
+S5C-deny-done	PASS	办结后取回被拒 code=1	exp=1	act=1
+S5D-deny-noninit	PASS	非发起人取回被拒 code=1	exp=1	act=1
+S6A-assignee	PASS	转签后assignee=u_fin2	exp=u_fin2	act=u_fin2
+S6A-owner	PASS	转签彻底换人owner=u_fin2	exp=u_fin2	act=u_fin2
+S6A-ledger	PASS	TRANSFER台账	exp=true	act=true
+S6A-advance	PASS	转签后受让人办结→l2	exp=l2	act=l2
+S6B-assignee	PASS	委托后assignee=u_fin3	exp=u_fin3	act=u_fin3
+S6B-owner-kept	PASS	委托owner保持原主u_bjlead	exp=u_bjlead	act=u_bjlead
+S6B-state	PASS	委托delegationState=DELEGATED	exp=DELEGATED	act=DELEGATED
+S6B-ledger	PASS	DELEGATE台账	exp=true	act=true
+S6B-advance	PASS	委托后受托人办结→l3	exp=l3	act=l3
+S6C-suspend	PASS	原任务挂起SUSPENDED	exp=SUSPENDED	act=SUSPENDED
+S6C-temp-who	PASS	临时任务派给被加签人u_auditor1	exp=u_auditor1	act=u_auditor1
+S6C-temp-state	PASS	临时任务delegationState=ADDSIGN	exp=ADDSIGN	act=ADDSIGN
+S6C-ledger	PASS	ADDSIGN_BEFORE台账	exp=true	act=true
+S6C-parent-resume	PASS	临时办结后父任务恢复(不再SUSPENDED)	exp=false	act=false
+S6C-done	PASS	加签全办结→COMPLETED	exp=COMPLETED	act=COMPLETED
+S6D-after-code	PASS	加签(后) code=0	exp=0	act=0
+S6D-after-ledger	PASS	ADDSIGN_AFTER台账	exp=true	act=true
+S7A-cc-created	PASS	apply办结→抄送u_auditor1(≥1条)	exp=true	act=true
+S7A-cc-unread	PASS	抄送初始未读read=false	exp=false	act=false
+S7A-inst-cc	PASS	实例视图ccRecords含该抄送	exp=true	act=true
+S7B-read-ok	PASS	标记已读 ok=true	exp=true	act=true
+S7B-read-true	PASS	已读后read=true	exp=true	act=true
+S7B-unread-filter	PASS	unread=true过滤掉已读	exp=0	act=0
+S7C-role-cc	PASS	role(auditor)抄送解析到u_auditor1(累计≥2)	exp=true	act=true
+S7C-done	PASS	cc_flow办结COMPLETED	exp=COMPLETED	act=COMPLETED
+S7D-todos-cc	PASS	todos/cc?user=u_auditor1有记录	exp=true	act=true
+S8A-expand	PASS	并行展开3个子任务	exp=3	act=3
+S8A-assignees	PASS	各子任务派给各approver	exp=["u_fin1","u_fin2","u_fin3"]	act=["u_fin1","u_fin2","u_fin3"]
+S8A-partial	PASS	签1人后仍ACTIVE(需全票)	exp=ACTIVE	act=ACTIVE
+S8A-all-done	PASS	全票签完→COMPLETED	exp=COMPLETED	act=COMPLETED
+S8B-expand	PASS	并行展开3子任务	exp=3	act=3
+S8B-1of3	PASS	1/3未过半仍ACTIVE	exp=ACTIVE	act=ACTIVE
+S8B-majority	PASS	2/3过半→COMPLETED	exp=COMPLETED	act=COMPLETED
+S8B-remainder-cancelled	PASS	剩余子任务作废(u_fin3无待办)	exp=	act=
+S8C-one-first	PASS	顺序:初始仅1个子任务	exp=1	act=1
+S8C-first-who	PASS	首个是u_fin1	exp=["u_fin1"]	act=["u_fin1"]
+S8C-second-who	PASS	办结后下一个u_fin2出现	exp=["u_fin2"]	act=["u_fin2"]
+S8C-third-who	PASS	再下一个u_fin3	exp=["u_fin3"]	act=["u_fin3"]
+S8C-seq-done	PASS	顺序全签→COMPLETED	exp=COMPLETED	act=COMPLETED
+S8D-expand	PASS	按产品数展开3子任务	exp=3	act=3
+S8D-assignees	PASS	各子任务派给产品owner	exp=["u_cfo","u_fin1","u_fin2"]	act=["u_cfo","u_fin1","u_fin2"]
+S8D-elemvalue	PASS	u_fin1子任务elementValue.sku=A	exp=A	act=A
+S8D-elemvalue2	PASS	u_cfo子任务elementValue.sku=C	exp=C	act=C
+S8D-done	PASS	全产品审完→COMPLETED	exp=COMPLETED	act=COMPLETED
+S9A-fork	PASS	fork后2个并发任务	exp=2	act=2
+S9A-branches	PASS	两分支legal+fin并发	exp=["fin","legal"]	act=["fin","legal"]
+S9A-join-wait	PASS	一支办结→join等待另一支(仍ACTIVE)	exp=ACTIVE	act=ACTIVE
+S9A-join-done	PASS	两支齐→join合流→COMPLETED	exp=COMPLETED	act=COMPLETED
+S9B-suspended	PASS	挂起→SUSPENDED	exp=SUSPENDED	act=SUSPENDED
+S9B-suspended-noact	PASS	挂起态办理被拒code=1	exp=1	act=1
+S9B-resumed	PASS	恢复→ACTIVE	exp=ACTIVE	act=ACTIVE
+S9B-after-resume	PASS	恢复后办理→推进l2	exp=l2	act=l2
+S9C-cancelled	PASS	取消→TERMINATED	exp=TERMINATED	act=TERMINATED
+S9D-jump-code	PASS	跳转 code=0	exp=0	act=0
+S9D-jumped	PASS	跳转后活动节点=l3	exp=l3	act=l3
+S9E-var-updated	PASS	amount更新为999	exp=999	act=999
+S9E-var-added	PASS	新增extra=added	exp=added	act=added
+S10A-eval-true	PASS	amount>20000 & amount=30000 → true	exp=true	act=true
+S10A-eval-false	PASS	amount=100 → false	exp=false	act=false
+S10A-validate-ok	PASS	合法表达式 valid=true	exp=true	act=true
+S10A-validate-bad	PASS	非法表达式 valid=false	exp=false	act=false
+S10A-functions	PASS	函数目录非空	exp=true	act=true
+S10B-register	PASS	决策表注册 code=0	exp=0	act=0
+S10B-eval-hi	PASS	amount=500000→approvalLevel=3	exp=3	act=3
+S10B-eval-lo	PASS	amount=500→approvalLevel=1(兜底)	exp=1	act=1
+S10C-timers	PASS	定时器触发端点 code=0	exp=0	act=0
+S10D-urge	PASS	催办 code=0	exp=0	act=0
+S10E-claim-recorded	PASS	认领直派任务有明确响应(code∈{0,1})	exp=true	act=true
+S10F-ghost-task	PASS	办结不存在任务→code=1	exp=1	act=1
+S10F-bad-def	PASS	起未知定义→code=1	exp=1	act=1
+S10F-bad-inst	PASS	查不存在实例→code=1	exp=1	act=1
+S10F-double-complete	PASS	重复办结同一任务→code=1	exp=1	act=1
+S11A-initiated-filter	PASS	todos/initiated?user=alice 不应含 bob 的实例	exp=false	act=false
+S11B-mi-noreject	PASS	会签子任务rejectable=false	exp=false	act=false
+S11C-empty-mi	PASS	空approvers→会签节点跳过→COMPLETED	exp=COMPLETED	act=COMPLETED
+S11D-invalid-reject	PASS	无效退回目标被拒(code=1)或安全留在l1	exp=true	act=true
+S11E-audit-note	PASS	记录:complete意见留痕存在(userId=NULL)	exp=true	act=true
+S11F-kindall	PASS	kind=all 有响应(不报错)	exp=true	act=true
+S11G-correlate	PASS	correlate端点有结构化响应	exp=true	act=true
+S13A-B-direct	PASS	产品B role(cashier)→直派u_cashier1	exp=u_cashier1	act=u_cashier1
+S13A-A-pool	PASS	产品A role(finance)→候选池3人	exp=["u_fin1","u_fin2","u_fin3"]	act=["u_fin1","u_fin2","u_fin3"]
+S13A-done	PASS	逐元素候选会签办结→COMPLETED	exp=COMPLETED	act=COMPLETED
+S13B-at-fin3	PASS	子流程推进到fin3	exp=fin3	act=fin3
+S13B-sub-back	PASS	子流程内退回→回到fin1	exp=fin1	act=fin1
+S13B-parent-wait	PASS	退回期间父仍在callActivity等待	exp=true	act=true
