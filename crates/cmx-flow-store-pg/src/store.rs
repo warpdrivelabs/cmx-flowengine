@@ -47,7 +47,7 @@ impl PgRuntimeStore {
         for stmt in crate::ddl::DDL_STATEMENTS {
             execute_sql(&self.db_id, None, stmt)
                 .await
-                .map_err(|e| StoreError::Backend(format!("建表失败: {e}")))?;
+                .map_err(|e| StoreError::Backend(format!("建表失败:{stmt}, {e}")))?;
         }
         Ok(())
     }
