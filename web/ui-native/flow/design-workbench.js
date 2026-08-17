@@ -40,6 +40,18 @@ const state = {
   modeler: null,       // 单一模块级 bpmn-js modeler
   canvasHost: null,    // 当前挂 modeler 的 content host
   hosts: new Set(),
+  // 大纲面板（explorer 下部）：联动展示画布所有节点/网关/边，双向选中。主流程与子流程共用。
+  outline: {
+    open: true,          // 是否展开大纲
+    height: 260,         // 大纲区高度（px，上下各半可拖拽的下半）
+    groups: { node: true, gateway: true, edge: true }, // 三组各自展开/折叠
+    tick: 0,             // 画布结构变化计数（增删元素时 ++，触发大纲重算）
+  },
+  // 缩略图预览（content 画布右下角）：小方框标当前视口，可拖动平移画布。主流程/子流程共用同一 modeler。
+  minimap: {
+    collapsed: false,    // 是否折叠成小标题条
+    vb: null,            // 当前缩略图 SVG 的 viewBox { x, y, w, h }（= 全图内容边界+留白，供坐标换算）
+  },
   // DAM 三段（域/应用/模块）——对标数据字典定义工作台 explorer 顶部选择器。
   dam: { domains: [], apps: [], modules: [] },   // /api/registry/dam 选项
   fDomain: '', fApp: '', fModule: '',            // explorer 过滤选择
@@ -256,6 +268,7 @@ function explorerHtml () {
       <input type="checkbox" data-show-subflows ${state.showSubflows ? 'checked' : ''}/>
       <span>显示子流程（${subflowCount()}）</span></label>` : ''}
     <button class="flow-btn block" data-act="new">＋ 新建主流程</button>
+    ${outlineHtml()}
   </section>`
 }
 
@@ -422,9 +435,342 @@ function typeName (el) {
   return TYPE_NAME[t] || t
 }
 
-// property 区分两页签：节点属性 | 数据模型。数据模型页签把变量声明编辑器内联渲进来（可见、可测，
-// 不再用 position:absolute 遮罩）——门户里「model 区」隐藏，故变量/数据模型面放这个可见页签。
-// 作用于 activeModeler()（钻入子流程时即编辑子流程变量；主流程时编主流程变量）。
+// ————————————————————— 大纲面板（explorer 下部，联动画布） —————————————————————
+
+// 元素归类：'edge'（顺序流/连线）| 'gateway'（各类网关）| 'node'（其余可见 shape）。
+// 过滤掉 label 伪元素、根 Process、无 id 的内部元素。
+function outlineCategory (el) {
+  if (!el || !el.type || el.labelTarget) return null
+  const t = el.type
+  if (t === 'bpmn:Process' || t === 'bpmn:Collaboration' || t === 'label') return null
+  if (t === 'bpmn:SequenceFlow' || el.waypoints) return 'edge'
+  if (t.includes('Gateway')) return 'gateway'
+  if (el.width == null) return null // 非 shape（如未落地元素）跳过
+  return 'node'
+}
+
+// 从当前 modeler 的 elementRegistry 收集大纲元素，按三类分组。无画布返回空。
+function outlineGroups () {
+  const empty = { node: [], gateway: [], edge: [] }
+  const m = state.modeler
+  if (!m) return empty
+  let all
+  try { all = m.get('elementRegistry').getAll() } catch { return empty }
+  const g = { node: [], gateway: [], edge: [] }
+  for (const el of all) {
+    const cat = outlineCategory(el)
+    if (!cat) continue
+    g[cat].push(el)
+  }
+  return g
+}
+
+// 一条边的可读标签：优先边名，否则 源名→目标名。
+function edgeLabel (el) {
+  const bo = el.businessObject
+  if (bo && bo.name) return bo.name
+  const nm = (e) => (e && e.businessObject && (e.businessObject.name || e.businessObject.id)) || '?'
+  if (el.source || el.target) return `${nm(el.source)} → ${nm(el.target)}`
+  return el.id
+}
+
+// 一个大纲项的显示名：节点/网关用元素名（回退类型名），边用 edgeLabel。
+function outlineItemLabel (el, cat) {
+  if (cat === 'edge') return edgeLabel(el)
+  const bo = el.businessObject
+  return (bo && bo.name) || typeName(el)
+}
+
+// 各类的小图标（ui5 icon name）。
+const OUTLINE_ICON = {
+  'bpmn:StartEvent': 'begin', 'bpmn:EndEvent': 'process', 'bpmn:UserTask': 'employee',
+  'bpmn:ServiceTask': 'settings', 'bpmn:ScriptTask': 'syntax', 'bpmn:BusinessRuleTask': 'tree',
+  'bpmn:CallActivity': 'workflow-tasks', 'bpmn:SubProcess': 'process',
+  'bpmn:BoundaryEvent': 'alarm', 'bpmn:IntermediateCatchEvent': 'message-information',
+  'bpmn:ManualTask': 'employee', 'bpmn:SendTask': 'outbox', 'bpmn:ReceiveTask': 'inbox',
+}
+function outlineIcon (el, cat) {
+  if (cat === 'gateway') return 'decision'
+  if (cat === 'edge') return 'arrow-right'
+  return OUTLINE_ICON[el.type] || 'circle-task'
+}
+
+function outlineGroupHtml (cat, label, items) {
+  const open = state.outline.groups[cat]
+  const selId = state.selectedElement && state.selectedElement.id
+  const rows = items.length
+    ? items.map((el) => {
+        const on = el.id === selId
+        return `<button class="flow-ol-item ${on ? 'on' : ''}" data-ol-id="${esc(el.id)}" title="${esc(el.id)}">
+          <ui5-icon name="${outlineIcon(el, cat)}" class="flow-ol-ic"></ui5-icon>
+          <span class="flow-ol-name">${esc(outlineItemLabel(el, cat))}</span>
+        </button>`
+      }).join('')
+    : `<div class="flow-ol-empty">—</div>`
+  return `<div class="flow-ol-group">
+    <button class="flow-ol-ghead" data-ol-group="${cat}">
+      <ui5-icon name="${open ? 'navigation-down-arrow' : 'navigation-right-arrow'}" class="flow-ol-caret"></ui5-icon>
+      <b>${label}</b><span class="flow-ol-count">${items.length}</span>
+    </button>
+    ${open ? `<div class="flow-ol-items">${rows}</div>` : ''}
+  </div>`
+}
+
+// 大纲面板整体 HTML（嵌入主流程 / 子流程两个 explorer 变体的下部）。
+function outlineHtml () {
+  const ol = state.outline
+  const g = outlineGroups()
+  const total = g.node.length + g.gateway.length + g.edge.length
+  const caret = ol.open ? 'navigation-down-arrow' : 'navigation-right-arrow'
+  const body = ol.open
+    ? (state.modeler
+        ? (total
+            ? `<div class="flow-ol-body">
+                ${outlineGroupHtml('node', '节点', g.node)}
+                ${outlineGroupHtml('gateway', '网关', g.gateway)}
+                ${outlineGroupHtml('edge', '边', g.edge)}
+              </div>`
+            : `<div class="flow-ol-hint">画布暂无元素</div>`)
+        : `<div class="flow-ol-hint">载入流程后显示大纲</div>`)
+    : ''
+  return `<div class="flow-outline ${ol.open ? 'open' : 'closed'}" ${ol.open ? `style="height:${ol.height}px"` : ''}>
+    <div class="flow-ol-resize" data-ol-resize title="拖拽调整大纲高度"></div>
+    <button class="flow-ol-head" data-ol-toggle>
+      <ui5-icon name="${caret}" class="flow-ol-caret"></ui5-icon>
+      <b>大纲</b><span class="flow-ol-total">${total}</span>
+      <span class="flow-ol-sub">${state.subNav ? '子流程' : '主流程'}</span>
+    </button>
+    ${body}
+  </div>`
+}
+
+// 大纲事件绑定（主/子 explorer 共用）：折叠面板、折叠分组、点击项联动画布、拖拽调高。
+function bindOutline (root) {
+  // 面板整体折叠。
+  root.querySelector('[data-ol-toggle]')?.addEventListener('click', () => {
+    state.outline.open = !state.outline.open
+    refreshView('explorer')
+  })
+  // 分组折叠。
+  root.querySelectorAll('[data-ol-group]').forEach((b) => b.addEventListener('click', () => {
+    const cat = b.dataset.olGroup
+    state.outline.groups[cat] = !state.outline.groups[cat]
+    refreshView('explorer')
+  }))
+  // ★ 大纲 → 画布：点击项在画布里选中 + 滚动到可见。
+  root.querySelectorAll('[data-ol-id]').forEach((b) => b.addEventListener('click', () => {
+    selectInCanvas(b.dataset.olId)
+  }))
+  // 拖拽调整大纲高度（上下各半）。
+  const rz = root.querySelector('[data-ol-resize]')
+  if (rz) {
+    rz.addEventListener('mousedown', (e) => {
+      e.preventDefault()
+      const startY = e.clientY
+      const startH = state.outline.height
+      const panel = rz.closest('.flow-outline')
+      const onMove = (ev) => {
+        // 向上拖 = 变高（面板在下部，顶边上移增高）。
+        const h = Math.max(120, Math.min(560, startH + (startY - ev.clientY)))
+        state.outline.height = h
+        if (panel) panel.style.height = h + 'px'
+      }
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove)
+        document.removeEventListener('mouseup', onUp)
+      }
+      document.addEventListener('mousemove', onMove)
+      document.addEventListener('mouseup', onUp)
+    })
+  }
+}
+
+// 大纲点击 → 在画布中选中该元素并滚动到可见。选择变化会触发 selection.changed → 大纲高亮同步。
+function selectInCanvas (id) {
+  const m = state.modeler
+  if (!m || !id) return
+  try {
+    const el = m.get('elementRegistry').get(id)
+    if (!el) return
+    m.get('selection').select(el)
+    // 滚动到可见（连线也支持）。scrollToElement 在 v17 可用；失败则忽略。
+    try { m.get('canvas').scrollToElement(el) } catch {}
+  } catch {}
+}
+
+// 画布 → 大纲同步：只就地重渲各 explorer host 里的大纲 DOM，不动上部定义列表、不碰画布。
+// 去抖到下一帧（selection/结构事件很密）。找不到大纲容器时退回整区 refreshView('explorer')。
+function refreshOutline () {
+  if (state.__outlineRaf) return
+  state.__outlineRaf = requestAnimationFrame(() => {
+    state.__outlineRaf = null
+    let patched = false
+    for (const host of Array.from(state.hosts)) {
+      if (!host || host.__flowView !== 'explorer' || !host.isConnected) continue
+      const hroot = hostRoot(host)
+      const cur = hroot && hroot.querySelector('.flow-outline')
+      if (!cur) continue
+      const tmp = document.createElement('div')
+      tmp.innerHTML = outlineHtml()
+      const next = tmp.firstElementChild
+      if (next) { cur.replaceWith(next); patched = true }
+    }
+    // 大纲 DOM 就地替换后需重新绑定其事件（点击/折叠/拖拽）。
+    if (patched) {
+      for (const host of Array.from(state.hosts)) {
+        if (!host || host.__flowView !== 'explorer' || !host.isConnected) continue
+        const hroot = hostRoot(host)
+        if (hroot) bindOutline(hroot)
+      }
+    } else {
+      refreshView('explorer')
+    }
+  })
+}
+
+// ————————————————————— 缩略图预览（content 画布右下角，可拖动视口） —————————————————————
+//
+// 自建（离线无官方 diagram-js-minimap）：克隆画布 SVG 缩放成缩略图 + 一个视口小方框标当前可见区域，
+// 拖动方框即平移画布。主流程/子流程共用同一 modeler，故挂一次即两者皆生效。
+// 架构：内容克隆只在图变化时重建（载入/增删，去抖）；视口框只在 viewbox 变化时重定位（pan/zoom 高频，轻量）。
+
+// 取当前 content host 里的画布外壳（.flow-canvas-wrap），缩略图挂在其内（右下角绝对定位）。
+function minimapWrap () {
+  for (const host of Array.from(state.hosts)) {
+    if (!host || host.__flowView !== 'content' || !host.isConnected) continue
+    const hroot = hostRoot(host)
+    const wrap = hroot && hroot.querySelector('.flow-canvas-wrap')
+    if (wrap) return wrap
+  }
+  return null
+}
+function minimapEl () {
+  const wrap = minimapWrap()
+  return wrap && wrap.querySelector('.flow-minimap')
+}
+
+// 挂载缩略图 DOM（幂等：已存在则跳过）。在 bootCanvas 建好 modeler 后调用。
+function mountMinimap () {
+  const wrap = minimapWrap()
+  if (!wrap || wrap.querySelector('.flow-minimap')) return
+  const mm = document.createElement('div')
+  mm.className = 'flow-minimap' + (state.minimap.collapsed ? ' collapsed' : '')
+  mm.innerHTML = `
+    <div class="flow-mm-head" data-mm-toggle title="折叠 / 展开缩略图">
+      <ui5-icon name="map-2" class="flow-mm-ic"></ui5-icon>
+      <b>缩略图</b>
+      <span class="flow-mm-caret">${state.minimap.collapsed ? '▢' : '—'}</span>
+    </div>
+    <div class="flow-mm-stage">
+      <div class="flow-mm-diagram"></div>
+      <svg class="flow-mm-overlay" preserveAspectRatio="xMidYMid meet"><rect class="flow-mm-vp" x="0" y="0" width="0" height="0" rx="1"></rect></svg>
+    </div>`
+  wrap.appendChild(mm)
+  wireMinimap(mm)
+  renderMinimapContent()
+}
+
+function wireMinimap (mm) {
+  // 折叠 / 展开。
+  mm.querySelector('[data-mm-toggle]')?.addEventListener('click', () => {
+    state.minimap.collapsed = !state.minimap.collapsed
+    mm.classList.toggle('collapsed', state.minimap.collapsed)
+    const caret = mm.querySelector('.flow-mm-caret')
+    if (caret) caret.textContent = state.minimap.collapsed ? '▢' : '—'
+    if (!state.minimap.collapsed) { renderMinimapContent() } // 展开时补渲一次
+  })
+  // 视口框拖动 / 点击跳转：在缩略图舞台上按下即把画布视口中心移到该点，拖动持续平移。
+  const stage = mm.querySelector('.flow-mm-stage')
+  if (!stage) return
+  let dragging = false
+  const onDown = (e) => {
+    if (state.minimap.collapsed) return
+    e.preventDefault(); e.stopPropagation()
+    dragging = true
+    minimapPanTo(e.clientX, e.clientY)
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+  const onMove = (e) => { if (dragging) minimapPanTo(e.clientX, e.clientY) }
+  const onUp = () => { dragging = false; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }
+  stage.addEventListener('mousedown', onDown)
+}
+
+// 重建缩略图内容：克隆画布 SVG，重置视口变换，用全图内容边界（viewbox.inner）作 viewBox 框定。
+function renderMinimapContent () {
+  const m = state.modeler
+  const mm = minimapEl()
+  if (!m || !mm || state.minimap.collapsed) return
+  let canvas, vb
+  try { canvas = m.get('canvas'); vb = canvas.viewbox() } catch { return }
+  const inner = vb && vb.inner
+  const holder = mm.querySelector('.flow-mm-diagram')
+  if (!holder) return
+  if (!inner || !inner.width || !inner.height) { holder.innerHTML = ''; state.minimap.vb = null; return }
+  const src = canvas.getContainer().querySelector('svg')
+  if (!src) return
+  const clone = src.cloneNode(true)
+  const vp = clone.querySelector('.viewport')
+  if (vp) vp.removeAttribute('transform')        // 用 viewBox 框定，去掉当前 pan/zoom 变换
+  clone.querySelectorAll('defs').forEach((d) => d.remove()) // 去 defs 避免 marker id 重复；边退化为直线，缩略图足够
+  const pad = Math.max(inner.width, inner.height) * 0.06 + 12
+  const vx = inner.x - pad, vy = inner.y - pad, vw = inner.width + 2 * pad, vh = inner.height + 2 * pad
+  clone.setAttribute('viewBox', `${vx} ${vy} ${vw} ${vh}`)
+  clone.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+  clone.removeAttribute('width'); clone.removeAttribute('height')
+  clone.setAttribute('width', '100%'); clone.setAttribute('height', '100%')
+  clone.style.pointerEvents = 'none'
+  holder.innerHTML = ''
+  holder.appendChild(clone)
+  state.minimap.vb = { x: vx, y: vy, w: vw, h: vh }
+  updateMinimapViewport()
+}
+
+// 重定位视口小方框（覆盖层 SVG 用与缩略图相同的 viewBox，故方框坐标 = 画布 viewbox 的 x/y/w/h）。
+function updateMinimapViewport () {
+  const m = state.modeler
+  const mm = minimapEl()
+  const mmvb = state.minimap.vb
+  if (!m || !mm || !mmvb || state.minimap.collapsed) return
+  const overlay = mm.querySelector('.flow-mm-overlay')
+  const rect = mm.querySelector('.flow-mm-vp')
+  if (!overlay || !rect) return
+  overlay.setAttribute('viewBox', `${mmvb.x} ${mmvb.y} ${mmvb.w} ${mmvb.h}`)
+  let vb
+  try { vb = m.get('canvas').viewbox() } catch { return }
+  rect.setAttribute('x', vb.x); rect.setAttribute('y', vb.y)
+  rect.setAttribute('width', Math.max(1, vb.width)); rect.setAttribute('height', Math.max(1, vb.height))
+}
+
+// 缩略图坐标（屏幕像素）→ 画布坐标，把画布视口中心移到该点（保持缩放，仅平移）。
+function minimapPanTo (clientX, clientY) {
+  const m = state.modeler
+  const mm = minimapEl()
+  if (!m || !mm) return
+  const overlay = mm.querySelector('.flow-mm-overlay')
+  if (!overlay || !overlay.getScreenCTM) return
+  const ctm = overlay.getScreenCTM()
+  if (!ctm) return
+  const pt = overlay.createSVGPoint()
+  pt.x = clientX; pt.y = clientY
+  const p = pt.matrixTransform(ctm.inverse()) // 缩略图 viewBox = 画布坐标，直接得画布坐标
+  try {
+    const canvas = m.get('canvas')
+    const vb = canvas.viewbox()
+    canvas.viewbox({ x: p.x - vb.width / 2, y: p.y - vb.height / 2, width: vb.width, height: vb.height })
+  } catch {}
+}
+
+// 去抖重建缩略图内容（结构变化/载入触发，事件密，合并到下一帧）。
+function scheduleMinimapRender () {
+  if (state.__mmRaf) return
+  state.__mmRaf = requestAnimationFrame(() => { state.__mmRaf = null; renderMinimapContent() })
+}
+// 去抖重定位视口框（viewbox 变化高频）。
+function scheduleMinimapViewport () {
+  if (state.__mmVpRaf) return
+  state.__mmVpRaf = requestAnimationFrame(() => { state.__mmVpRaf = null; updateMinimapViewport() })
+}
 function propertyHtml () {
   const model = state.propTab === 'model'
   const tabs = `<div class="flow-ptabs">
@@ -1388,6 +1734,7 @@ function bind (root, view, host) {
         if (v === '') return
         subNewVariantForOrg(v === '__default__' ? '' : v)
       })
+      bindOutline(root) // 子流程 explorer 下部也有大纲
       return
     }
     root.querySelector('[data-act="refresh"]')?.addEventListener('click', () => loadDefs())
@@ -1417,6 +1764,7 @@ function bind (root, view, host) {
       else if (kind === 'module') { state.fModule = val }
       refreshView('explorer')
     }))
+    bindOutline(root) // 主流程 explorer 下部大纲
     return
   }
   if (view === 'content') {
@@ -1857,8 +2205,11 @@ function subflowExplorerHtml () {
       <div><b>子流程</b><span>${esc(sn.calledKey ? '逻辑名 ' + sn.calledKey : '固定')}</span></div>
     </div>
     <button class="flow-btn block" data-sub-back><ui5-icon name="nav-back"></ui5-icon> 返回主流程（${esc(sn.mainName || sn.mainKey || '')}）</button>
-    <div class="flow-subv-hd"><ui5-icon name="org-chart"></ui5-icon> 组织变体</div>
-    ${list}
+    <div class="flow-subv-scroll">
+      <div class="flow-subv-hd"><ui5-icon name="org-chart"></ui5-icon> 组织变体</div>
+      ${list}
+    </div>
+    ${outlineHtml()}
   </section>`
 }
 
@@ -2203,6 +2554,7 @@ async function bootCanvas (root, host) {
     // 已有 modeler 且容器仍连通 → 复用（切区回来不重建），但要 resized 一次（tab 切回尺寸变了）。
     if (state.modeler && state.canvasEl && state.canvasEl.isConnected && state.canvasEl === canvasEl) {
       try { state.modeler.get('canvas').resized() } catch {}
+      mountMinimap(); scheduleMinimapViewport() // 复用画布：缩略图 DOM 可能随 content 重渲丢失，幂等补挂
       return
     }
     // 容器变了（首次或切走又回来）→ 新建 modeler 挂到新容器
@@ -2222,13 +2574,25 @@ async function bootCanvas (root, host) {
       if (!state.selectedElement || state.selectedElement.type !== 'bpmn:SequenceFlow') state.__condFor = null
       initConditionForSelection()
       refreshView('property')
+      refreshOutline() // ★ 画布 → 大纲：选中变化即同步大纲高亮
     })
     state.modeler.on('element.changed', (e) => {
       if (state.selectedElement && state.selectedElement.id === e.element.id) refreshView('property')
       // ① 徽章随节点属性变化即时更新（办理人/会签/子流程 key 改了立刻反映）。去抖到下一帧。
       if (state.__badgeRaf) cancelAnimationFrame(state.__badgeRaf)
       state.__badgeRaf = requestAnimationFrame(() => { state.__badgeRaf = null; renderNodeBadges() })
+      refreshOutline() // 元素改名/属性变 → 大纲项文案随之更新
     })
+    // 结构变化（增删节点/连线）→ 大纲重算 + 缩略图重建。事件很密，去抖到下一帧。
+    for (const ev of ['shape.added', 'shape.removed', 'connection.added', 'connection.removed', 'root.set']) {
+      state.modeler.on(ev, () => { refreshOutline(); scheduleMinimapRender() })
+    }
+    // 元素移动/改尺寸 → 缩略图重建（拖节点后位置变）。
+    state.modeler.on('elements.changed', () => scheduleMinimapRender())
+    // 画布视口变化（平移/缩放）→ 只重定位缩略图里的视口小方框（轻量，高频）。
+    state.modeler.on('canvas.viewbox.changed', () => scheduleMinimapViewport())
+    // 导入完成（载入定义 / 钻入子流程 / 新建）→ 挂载并重建缩略图。
+    state.modeler.on('import.done', () => { mountMinimap(); scheduleMinimapRender() })
     // U1：命令栈变化 = 有未保存编辑。用户操作（增删节点/连线/属性）都经 commandStack。
     state.modeler.on('commandStack.changed', () => { if (!state.__loadingDiagram) state.dirty = true })
     // ★ 快捷入口：双击 callActivity 节点 → 打开子流程编辑器（与属性面板「编辑子流程」等效）。
@@ -3134,6 +3498,36 @@ function styleCss () {
   .flow-head b{font-size:13px} .flow-head span{display:block;font-size:11px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
   .flow-icon-btn{border:1px solid var(--line);background:#fff;border-radius:7px;width:28px;height:28px;cursor:pointer;display:grid;place-items:center}
   .flow-def-list{flex:1;overflow:auto;padding:8px}
+  /* —— 大纲面板（explorer 下部，联动画布） —— */
+  .flow-outline{flex:0 0 auto;border-top:1px solid var(--line);background:#fafbfc;display:flex;flex-direction:column;position:relative;min-height:0}
+  .flow-outline.open{overflow:hidden}
+  .flow-outline.closed{height:auto}
+  .flow-ol-resize{position:absolute;top:0;left:0;right:0;height:6px;margin-top:-3px;cursor:ns-resize;z-index:2}
+  .flow-outline.closed .flow-ol-resize{display:none}
+  .flow-ol-resize:hover{background:var(--brand-soft)}
+  .flow-ol-head{display:flex;align-items:center;gap:6px;width:100%;border:0;background:transparent;cursor:pointer;
+    padding:8px 10px;font:inherit;color:var(--ink);flex:0 0 auto;border-bottom:1px solid var(--line-soft)}
+  .flow-ol-head b{font-size:12.5px}
+  .flow-ol-caret{font-size:12px;color:var(--muted)}
+  .flow-ol-total{font-size:11px;color:#fff;background:var(--brand);border-radius:9px;padding:0 6px;line-height:16px;min-width:16px;text-align:center}
+  .flow-ol-sub{margin-left:auto;font-size:10.5px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
+  .flow-ol-body{flex:1;overflow:auto;padding:4px 0 6px}
+  .flow-ol-hint{padding:10px;font-size:12px;color:var(--muted);text-align:center}
+  .flow-ol-group{margin-bottom:2px}
+  .flow-ol-ghead{display:flex;align-items:center;gap:5px;width:100%;border:0;background:transparent;cursor:pointer;
+    padding:5px 10px;font:inherit;color:var(--muted);font-size:11.5px}
+  .flow-ol-ghead b{font-size:11.5px;color:var(--ink);font-weight:600}
+  .flow-ol-ghead .flow-ol-caret{font-size:10px}
+  .flow-ol-count{font-size:10.5px;color:var(--muted);background:var(--line-soft);border-radius:8px;padding:0 5px;line-height:15px}
+  .flow-ol-items{display:flex;flex-direction:column}
+  .flow-ol-item{display:flex;align-items:center;gap:7px;width:100%;border:0;background:transparent;cursor:pointer;
+    padding:5px 10px 5px 22px;font:inherit;font-size:12px;color:var(--ink);text-align:left;border-left:2px solid transparent}
+  .flow-ol-item:hover{background:#eef2f6}
+  .flow-ol-item.on{background:var(--brand-soft);border-left-color:var(--brand);font-weight:600}
+  .flow-ol-ic{font-size:13px;color:var(--muted);flex:0 0 auto}
+  .flow-ol-item.on .flow-ol-ic{color:var(--brand)}
+  .flow-ol-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .flow-ol-empty{padding:3px 10px 3px 22px;font-size:11px;color:var(--muted)}
   .flow-dam{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line-soft);background:#fafbfc}
   .flow-dam-row{display:grid;grid-template-columns:1fr 1fr;gap:6px}
   .flow-dam select,.flow-field select{width:100%;height:28px;font:inherit;font-size:12px;border:1px solid var(--line);border-radius:7px;padding:0 6px;background:#fff;color:var(--ink)}
@@ -3168,6 +3562,22 @@ function styleCss () {
   .flow-sp{flex:1}
   .flow-canvas-wrap{position:relative;flex:1;min-height:0;background:radial-gradient(circle,#e5e9ee 1px,transparent 1px) 0 0/22px 22px}
   .flow-canvas{position:absolute;inset:0}
+  /* 去掉 bpmn-js 自带的右下角 bpmn.io 水印链接 */
+  .flow-canvas .bjs-powered-by{display:none!important}
+  /* 缩略图预览（画布右下角，可拖动视口方框） */
+  .flow-minimap{position:absolute;right:14px;bottom:14px;width:212px;background:rgba(255,255,255,.96);
+    border:1px solid var(--line);border-radius:9px;box-shadow:0 3px 12px rgba(9,30,66,.16);overflow:hidden;z-index:14;user-select:none}
+  .flow-mm-head{display:flex;align-items:center;gap:6px;padding:5px 9px;cursor:pointer;border-bottom:1px solid var(--line-soft);background:#fafbfc}
+  .flow-mm-head b{font-size:11.5px;font-weight:600}
+  .flow-mm-ic{font-size:13px;color:var(--brand)}
+  .flow-mm-caret{margin-left:auto;font-size:12px;color:var(--muted);line-height:1;width:14px;text-align:center}
+  .flow-mm-stage{position:relative;width:100%;height:142px;background:#fff;cursor:crosshair;overflow:hidden}
+  .flow-mm-diagram{position:absolute;inset:0}
+  .flow-mm-diagram svg{width:100%;height:100%;display:block}
+  .flow-mm-overlay{position:absolute;inset:0;width:100%;height:100%}
+  .flow-mm-vp{fill:rgba(9,105,218,.14);stroke:var(--brand);stroke-width:2px;vector-effect:non-scaling-stroke}
+  .flow-minimap.collapsed .flow-mm-stage{display:none}
+  .flow-minimap.collapsed{width:auto}
   /* 版本管理对话框（content 画布区内浮层） */
   .flow-dialog-mask{position:absolute;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:rgba(13,29,46,.32);padding:18px}
   .flow-dialog{width:min(560px,100%);max-height:100%;overflow:hidden;display:flex;flex-direction:column;background:#fff;border:1px solid #aacdf5;border-radius:10px;box-shadow:0 18px 46px rgba(0,0,0,.22)}
@@ -3286,8 +3696,8 @@ function styleCss () {
   .flow-crumb-sep{color:var(--brand);font-weight:700}
   .flow-crumb-sub{color:var(--ink);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
   /* explorer 子流程模式：组织变体列表 */
-  .flow-subv-hd{display:flex;align-items:center;gap:6px;padding:9px 11px 4px;font-size:12px;font-weight:700;color:var(--brand-d,#0a4d8c)}
-  .flow-subv-list{padding:2px 7px}
+  .flow-subv-scroll{flex:1;overflow:auto;min-height:0}
+  .flow-subv-hd{display:flex;align-items:center;gap:6px;padding:9px 11px 4px;font-size:12px;font-weight:700;color:var(--brand-d,#0a4d8c)}  .flow-subv-list{padding:2px 7px}
   .flow-subv{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:1px solid transparent;background:none;border-radius:8px;padding:8px 9px;cursor:pointer;margin-bottom:3px}
   .flow-subv:hover{background:#eef5ff}
   .flow-subv.on{background:#e3effe;border-color:#a9cef3}
