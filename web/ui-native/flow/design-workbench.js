@@ -52,9 +52,13 @@ const state = {
     collapsed: false,    // 是否折叠成小标题条
     vb: null,            // 当前缩略图 SVG 的 viewBox { x, y, w, h }（= 全图内容边界+留白，供坐标换算）
   },
+  // 主题：chrome 走 --sap* 令牌自动翻（零 JS）；仅 BPMN 画布需要这个布尔来切暗色覆盖（见 applyCanvasTheme）。
+  dark: false,
   // DAM 三段（域/应用/模块）——对标数据字典定义工作台 explorer 顶部选择器。
   dam: { domains: [], apps: [], modules: [] },   // /api/registry/dam 选项
   fDomain: '', fApp: '', fModule: '',            // explorer 过滤选择
+  // 流程列表分页（explorer 主流程列表，0 基）——首页/上页/下页/末页。过滤/刷新时重置为 0。
+  defPage: 0, defPageSize: 8,
   defDam: { domain: '', application: '', module: '' }, // 当前画布定义的 DAM 归属（随存草稿落库）
   // 版本管理（对标报表版本：每条定义可选版本；publish=新增版本、activate=设当前、delete=删历史）。
   selectedVersion: {},   // { [key]: version|null } 用户为某定义选中的版本（覆盖服务端 active）
@@ -168,6 +172,7 @@ function mount (ctx, view) {
     if (!root || !root.isConnected) return
     root.innerHTML = `<style>${styleCss()}</style>${viewHtml(view)}`
     bind(root, view, host)
+    applyCanvasTheme(root)   // .flow 每次重建，补挂 data-theme 供暗色画布覆盖
   }
   requestAnimationFrame(() => { render(); if (view === 'explorer') { loadDefs(); if (!state.dam.domains.length) loadDam() } })
   return `<style>${styleCss()}</style>${viewHtml(view)}`
@@ -181,6 +186,32 @@ function refreshView (view) {
     if (!root) continue
     root.innerHTML = `<style>${styleCss()}</style>${viewHtml(view)}`
     bind(root, view, host)
+    applyCanvasTheme(root)
+  }
+}
+
+// 点击流程时保持列表滚动位置不动：refreshView('explorer') 会重建 innerHTML，
+// 内层 .flow-def-list 的 scrollTop 会被重置为 0（外层宿主容器的滚动则会保留）。
+// 故重渲染前抓取各滚动容器位置，返回一个在重渲染后原样复位的函数——点选前后视图纹丝不动。
+function preserveExplorerScroll () {
+  const saved = []
+  for (const host of Array.from(state.hosts)) {
+    if (!host || host.__flowView !== 'explorer' || !host.isConnected) continue
+    const root = hostRoot(host)
+    if (!root) continue
+    const list = root.querySelector?.('.flow-def-list')
+    saved.push({ host, listTop: list ? list.scrollTop : 0, rootTop: root.scrollTop || 0, hostTop: host.scrollTop || 0 })
+  }
+  return () => {
+    for (const s of saved) {
+      if (!s.host || !s.host.isConnected) continue
+      const root = hostRoot(s.host)
+      if (!root) continue
+      const list = root.querySelector?.('.flow-def-list')
+      if (list) list.scrollTop = s.listTop
+      if (typeof root.scrollTop === 'number') root.scrollTop = s.rootTop
+      if (s.host !== root && typeof s.host.scrollTop === 'number') s.host.scrollTop = s.hostTop
+    }
   }
 }
 
@@ -203,6 +234,56 @@ function viewHtml (view) {
   if (view === 'property') return propertyHtml()
   return contentHtml()
 }
+
+// ————————————————————— 主题（跟随门户 SAP 主题） —————————————————————
+// chrome 全部走 --sap* 令牌，light/dark 由门户改写令牌值自动翻，零 JS 零重渲染。
+// 唯 BPMN 画布（bpmn-js 自绘 SVG + <link> 注入的 diagram-js.css）不吃 --sap*，
+// 故用一个「是否暗色」布尔，在 .flow 上打 data-theme=dark，触发下方暗色画布覆盖块。
+// 探测法复刻 packages/cmx-data-comp/src/lib/cmx-theme-detect.js：读 :root 的
+// --sapBackgroundColor 相对亮度（<128 视为暗），回退系统 prefers-color-scheme。
+function detectDarkMode () {
+  if (typeof getComputedStyle === 'undefined') return false
+  try {
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--sapBackgroundColor').trim()
+    if (bg) {
+      let r, g, b
+      const hex = bg.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i)
+      if (hex) { r = parseInt(hex[1], 16); g = parseInt(hex[2], 16); b = parseInt(hex[3], 16) }
+      else {
+        const rgb = bg.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/)
+        if (rgb) { r = +rgb[1]; g = +rgb[2]; b = +rgb[3] }
+      }
+      if (r != null) return (0.299 * r + 0.587 * g + 0.114 * b) < 128
+    }
+  } catch (_) {}
+  try { return window.matchMedia('(prefers-color-scheme: dark)').matches } catch { return false }
+}
+
+// 重渲染后给该根内 .flow 补挂 data-theme（.flow 每次重建 innerHTML，故必须渲染后统一补）。
+function applyCanvasTheme (root) {
+  if (!root || !root.querySelector) return
+  state.dark = detectDarkMode()
+  const flow = root.querySelector('.flow')
+  if (flow) flow.setAttribute('data-theme', state.dark ? 'dark' : 'light')
+}
+
+// 门户切主题时：chrome 令牌自动翻，无需重渲染；这里只把画布 data-theme 翻过来 + 重绘缩略图克隆。
+function refreshCanvasThemeAll () {
+  state.dark = detectDarkMode()
+  for (const host of Array.from(state.hosts)) {
+    if (!host || !host.isConnected) continue
+    const root = hostRoot(host)
+    if (root) applyCanvasTheme(root)
+  }
+  try { scheduleMinimapRender() } catch (_) {}
+}
+try {
+  if (typeof window !== 'undefined' && !window.__flowThemeWired) {
+    window.__flowThemeWired = true
+    window.addEventListener('cmx-portal-theme-change', () => refreshCanvasThemeAll())
+  }
+} catch (_) {}
+
 
 // ————————————————————— explorer 区 —————————————————————
 
@@ -249,11 +330,16 @@ function filteredDefs () {
 }
 
 function explorerHtml () {
-  const defs = filteredDefs()
+  const all = filteredDefs()
+  const size = state.defPageSize
+  const pages = Math.max(1, Math.ceil(all.length / size))
+  if (state.defPage > pages - 1) state.defPage = pages - 1   // 过滤/删除后越界回退
+  if (state.defPage < 0) state.defPage = 0
+  const pageDefs = all.slice(state.defPage * size, state.defPage * size + size)
   const body = state.loading
     ? `<cmx-empty-state icon="busy" title="加载流程定义..." size="sm"></cmx-empty-state>`
-    : (defs.length
-        ? defs.map(defItemHtml).join('')
+    : (all.length
+        ? pageDefs.map(defItemHtml).join('')
         : (state.definitions.length
             ? `<cmx-empty-state icon="tree" title="当前 DAM 过滤下无匹配定义" size="sm"></cmx-empty-state>`
             : `<cmx-empty-state icon="tree" title="暂无流程定义" description="点下方新建" size="sm"></cmx-empty-state>`))
@@ -264,12 +350,36 @@ function explorerHtml () {
     </div>
     ${damFilterHtml()}
     <div class="flow-def-list">${body}</div>
+    ${all.length ? defPagerHtml(all.length, state.defPage, pages) : ''}
     ${subflowCount() ? `<label class="flow-subfl-toggle" title="子流程从属于主流程节点，通常在主流程里编辑；打开可临时在此列出直接维护">
       <input type="checkbox" data-show-subflows ${state.showSubflows ? 'checked' : ''}/>
       <span>显示子流程（${subflowCount()}）</span></label>` : ''}
     <button class="flow-btn block" data-act="new">＋ 新建主流程</button>
     ${outlineHtml()}
   </section>`
+}
+
+// 主流程列表分页条：首页/上页/下页/末页（图标按钮）+「第 X / Y 页 · 共 N 条」。边界自动禁用。
+function defPagerHtml (total, page, pages) {
+  const atFirst = page <= 0
+  const atLast = page >= pages - 1
+  return `<div class="flow-pager">
+    <button class="flow-pg-btn icon" data-page="first" ${atFirst ? 'disabled' : ''} title="首页" aria-label="首页">«</button>
+    <button class="flow-pg-btn icon" data-page="prev" ${atFirst ? 'disabled' : ''} title="上一页" aria-label="上一页">‹</button>
+    <span class="flow-pg-info">${page + 1}/${pages}<small>共 ${total} 条</small></span>
+    <button class="flow-pg-btn icon" data-page="next" ${atLast ? 'disabled' : ''} title="下一页" aria-label="下一页">›</button>
+    <button class="flow-pg-btn icon" data-page="last" ${atLast ? 'disabled' : ''} title="末页" aria-label="末页">»</button>
+  </div>`
+}
+
+// 跳到第 n 页（0 基，自动夹取到 [0, pages-1]）。无变化则不重渲染。
+function gotoDefPage (n) {
+  const size = state.defPageSize
+  const pages = Math.max(1, Math.ceil(filteredDefs().length / size))
+  const p = Math.max(0, Math.min(n, pages - 1))
+  if (p === state.defPage) return
+  state.defPage = p
+  refreshView('explorer')
 }
 
 // 解析某定义当前应展示的版本：用户选择 → 服务端 activeVersion → 最新版本 → 空（草稿）。
@@ -1753,8 +1863,14 @@ function bind (root, view, host) {
     // 「显示子流程」开关：临时在主列表里也列出子流程（默认只显主流程）。
     root.querySelector('[data-show-subflows]')?.addEventListener('change', (ev) => {
       state.showSubflows = ev.target.checked
+      state.defPage = 0            // 列表规模变化，回首页
       refreshView('explorer')
     })
+    // 流程列表分页：首页/上页/下页/末页。
+    root.querySelector('[data-page="first"]')?.addEventListener('click', () => gotoDefPage(0))
+    root.querySelector('[data-page="prev"]')?.addEventListener('click', () => gotoDefPage(state.defPage - 1))
+    root.querySelector('[data-page="next"]')?.addEventListener('click', () => gotoDefPage(state.defPage + 1))
+    root.querySelector('[data-page="last"]')?.addEventListener('click', () => gotoDefPage(1e9))
     // DAM 三段级联过滤：选域清空应用/模块，选应用清空模块。
     root.querySelectorAll('[data-dam]').forEach((sel) => sel.addEventListener('change', () => {
       const kind = sel.dataset.dam
@@ -1762,6 +1878,7 @@ function bind (root, view, host) {
       if (kind === 'domain') { state.fDomain = val; state.fApp = ''; state.fModule = '' }
       else if (kind === 'app') { state.fApp = val; state.fModule = '' }
       else if (kind === 'module') { state.fModule = val }
+      state.defPage = 0            // 过滤条件变化，回首页
       refreshView('explorer')
     }))
     bindOutline(root) // 主流程 explorer 下部大纲
@@ -3224,6 +3341,7 @@ async function loadDefs () {
     // 但绑定目标下拉 / 子流程编辑器变体侧栏仍需完整集，故不在此剔除子流程。
     const d = await apiJson('/api/flow/design/definitions')
     state.definitions = (d.definitions || []).filter((x) => x.startable !== false)
+    state.defPage = 0    // 刷新/重载列表回首页
   } catch (e) { toast('加载定义失败: ' + e.message); state.definitions = [] }
   state.loading = false; refreshView('explorer')
 }
@@ -3261,7 +3379,9 @@ async function loadDef (key, version) {
     state.defDam = { domain: detail.domain || '', application: detail.application || '', module: detail.module || '' }
     state.shownVersion = detail.shownVersion ?? v ?? null
     if (v != null) state.selectedVersion[key] = v
+    const restoreScroll = preserveExplorerScroll()   // 点选流程后保持列表滚动位置不变（不跳回第一行）
     refreshView('explorer')       // explorer 高亮当前选中 + 版本下拉同步
+    restoreScroll()               // 重渲染会把内层列表滚动重置为 0，这里原样复位
     refreshContentChrome()        // content 工具栏版本徽标/下拉同步（不销毁画布：openDiagram 会就地导入）
     refreshView('property')       // property 区 DAM 归属同步
     await openDiagram(detail.bpmnXml)   // 就地把 XML 导入现有 modeler（内含 readVarSchemaFromXml）
@@ -3490,16 +3610,53 @@ function styleCss () {
   .cmx-badge.rule{background:#bf8700} .cmx-badge.sub{background:#1a7f37}
   .cmx-badge.msg{background:#bc4c00} .cmx-badge.timer{background:#cf222e}
   .cmx-badge.term{background:#82071e}
-  .flow{--brand:#0969da;--brand-d:#0a4d8c;--brand-soft:#ddf4ff;--ink:#1f2328;--muted:#656d76;--line:#d0d7de;--line-soft:#eaeef2;--ok:#1a7f37;--new:#bc4c00;--flow-bar-h:47px;
-    font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);height:100%;box-sizing:border-box;display:flex;flex-direction:column}
+  /* 设计令牌层：全部派生自门户 --sap* 主题令牌（light/dark 自动翻，零 JS），写死值仅作降级 fallback。 */
+  .flow{
+    --brand:var(--sapButton_Emphasized_Background,var(--sapContent_IconColor,#0969da));
+    --brand-ink:var(--sapButton_Emphasized_TextColor,#fff);
+    --brand-d:color-mix(in srgb,var(--brand) 62%,var(--ink));
+    --ink:var(--sapTextColor,#1f2328);
+    --muted:var(--sapContent_LabelColor,#656d76);
+    --line:var(--sapGroup_TitleBorderColor,var(--sapField_BorderColor,#d0d7de));
+    --line-soft:color-mix(in srgb,var(--line) 55%,transparent);
+    --surface:var(--sapBackgroundColor,#f6f8fa);
+    --tile:var(--sapTile_Background,var(--sapList_Background,#fff));
+    --header:var(--sapList_HeaderBackground,var(--sapTile_Background,#fbfdff));
+    --ok:var(--sapPositiveColor,var(--sapSuccessColor,#1a7f37));
+    --warn:var(--sapCriticalColor,var(--sapWarningColor,#bf8700));
+    --red:var(--sapNegativeColor,var(--sapErrorColor,#cf222e));
+    --new:var(--sapInformativeColor,#bc4c00);
+    --brand-soft:color-mix(in srgb,var(--brand) 14%,var(--tile));
+    --brand-line:color-mix(in srgb,var(--brand) 40%,var(--line));
+    --ok-soft:color-mix(in srgb,var(--ok) 15%,var(--tile));
+    --warn-soft:color-mix(in srgb,var(--warn) 16%,var(--tile));
+    --red-soft:color-mix(in srgb,var(--red) 14%,var(--tile));
+    --hover:color-mix(in srgb,var(--brand) 8%,transparent);
+    --glow:color-mix(in srgb,var(--brand) 30%,transparent);
+    --shadow:color-mix(in srgb,var(--ink) 18%,transparent);
+    --grid-dot:color-mix(in srgb,var(--ink) 9%,transparent);
+    --code-bg:#0d1117;--code-fg:#7ee787;
+    --flow-bar-h:47px;
+    color-scheme:light dark;
+    font:13px/1.5 var(--sapFontFamily,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif);color:var(--ink);background:var(--surface);height:100%;box-sizing:border-box;display:flex;flex-direction:column}
   .flow *{box-sizing:border-box}
+  .flow ui5-icon{color:currentColor}
   /* 三区顶部标题/工具栏统一高度（explorer/property 标题区 = content 工具栏，--flow-bar-h）。 */
-  .flow-head{height:var(--flow-bar-h);flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid var(--line-soft)}
-  .flow-head b{font-size:13px} .flow-head span{display:block;font-size:11px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
-  .flow-icon-btn{border:1px solid var(--line);background:#fff;border-radius:7px;width:28px;height:28px;cursor:pointer;display:grid;place-items:center}
+  .flow-head{height:var(--flow-bar-h);flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid var(--line-soft);background:var(--header)}
+  .flow-head b{font-size:13px;letter-spacing:.01em} .flow-head span{display:block;font-size:11px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
+  .flow-icon-btn{border:1px solid var(--line);background:var(--tile);color:var(--muted);border-radius:8px;width:28px;height:28px;cursor:pointer;display:grid;place-items:center;transition:all .13s}
+  .flow-icon-btn:hover{color:var(--brand);border-color:var(--brand-line);background:var(--brand-soft)}
   .flow-def-list{flex:1;overflow:auto;padding:8px}
+  /* —— 流程列表分页条（首页/上页/下页/末页） —— */
+  .flow-pager{flex:0 0 auto;display:flex;align-items:center;justify-content:center;gap:6px;padding:6px 8px;border-top:1px solid var(--line-soft);background:var(--header)}
+  .flow-pg-btn{border:1px solid var(--line);background:var(--tile);border-radius:6px;padding:3px 8px;font-size:12px;line-height:1.4;color:var(--ink);cursor:pointer;white-space:nowrap;transition:all .13s}
+  .flow-pg-btn.icon{width:26px;height:26px;padding:0;display:inline-grid;place-items:center;font-size:17px;line-height:1;font-family:ui-monospace,Menlo,monospace}
+  .flow-pg-btn:hover:not(:disabled){border-color:var(--brand-line);color:var(--brand);background:var(--brand-soft)}
+  .flow-pg-btn:disabled{opacity:.4;cursor:not-allowed}
+  .flow-pg-info{font-size:12px;color:var(--muted);padding:0 4px;display:flex;flex-direction:column;align-items:center;line-height:1.15;font-family:ui-monospace,Menlo,monospace}
+  .flow-pg-info small{font-size:10px;opacity:.8}
   /* —— 大纲面板（explorer 下部，联动画布） —— */
-  .flow-outline{flex:0 0 auto;border-top:1px solid var(--line);background:#fafbfc;display:flex;flex-direction:column;position:relative;min-height:0}
+  .flow-outline{flex:0 0 auto;border-top:1px solid var(--line-soft);background:var(--header);display:flex;flex-direction:column;position:relative;min-height:0}
   .flow-outline.open{overflow:hidden}
   .flow-outline.closed{height:auto}
   .flow-ol-resize{position:absolute;top:0;left:0;right:0;height:6px;margin-top:-3px;cursor:ns-resize;z-index:2}
@@ -3509,7 +3666,7 @@ function styleCss () {
     padding:8px 10px;font:inherit;color:var(--ink);flex:0 0 auto;border-bottom:1px solid var(--line-soft)}
   .flow-ol-head b{font-size:12.5px}
   .flow-ol-caret{font-size:12px;color:var(--muted)}
-  .flow-ol-total{font-size:11px;color:#fff;background:var(--brand);border-radius:9px;padding:0 6px;line-height:16px;min-width:16px;text-align:center}
+  .flow-ol-total{font-size:11px;color:var(--brand-ink);background:var(--brand);border-radius:9px;padding:0 6px;line-height:16px;min-width:16px;text-align:center;font-weight:700}
   .flow-ol-sub{margin-left:auto;font-size:10.5px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
   .flow-ol-body{flex:1;overflow:auto;padding:4px 0 6px}
   .flow-ol-hint{padding:10px;font-size:12px;color:var(--muted);text-align:center}
@@ -3521,106 +3678,111 @@ function styleCss () {
   .flow-ol-count{font-size:10.5px;color:var(--muted);background:var(--line-soft);border-radius:8px;padding:0 5px;line-height:15px}
   .flow-ol-items{display:flex;flex-direction:column}
   .flow-ol-item{display:flex;align-items:center;gap:7px;width:100%;border:0;background:transparent;cursor:pointer;
-    padding:5px 10px 5px 22px;font:inherit;font-size:12px;color:var(--ink);text-align:left;border-left:2px solid transparent}
-  .flow-ol-item:hover{background:#eef2f6}
+    padding:5px 10px 5px 22px;font:inherit;font-size:12px;color:var(--ink);text-align:left;border-left:2px solid transparent;transition:background .12s}
+  .flow-ol-item:hover{background:var(--hover)}
   .flow-ol-item.on{background:var(--brand-soft);border-left-color:var(--brand);font-weight:600}
   .flow-ol-ic{font-size:13px;color:var(--muted);flex:0 0 auto}
   .flow-ol-item.on .flow-ol-ic{color:var(--brand)}
   .flow-ol-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .flow-ol-empty{padding:3px 10px 3px 22px;font-size:11px;color:var(--muted)}
-  .flow-dam{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line-soft);background:#fafbfc}
+  .flow-dam{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line-soft);background:var(--header)}
   .flow-dam-row{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-  .flow-dam select,.flow-field select{width:100%;height:28px;font:inherit;font-size:12px;border:1px solid var(--line);border-radius:7px;padding:0 6px;background:#fff;color:var(--ink)}
-  .flow-dam select:focus,.flow-field select:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+  .flow-dam select,.flow-field select{width:100%;height:28px;font:inherit;font-size:12px;border:1px solid var(--line);border-radius:7px;padding:0 6px;background:var(--tile);color:var(--ink);transition:border-color .13s}
+  .flow-dam select:focus,.flow-field select:focus{outline:none;border-color:var(--brand-line);box-shadow:0 0 0 3px var(--brand-soft)}
   /* explorer 定义卡 + 版本行 */
-  .flow-def-wrap{border:1px solid transparent;border-radius:8px;margin-bottom:3px}
-  .flow-def-wrap.active{background:var(--brand-soft);border-color:#aacdf5}
-  .flow-def{width:100%;display:flex;align-items:center;gap:8px;padding:8px 10px;border:0;border-radius:8px;background:transparent;cursor:pointer;text-align:left}
-  .flow-def-wrap:not(.active) .flow-def:hover{background:var(--line-soft)}
-  .flow-def-ic{width:22px;height:22px;display:grid;place-items:center;color:var(--brand-d)}
+  .flow-def-wrap{position:relative;border:1px solid transparent;border-radius:10px;margin-bottom:3px;transition:background .13s,box-shadow .13s,border-color .13s}
+  .flow-def-wrap.active{background:var(--brand-soft);border-color:var(--brand-line);box-shadow:0 1px 8px var(--glow)}
+  .flow-def-wrap.active::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:var(--brand)}
+  .flow-def{width:100%;display:flex;align-items:center;gap:9px;padding:8px 10px;border:0;border-radius:10px;background:transparent;cursor:pointer;text-align:left;color:inherit}
+  .flow-def-wrap:not(.active) .flow-def:hover{background:var(--hover)}
+  .flow-def-ic{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;color:var(--brand);background:color-mix(in srgb,var(--brand) 12%,var(--tile));flex:0 0 auto;transition:all .13s}
+  .flow-def-ic ui5-icon{width:15px;height:15px}
+  .flow-def-wrap.active .flow-def-ic{background:var(--brand);color:var(--brand-ink);box-shadow:0 3px 10px var(--glow)}
   .flow-def-main{min-width:0} .flow-def-main b{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .flow-def-main small{display:block;font-size:10.5px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
-  .flow-def-ver{display:flex;align-items:center;gap:6px;padding:5px 10px 7px 40px}
+  .flow-def-ver{display:flex;align-items:center;gap:6px;padding:5px 10px 7px 42px}
   .flow-def-ver-ic{color:var(--muted);width:14px;height:14px;flex:0 0 auto}
-  .flow-def-vsel{flex:1;min-width:0;height:26px;font:inherit;font-size:11.5px;border:1px solid var(--line);border-radius:6px;padding:0 6px;background:#fff;color:var(--ink)}
+  .flow-def-vsel{flex:1;min-width:0;height:26px;font:inherit;font-size:11.5px;border:1px solid var(--line);border-radius:6px;padding:0 6px;background:var(--tile);color:var(--ink)}
   .flow-def-vcount{font-size:10px;color:var(--muted);white-space:nowrap;flex:0 0 auto}
-  .flow-btn{font:inherit;font-size:12.5px;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:7px;padding:6px 12px;cursor:pointer;font-weight:600}
-  .flow-btn:hover{background:var(--line-soft)} .flow-btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
-  .flow-btn.ok{background:var(--ok);border-color:var(--ok);color:#fff} .flow-btn.block{margin:8px 0 0;width:100%;justify-content:center;display:flex;align-items:center;gap:6px}
+  .flow-btn{font:inherit;font-size:12.5px;border:1px solid var(--line);background:var(--tile);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:600;transition:all .13s}
+  .flow-btn:hover{border-color:var(--brand-line);color:var(--brand);background:var(--brand-soft)} .flow-btn.primary{background:var(--brand);border-color:var(--brand);color:var(--brand-ink);box-shadow:0 2px 8px var(--glow)}
+  .flow-btn.primary:hover{background:color-mix(in srgb,var(--brand) 88%,#000);color:var(--brand-ink)}
+  .flow-btn.ok{background:var(--ok);border-color:var(--ok);color:var(--brand-ink);box-shadow:0 2px 8px color-mix(in srgb,var(--ok) 28%,transparent)} .flow-btn.ok:hover{background:color-mix(in srgb,var(--ok) 88%,#000);color:var(--brand-ink)} .flow-btn.block{margin:8px 0 0;width:100%;justify-content:center;display:flex;align-items:center;gap:6px}
   .flow-btn[disabled]{opacity:.5;cursor:not-allowed}
-  .flow-btn.slim{padding:4px 9px;font-size:11.5px} .flow-btn.slim.is-cur{background:var(--ok);border-color:var(--ok);color:#fff}
-  .flow-btn.danger{color:#b3261e;border-color:#e6b3ae} .flow-btn.danger:hover{background:#fdeceb}
+  .flow-btn.slim{padding:4px 9px;font-size:11.5px} .flow-btn.slim.is-cur{background:var(--ok);border-color:var(--ok);color:var(--brand-ink)}
+  .flow-btn.danger{color:var(--red);border-color:color-mix(in srgb,var(--red) 42%,var(--line));background:var(--tile)} .flow-btn.danger:hover{background:var(--red-soft);border-color:var(--red)}
   .flow-content{height:100%}
-  .flow-toolbar{height:var(--flow-bar-h);flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:0 10px;border-bottom:1px solid var(--line);background:#fff;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden}
+  .flow-toolbar{height:var(--flow-bar-h);flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:0 10px;border-bottom:1px solid var(--line-soft);background:var(--header);flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden}
   .flow-toolbar>.flow-btn,.flow-toolbar>.flow-name,.flow-toolbar>.flow-ver-badge,.flow-toolbar>.flow-ver-sel,.flow-toolbar>.flow-tb-div{flex:0 0 auto}
-  .flow-name{font:inherit;font-size:12.5px;border:1px solid var(--line);border-radius:7px;padding:6px 10px;width:130px}
+  .flow-name{font:inherit;font-size:12.5px;border:1px solid var(--line);border-radius:8px;padding:6px 10px;width:130px;background:var(--tile);color:var(--ink);transition:border-color .13s}
+  .flow-name:focus{outline:none;border-color:var(--brand-line);box-shadow:0 0 0 3px var(--brand-soft)}
   .flow-tb-div{width:1px;height:20px;background:var(--line);margin:0 1px}
   .flow-tb-ic{color:var(--muted);width:15px;height:15px}
-  .flow-ver-badge{font-size:11.5px;font-weight:700;color:var(--brand-d);background:var(--brand-soft);border:1px solid #aacdf5;border-radius:6px;padding:3px 8px;white-space:nowrap}
-  .flow-ver-badge.cur{color:#0a5c2b;background:#e6f4ea;border-color:#a6d8b6}
-  .flow-ver-sel{height:28px;max-width:140px;font:inherit;font-size:12px;border:1px solid var(--line);border-radius:6px;padding:0 6px;background:#fff;color:var(--ink)}
+  .flow-ver-badge{font-size:11.5px;font-weight:700;color:var(--brand-d);background:var(--brand-soft);border:1px solid var(--brand-line);border-radius:6px;padding:3px 8px;white-space:nowrap}
+  .flow-ver-badge.cur{color:var(--ok);background:var(--ok-soft);border-color:color-mix(in srgb,var(--ok) 40%,var(--line))}
+  .flow-ver-sel{height:28px;max-width:140px;font:inherit;font-size:12px;border:1px solid var(--line);border-radius:6px;padding:0 6px;background:var(--tile);color:var(--ink)}
   .flow-sp{flex:1}
-  .flow-canvas-wrap{position:relative;flex:1;min-height:0;background:radial-gradient(circle,#e5e9ee 1px,transparent 1px) 0 0/22px 22px}
+  .flow-canvas-wrap{position:relative;flex:1;min-height:0;background:var(--surface) radial-gradient(circle,var(--grid-dot) 1px,transparent 1px) 0 0/22px 22px}
   .flow-canvas{position:absolute;inset:0}
   /* 去掉 bpmn-js 自带的右下角 bpmn.io 水印链接 */
   .flow-canvas .bjs-powered-by{display:none!important}
-  /* 缩略图预览（画布右下角，可拖动视口方框） */
-  .flow-minimap{position:absolute;right:14px;bottom:14px;width:212px;background:rgba(255,255,255,.96);
-    border:1px solid var(--line);border-radius:9px;box-shadow:0 3px 12px rgba(9,30,66,.16);overflow:hidden;z-index:14;user-select:none}
-  .flow-mm-head{display:flex;align-items:center;gap:6px;padding:5px 9px;cursor:pointer;border-bottom:1px solid var(--line-soft);background:#fafbfc}
+  /* 缩略图预览（画布右下角，可拖动视口方框）—— 半透明玻璃质感 */
+  .flow-minimap{position:absolute;right:14px;bottom:14px;width:212px;background:color-mix(in srgb,var(--tile) 86%,transparent);backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);
+    border:1px solid var(--line);border-radius:11px;box-shadow:0 8px 24px var(--shadow);overflow:hidden;z-index:14;user-select:none}
+  .flow-mm-head{display:flex;align-items:center;gap:6px;padding:5px 9px;cursor:pointer;border-bottom:1px solid var(--line-soft);background:color-mix(in srgb,var(--header) 70%,transparent)}
   .flow-mm-head b{font-size:11.5px;font-weight:600}
   .flow-mm-ic{font-size:13px;color:var(--brand)}
   .flow-mm-caret{margin-left:auto;font-size:12px;color:var(--muted);line-height:1;width:14px;text-align:center}
-  .flow-mm-stage{position:relative;width:100%;height:142px;background:#fff;cursor:crosshair;overflow:hidden}
+  .flow-mm-stage{position:relative;width:100%;height:142px;background:var(--tile);cursor:crosshair;overflow:hidden}
   .flow-mm-diagram{position:absolute;inset:0}
   .flow-mm-diagram svg{width:100%;height:100%;display:block}
   .flow-mm-overlay{position:absolute;inset:0;width:100%;height:100%}
-  .flow-mm-vp{fill:rgba(9,105,218,.14);stroke:var(--brand);stroke-width:2px;vector-effect:non-scaling-stroke}
+  .flow-mm-vp{fill:color-mix(in srgb,var(--brand) 16%,transparent);stroke:var(--brand);stroke-width:2px;vector-effect:non-scaling-stroke}
   .flow-minimap.collapsed .flow-mm-stage{display:none}
   .flow-minimap.collapsed{width:auto}
   /* 版本管理对话框（content 画布区内浮层） */
-  .flow-dialog-mask{position:absolute;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:rgba(13,29,46,.32);padding:18px}
-  .flow-dialog{width:min(560px,100%);max-height:100%;overflow:hidden;display:flex;flex-direction:column;background:#fff;border:1px solid #aacdf5;border-radius:10px;box-shadow:0 18px 46px rgba(0,0,0,.22)}
-  .flow-dialog-head{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line-soft);background:linear-gradient(135deg,var(--brand-soft),#fff)}
-  .flow-dialog-ic{width:32px;height:32px;border-radius:8px;background:var(--brand);color:#fff;display:grid;place-items:center;flex:0 0 auto}
+  .flow-dialog-mask{position:absolute;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,#04070c 46%,transparent);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);padding:18px}
+  .flow-dialog{width:min(560px,100%);max-height:100%;overflow:hidden;display:flex;flex-direction:column;background:var(--tile);border:1px solid var(--brand-line);border-radius:12px;box-shadow:0 22px 54px var(--shadow)}
+  .flow-dialog-head{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line-soft);background:linear-gradient(135deg,var(--brand-soft),var(--tile))}
+  .flow-dialog-ic{width:32px;height:32px;border-radius:9px;background:var(--brand);color:var(--brand-ink);display:grid;place-items:center;flex:0 0 auto;box-shadow:0 3px 10px var(--glow)}
   .flow-dialog-head>div{flex:1;min-width:0} .flow-dialog-head b{display:block;font-size:14px} .flow-dialog-head em{display:block;font-style:normal;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .flow-dialog-err{margin:10px 14px 0;border:1px solid #e6b3ae;background:#fdeceb;color:#a10000;border-radius:7px;padding:7px 9px;font-size:12px}
+  .flow-dialog-err{margin:10px 14px 0;border:1px solid color-mix(in srgb,var(--red) 40%,var(--line));background:var(--red-soft);color:var(--red);border-radius:7px;padding:7px 9px;font-size:12px}
   .flow-dialog-body{padding:12px 14px;overflow:auto}
   /* ⑤ 变量声明面板 + 全屏编辑器 */
   .flow-dialog-lg{width:min(760px,100%)}
   .flow-var-summary{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px}
-  .flow-var-chip{display:inline-flex;align-items:baseline;gap:5px;border:1px solid #c7e0fb;background:#f1f8ff;border-radius:20px;padding:3px 11px;font-size:12px}
-  .flow-var-chip b{font-weight:600;color:var(--ink)} .flow-var-chip em{font-style:normal;font-size:10px;color:var(--brand-d,#0a4d8c);text-transform:uppercase;letter-spacing:.3px}
+  .flow-var-chip{display:inline-flex;align-items:baseline;gap:5px;border:1px solid var(--brand-line);background:var(--brand-soft);border-radius:20px;padding:3px 11px;font-size:12px}
+  .flow-var-chip b{font-weight:600;color:var(--ink)} .flow-var-chip em{font-style:normal;font-size:10px;color:var(--brand-d);text-transform:uppercase;letter-spacing:.3px}
   .flow-var-body{max-height:min(64vh,540px)}
   .flow-var-list{display:flex;flex-direction:column;gap:9px;margin-bottom:12px}
-  .flow-var-row{border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:#fff;margin-left:calc(var(--d,0)*18px);box-shadow:0 1px 2px rgba(13,29,46,.04)}
-  .flow-var-row:hover{border-color:#a9cef3}
+  .flow-var-row{border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:var(--tile);margin-left:calc(var(--d,0)*18px);box-shadow:0 1px 2px var(--shadow)}
+  .flow-var-row:hover{border-color:var(--brand-line)}
   .flow-var-main{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
-  .flow-var-name{flex:1 1 130px;min-width:110px;font-family:ui-monospace,Menlo,monospace;font-size:13px;border:1px solid var(--line);border-radius:7px;padding:6px 9px}
-  .flow-var-type{flex:0 0 88px;border:1px solid var(--line);border-radius:7px;padding:6px 6px;font-size:12px;background:#fff}
-  .flow-var-label{flex:1 1 130px;min-width:100px;border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:13px}
+  .flow-var-name{flex:1 1 130px;min-width:110px;font-family:ui-monospace,Menlo,monospace;font-size:13px;border:1px solid var(--line);border-radius:7px;padding:6px 9px;background:var(--tile);color:var(--ink)}
+  .flow-var-type{flex:0 0 88px;border:1px solid var(--line);border-radius:7px;padding:6px 6px;font-size:12px;background:var(--tile);color:var(--ink)}
+  .flow-var-label{flex:1 1 130px;min-width:100px;border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:13px;background:var(--tile);color:var(--ink)}
   .flow-var-req{flex:0 0 auto;display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--muted);cursor:pointer;white-space:nowrap}
   .flow-var-req input{margin:0}
-  .flow-var-desc{width:100%;margin-top:6px;border:1px dashed var(--line);border-radius:7px;padding:5px 9px;font-size:12px;color:#57606a}
-  .flow-var-sub{margin-top:8px;padding:8px 10px;border-left:2.5px solid #c7e0fb;background:#f7fafd;border-radius:0 8px 8px 0}
-  .flow-var-subhead{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--brand-d,#0a4d8c);margin-bottom:6px}
+  .flow-var-desc{width:100%;margin-top:6px;border:1px dashed var(--line);border-radius:7px;padding:5px 9px;font-size:12px;color:var(--muted);background:var(--tile)}
+  .flow-var-sub{margin-top:8px;padding:8px 10px;border-left:2.5px solid var(--brand-line);background:var(--brand-soft);border-radius:0 8px 8px 0}
+  .flow-var-subhead{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--brand-d);margin-bottom:6px}
   .flow-var-subhead .flow-btn.slim{margin-left:auto}
-  .flow-var-foot{display:flex;align-items:center;gap:12px;padding:11px 14px;border-top:1px solid var(--line-soft);background:#fafbfc}
+  .flow-var-foot{display:flex;align-items:center;gap:12px;padding:11px 14px;border-top:1px solid var(--line-soft);background:var(--header)}
   .flow-var-policy{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
-  .flow-var-policy select{border:1px solid var(--line);border-radius:7px;padding:5px 7px;font-size:12px}
+  .flow-var-policy select{border:1px solid var(--line);border-radius:7px;padding:5px 7px;font-size:12px;background:var(--tile);color:var(--ink)}
   .flow-var-foot-act{margin-left:auto;display:flex;gap:8px}
   .flow-vempty{display:flex;flex-direction:column;align-items:center;gap:4px;padding:26px 12px;text-align:center;color:var(--muted)}
   .flow-vempty b{font-size:13px;color:var(--ink)} .flow-vempty span{font-size:12px}
   .flow-btn.slim{padding:3px 8px;font-size:11px}
   .flow-vlist-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px} .flow-vlist-head b{font-size:13px} .flow-vlist-head span{font-size:11px;color:var(--muted)}
   .flow-vlist{display:flex;flex-direction:column;gap:7px;max-height:260px;overflow:auto}
-  .flow-vrow{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fafbfc}
-  .flow-vrow.cur{border-color:#a6d8b6;background:#f0f9f3}
-  .flow-vrow-main{flex:1;min-width:0} .flow-vrow-main b{font-size:13px;font-family:ui-monospace,Menlo,monospace} .flow-vtag{margin-left:6px;font-size:10px;font-weight:700;color:#0a5c2b;background:#e6f4ea;border:1px solid #a6d8b6;border-radius:5px;padding:1px 6px}
-  .flow-vtag.off{color:#8a6d00;background:#fdf3d0;border-color:#e6d38a}
+  .flow-vrow{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--header)}
+  .flow-vrow.cur{border-color:color-mix(in srgb,var(--ok) 40%,var(--line));background:var(--ok-soft)}
+  .flow-vrow-main{flex:1;min-width:0} .flow-vrow-main b{font-size:13px;font-family:ui-monospace,Menlo,monospace} .flow-vtag{margin-left:6px;font-size:10px;font-weight:700;color:var(--ok);background:var(--ok-soft);border:1px solid color-mix(in srgb,var(--ok) 40%,var(--line));border-radius:5px;padding:1px 6px}
+  .flow-vtag.off{color:var(--warn);background:var(--warn-soft);border-color:color-mix(in srgb,var(--warn) 40%,var(--line))}
   /* 子流程模式切换（按组织路由 / 固定） */
   .flow-mode{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
-  .flow-mode-opt{text-align:left;border:1.5px solid var(--line);border-radius:9px;background:#fff;padding:8px 10px;cursor:pointer}
+  .flow-mode-opt{text-align:left;border:1.5px solid var(--line);border-radius:9px;background:var(--tile);padding:8px 10px;cursor:pointer;transition:all .13s}
   .flow-mode-opt b{display:block;font-size:12.5px;color:var(--ink)} .flow-mode-opt small{display:block;font-size:10.5px;color:var(--muted);margin-top:2px}
   .flow-mode-opt.on{border-color:var(--brand);background:var(--brand-soft)} .flow-mode-opt.on b{color:var(--brand-d)}
   .flow-vrow-main em{display:block;font-style:normal;font-size:11.5px;color:var(--ink);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -3629,91 +3791,117 @@ function styleCss () {
   .flow-vempty{border:1px dashed var(--line);border-radius:8px;padding:20px;text-align:center;color:var(--muted)} .flow-vempty ui5-icon{color:var(--brand)} .flow-vempty b{display:block;margin-top:6px;color:var(--ink)}
   .flow-vnew{margin-top:14px;border-top:1px solid var(--line-soft);padding-top:12px}
   .flow-vnew-title{display:flex;align-items:center;gap:6px;font-weight:700;font-size:12.5px;color:var(--brand-d);margin-bottom:8px}
-  .flow-prop-head{height:var(--flow-bar-h);flex:0 0 auto;display:flex;flex-direction:column;justify-content:center;padding:0 14px;border-bottom:1px solid var(--line-soft)} .flow-prop-head b{font-size:14px} .flow-prop-head small{display:block;font-size:11px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
+  .flow-prop-head{height:var(--flow-bar-h);flex:0 0 auto;display:flex;flex-direction:column;justify-content:center;padding:0 14px;border-bottom:1px solid var(--line-soft);background:var(--header)} .flow-prop-head b{font-size:14px} .flow-prop-head small{display:block;font-size:11px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
   .flow-prop-body{padding:12px 14px;overflow:auto}
-  .flow-field{margin-bottom:12px} .flow-field label{display:block;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:4px}
-  .flow-field input{width:100%;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:7px;padding:7px 10px}
-  .flow-field input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
-  .flow-hint{font-size:11px;color:var(--muted);margin-top:3px} .flow-sec{font-size:11px;font-weight:800;color:var(--brand-d);text-transform:uppercase;margin:14px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--line-soft)}
+  .flow-field{margin-bottom:12px} .flow-field label{display:block;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:4px;letter-spacing:.03em}
+  .flow-field input{width:100%;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:7px;padding:7px 10px;background:var(--tile);color:var(--ink);transition:border-color .13s}
+  .flow-field input:focus{outline:none;border-color:var(--brand-line);box-shadow:0 0 0 3px var(--brand-soft)}
+  .flow-hint{font-size:11px;color:var(--muted);margin-top:3px} .flow-sec{font-size:11px;font-weight:800;color:var(--brand-d);text-transform:uppercase;margin:14px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--line-soft);letter-spacing:.04em}
   .flow-empty{display:flex;flex-direction:column;align-items:center;gap:8px;color:var(--muted);font-size:12.5px;padding:36px 16px;text-align:center}
-  .flow-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);background:#0d1117;color:#fff;padding:9px 16px;border-radius:9px;font-size:12.5px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s;z-index:20;max-width:min(88%,520px);white-space:normal;line-height:1.5;text-align:center;box-shadow:0 6px 20px rgba(0,0,0,.28)}
+  .flow-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);background:#0d1117;color:#fff;padding:9px 16px;border-radius:10px;font-size:12.5px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s;z-index:20;max-width:min(88%,520px);white-space:normal;line-height:1.5;text-align:center;box-shadow:0 8px 24px rgba(0,0,0,.36);border:1px solid rgba(255,255,255,.08)}
   .flow-toast.show{opacity:1}
   /* 分支条件可视化构造器（P2-c） */
   .flow-cond{margin-bottom:12px}
   .flow-cond-mode{display:inline-flex;gap:0;margin-bottom:10px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
-  .flow-cond-tab{font:inherit;font-size:11.5px;font-weight:700;padding:5px 14px;background:#fff;color:var(--muted);border:none;cursor:pointer}
-  .flow-cond-tab.on{background:var(--brand);color:#fff}
+  .flow-cond-tab{font:inherit;font-size:11.5px;font-weight:700;padding:5px 14px;background:var(--tile);color:var(--muted);border:none;cursor:pointer;transition:all .13s}
+  .flow-cond-tab.on{background:var(--brand);color:var(--brand-ink)}
   .flow-cond-rows{display:flex;flex-direction:column;gap:7px}
-  .flow-cond-row{display:flex;align-items:center;gap:5px;flex-wrap:wrap;background:var(--bg,#f6f8fa);border:1px solid var(--line-soft);border-radius:9px;padding:7px 8px}
-  .flow-cond-row select,.flow-cond-row input[type=text],.flow-cond-row input:not([type]){font:inherit;font-size:12px;height:28px;border:1px solid var(--line);border-radius:6px;padding:0 6px;background:#fff;color:var(--ink)}
+  .flow-cond-row{display:flex;align-items:center;gap:5px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--line-soft);border-radius:9px;padding:7px 8px}
+  .flow-cond-row select,.flow-cond-row input[type=text],.flow-cond-row input:not([type]){font:inherit;font-size:12px;height:28px;border:1px solid var(--line);border-radius:6px;padding:0 6px;background:var(--tile);color:var(--ink)}
   .flow-cond-fn{max-width:96px} .flow-cond-op{max-width:104px} .flow-cond-conn{max-width:96px}
   .flow-cond-var{flex:1;min-width:110px} .flow-cond-val{width:88px}
   .flow-cond-val-wrap{display:flex;align-items:center;gap:4px}
   .flow-cond-isvar,.flow-cond-paren{display:inline-flex;align-items:center;gap:2px;font-size:11px;color:var(--muted);font-weight:700;cursor:pointer;white-space:nowrap}
   .flow-cond-isvar input,.flow-cond-paren input{margin:0}
-  .flow-cond-empty{font-size:12px;color:var(--muted);padding:10px;background:var(--bg,#f6f8fa);border-radius:8px;border:1px dashed var(--line)}
+  .flow-cond-empty{font-size:12px;color:var(--muted);padding:10px;background:var(--surface);border-radius:8px;border:1px dashed var(--line)}
   .flow-cond-preview{display:flex;align-items:center;gap:8px;margin-top:9px;font-size:11px}
   .flow-cond-preview span{font-weight:800;color:var(--muted);text-transform:uppercase}
-  .flow-cond-preview code{flex:1;font-family:var(--mono,monospace);font-size:12px;background:#0d1117;color:#7ee787;padding:5px 9px;border-radius:6px;overflow-x:auto;white-space:nowrap}
+  .flow-cond-preview code{flex:1;font-family:var(--mono,ui-monospace,Menlo,monospace);font-size:12px;background:var(--code-bg);color:var(--code-fg);padding:5px 9px;border-radius:6px;overflow-x:auto;white-space:nowrap;border:1px solid rgba(255,255,255,.06)}
   .flow-cond-test{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
-  .flow-cond-test input{flex:1;min-width:150px;font:inherit;font-size:12px;height:28px;border:1px solid var(--line);border-radius:6px;padding:0 8px}
+  .flow-cond-test input{flex:1;min-width:150px;font:inherit;font-size:12px;height:28px;border:1px solid var(--line);border-radius:6px;padding:0 8px;background:var(--tile);color:var(--ink)}
   .flow-cond-testres{font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:20px}
-  .flow-cond-testres.ok{background:var(--ok-soft,#e6f6eb);color:var(--ok,#1a7f37)}
-  .flow-cond-testres.off{background:#eee;color:#666}
-  .flow-cond-testres.err{background:#ffebe9;color:#cf222e}
-  .flow-icon-btn.danger{color:#cf222e}
+  .flow-cond-testres.ok{background:var(--ok-soft);color:var(--ok)}
+  .flow-cond-testres.off{background:var(--line-soft);color:var(--muted)}
+  .flow-cond-testres.err{background:var(--red-soft);color:var(--red)}
+  .flow-icon-btn.danger{color:var(--red)}
   /* UserTask 属性分页签（P3） */
   .flow-uttabs{display:flex;gap:2px;margin:0 0 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-  .flow-uttab{font:inherit;font-size:12px;font-weight:700;padding:7px 12px;background:transparent;color:var(--muted);border:none;border-bottom:2px solid transparent;cursor:pointer;margin-bottom:-1px}
+  .flow-uttab{font:inherit;font-size:12px;font-weight:700;padding:7px 12px;background:transparent;color:var(--muted);border:none;border-bottom:2px solid transparent;cursor:pointer;margin-bottom:-1px;transition:color .13s}
   .flow-uttab:hover{color:var(--ink)}
   .flow-uttab.on{color:var(--brand-d);border-bottom-color:var(--brand)}
   .flow-utbody{}
   .flow-akinds{display:flex;flex-wrap:wrap;gap:5px;margin-top:2px}
-  .flow-akind{font:inherit;font-size:12px;font-weight:600;padding:5px 11px;border:1px solid var(--line);border-radius:20px;background:#fff;color:var(--muted);cursor:pointer}
-  .flow-akind:hover{border-color:var(--brand)}
-  .flow-akind.on{background:var(--brand);color:#fff;border-color:var(--brand)}
-  .flow-utbody select[data-idn-pick]{width:100%;height:30px;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:7px;padding:0 8px;background:#fff}
-  .flow-utbody select[data-idn-pick]:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
-  .flow-utbody input[data-idn-text],.flow-utbody input[data-akind-val],.flow-utbody input[data-mi-f]{width:100%;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:7px;padding:7px 10px}
-  .flow-utbody input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+  .flow-akind{font:inherit;font-size:12px;font-weight:600;padding:5px 11px;border:1px solid var(--line);border-radius:20px;background:var(--tile);color:var(--muted);cursor:pointer;transition:all .13s}
+  .flow-akind:hover{border-color:var(--brand-line);color:var(--brand);background:var(--brand-soft)}
+  .flow-akind.on{background:var(--brand);color:var(--brand-ink);border-color:var(--brand);box-shadow:0 2px 8px var(--glow)}
+  .flow-utbody select[data-idn-pick]{width:100%;height:30px;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:7px;padding:0 8px;background:var(--tile);color:var(--ink)}
+  .flow-utbody select[data-idn-pick]:focus{outline:none;border-color:var(--brand-line);box-shadow:0 0 0 3px var(--brand-soft)}
+  .flow-utbody input[data-idn-text],.flow-utbody input[data-akind-val],.flow-utbody input[data-mi-f]{width:100%;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:7px;padding:7px 10px;background:var(--tile);color:var(--ink)}
+  .flow-utbody input:focus{outline:none;border-color:var(--brand-line);box-shadow:0 0 0 3px var(--brand-soft)}
   /* 子流程变量映射（P5） */
   .flow-vm-head{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px}
   .flow-vm-row{display:flex;align-items:center;gap:5px;margin-bottom:5px}
-  .flow-vm-src,.flow-vm-tgt{flex:1;min-width:0;font:inherit;font-size:12px;height:28px;border:1px solid var(--line);border-radius:6px;padding:0 7px}
-  .flow-vm-src:focus,.flow-vm-tgt:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+  .flow-vm-src,.flow-vm-tgt{flex:1;min-width:0;font:inherit;font-size:12px;height:28px;border:1px solid var(--line);border-radius:6px;padding:0 7px;background:var(--tile);color:var(--ink)}
+  .flow-vm-src:focus,.flow-vm-tgt:focus{outline:none;border-color:var(--brand-line);box-shadow:0 0 0 3px var(--brand-soft)}
   .flow-vm-arr{color:var(--muted);font-weight:700;flex:none}
-  .flow-vm-empty{font-size:11.5px;color:var(--muted);padding:6px 8px;background:var(--bg,#f6f8fa);border:1px dashed var(--line);border-radius:7px}
+  .flow-vm-empty{font-size:11.5px;color:var(--muted);padding:6px 8px;background:var(--surface);border:1px dashed var(--line);border-radius:7px}
   /* explorer 「显示子流程」开关 */
   .flow-subfl-toggle{display:flex;align-items:center;gap:6px;padding:6px 10px 2px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
   .flow-subfl-toggle input{margin:0}
   /* ═══ 子流程钻入式（无浮层）：工具栏面包屑 + 返回 / explorer 变体列表 / property 页签 ═══ */
   /* content 工具栏：常驻「← 返回主流程」+ 面包屑（主流程 › 子流程） */
-  .flow-btn.back{background:var(--brand);color:#fff;border-color:var(--brand);font-weight:700}
-  .flow-btn.back:hover{filter:brightness(.95)}
-  .flow-crumb{display:inline-flex;align-items:center;gap:5px;min-width:0;max-width:46%;padding:3px 10px;background:var(--brand-soft);border:1px solid #bcd8f5;border-radius:16px;font-size:12.5px}
+  .flow-btn.back{background:var(--brand);color:var(--brand-ink);border-color:var(--brand);font-weight:700;box-shadow:0 2px 8px var(--glow)}
+  .flow-btn.back:hover{filter:brightness(1.06)}
+  .flow-crumb{display:inline-flex;align-items:center;gap:5px;min-width:0;max-width:46%;padding:3px 10px;background:var(--brand-soft);border:1px solid var(--brand-line);border-radius:16px;font-size:12.5px}
   .flow-crumb-ic{color:var(--muted)} .flow-crumb-ic.sub{color:var(--brand)}
   .flow-crumb-main{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40%}
   .flow-crumb-sep{color:var(--brand);font-weight:700}
   .flow-crumb-sub{color:var(--ink);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
   /* explorer 子流程模式：组织变体列表 */
   .flow-subv-scroll{flex:1;overflow:auto;min-height:0}
-  .flow-subv-hd{display:flex;align-items:center;gap:6px;padding:9px 11px 4px;font-size:12px;font-weight:700;color:var(--brand-d,#0a4d8c)}  .flow-subv-list{padding:2px 7px}
-  .flow-subv{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:1px solid transparent;background:none;border-radius:8px;padding:8px 9px;cursor:pointer;margin-bottom:3px}
-  .flow-subv:hover{background:#eef5ff}
-  .flow-subv.on{background:#e3effe;border-color:#a9cef3}
+  .flow-subv-hd{display:flex;align-items:center;gap:6px;padding:9px 11px 4px;font-size:12px;font-weight:700;color:var(--brand-d)}  .flow-subv-list{padding:2px 7px}
+  .flow-subv{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:1px solid transparent;background:none;border-radius:8px;padding:8px 9px;cursor:pointer;margin-bottom:3px;transition:all .13s}
+  .flow-subv:hover{background:var(--hover)}
+  .flow-subv.on{background:var(--brand-soft);border-color:var(--brand-line)}
   .flow-subv-mark{flex:none;color:var(--brand);font-size:12px}
   .flow-subv-main{min-width:0}
   .flow-subv-main b{display:block;font-size:12.5px;color:var(--ink)}
   .flow-subv-main small{display:block;font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .flow-subv-new{padding:8px 7px}
-  .flow-subv-new select{width:100%;border:1px solid var(--line);border-radius:7px;padding:6px 7px;font-size:12px;background:#fff}
+  .flow-subv-new select{width:100%;border:1px solid var(--line);border-radius:7px;padding:6px 7px;font-size:12px;background:var(--tile);color:var(--ink)}
   /* property 区页签：节点属性 | 数据模型 */
   .flow-prop-wrap{height:100%;display:flex;flex-direction:column;min-height:0}
-  .flow-ptabs{display:flex;gap:2px;padding:6px 8px 0;border-bottom:1px solid var(--line);background:#fbfdff;flex:none}
-  .flow-ptab{font:inherit;font-size:12.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;padding:8px 13px;background:transparent;color:var(--muted);border:none;border-bottom:2px solid transparent;cursor:pointer;margin-bottom:-1px}
+  .flow-ptabs{display:flex;gap:2px;padding:6px 8px 0;border-bottom:1px solid var(--line);background:var(--header);flex:none}
+  .flow-ptab{font:inherit;font-size:12.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;padding:8px 13px;background:transparent;color:var(--muted);border:none;border-bottom:2px solid transparent;cursor:pointer;margin-bottom:-1px;transition:color .13s}
   .flow-ptab:hover{color:var(--ink)}
   .flow-ptab.on{color:var(--brand-d);border-bottom-color:var(--brand)}
   .flow-prop-wrap>.flow-prop{flex:1;min-height:0;overflow:auto}
+  /* ═══ 暗色画布（仅 data-theme=dark 生效；light 模式保持 bpmn 原生零改） ═══ */
+  /* 渲染器把图形默认描边/填充烘焙成内联属性（不吃 CSS 变量），故用 !important 覆盖：
+     亮描边 + 深纸面 + 亮标签/箭头；diagram-js 自身 chrome（palette/context-pad/popup/选中框）走活变量重定义。 */
+  .flow[data-theme=dark] .djs-container{color:var(--ink)}
+  .flow[data-theme=dark] .djs-visual > :is(rect,circle,ellipse,polygon,path){stroke:var(--ink) !important}
+  .flow[data-theme=dark] .djs-shape .djs-visual > :is(rect,circle,ellipse,polygon,path):first-child{fill:var(--tile) !important}
+  .flow[data-theme=dark] .djs-connection .djs-visual > path{fill:none !important}
+  .flow[data-theme=dark] .djs-visual text,.flow[data-theme=dark] .djs-label,.flow[data-theme=dark] text.djs-label{fill:var(--ink) !important;stroke:none !important}
+  .flow[data-theme=dark] marker :is(path,circle,polygon,polyline){fill:var(--ink) !important;stroke:var(--ink) !important}
+  .flow[data-theme=dark] .djs-parent{
+    --color-white:var(--tile);
+    --color-black:var(--ink);
+    --color-grey-225-10-15:var(--ink);
+    --color-grey-225-10-35:var(--muted);
+    --color-grey-225-10-55:var(--muted);
+    --color-grey-225-10-75:var(--line);
+    --color-grey-225-10-80:var(--line);
+    --color-grey-225-10-85:color-mix(in srgb,var(--line) 65%,var(--surface));
+    --color-grey-225-10-90:color-mix(in srgb,var(--surface) 55%,var(--tile));
+    --color-grey-225-10-95:color-mix(in srgb,var(--surface) 78%,var(--tile));
+    --color-grey-225-10-97:var(--surface);
+    --canvas-fill-color:var(--tile);
+    --context-pad-entry-background-color:var(--tile);
+    --popup-background-color:var(--tile);
+    --popup-shadow-color:color-mix(in srgb,#000 55%,transparent);
+  }
   `
 }
 
