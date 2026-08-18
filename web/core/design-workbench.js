@@ -16,19 +16,24 @@
 
 // —— S4 抽核：配置接缝 ——（详见 todo-center.js 同名 CFG 注释）
 // 设计器无门户 Tab 链，耦合只两处：apiBase（/api/* 前缀）+ bpmnBase（bpmn-js 静态资产根）。
-// 门户壳默认：同源 fetch + 资产走门户 /portal/vendor/bpmn-js（打包进 CMXPortalManager，不访问远程 CDN）。
+// 门户壳默认：同源 fetch + 资产走门户 vendor/bpmn-js（打包进 CMXPortalManager，不访问远程 CDN）。
 // 组件壳/headless 壳 configure({ apiBase, authHeaders, bpmnBase })：资产可指向自建 CDN 或组件包内路径。
 const CFG = {
   apiBase: '',
   fetchInit: { credentials: 'same-origin' },
   authHeaders: () => ({}),
-  bpmnBase: '/portal/vendor/bpmn-js',        // bpmn-js UMD + 字体/CSS 资产根
+  bpmnBase: '',        // 空 = 按部署形态自动推断（见 bpmnBase()）
 }
 function configure (o) { Object.assign(CFG, o || {}); return CFG }
 
-// bpmn-js 本地资产根（每次读 CFG.bpmnBase，故 configure() 覆盖对后续加载即时生效；门户默认
-// 打包进 CMXPortalManager 经 /portal/ 静态托管，无远程 CDN）。
-function bpmnBase () { return CFG.bpmnBase }
+// bpmn-js 本地资产根（每次读 CFG.bpmnBase，故 configure()/bpmn-base 属性覆盖对后续加载即时生效）。
+// 缺省按部署形态自动推断：生产门户挂在 /portal/ 基座（CMXPortalManager dist 经后端静态托管），
+// Vite dev server 基座是 /（public/ 资产挂根路径）。写死任一边都会在另一边加载失败——dev 下
+// script 404、CSS 被 SPA fallback 冒充 200 html 静默失效——故按当前路径前缀推断，显式配置优先。
+function bpmnBase () {
+  if (CFG.bpmnBase) return CFG.bpmnBase
+  return location.pathname.startsWith('/portal/') ? '/portal/vendor/bpmn-js' : '/vendor/bpmn-js'
+}
 
 const state = {
   definitions: [],
