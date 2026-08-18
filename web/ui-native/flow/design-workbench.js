@@ -423,7 +423,7 @@ function defItemHtml (d) {
 function contentHtml () {
   return `<section class="flow flow-content">
     <div class="flow-toolbar" data-flow-toolbar>${toolbarInnerHtml()}</div>
-    <div class="flow-canvas-wrap"><div class="flow-canvas" data-flow-canvas></div><div data-vdialog-host>${versionDialogHtml()}</div></div>
+    <div class="flow-canvas-wrap"><div class="flow-canvas" data-flow-canvas tabindex="0"></div><div data-vdialog-host>${versionDialogHtml()}</div></div>
     <div class="flow-toast"></div>
   </section>`
 }
@@ -2686,7 +2686,13 @@ async function bootCanvas (root, host) {
     await waitForSize(canvasEl)
     state.modeler = new window.BpmnJS({
       container: canvasEl,
-      keyboard: { bindTo: document },
+      // 键盘监听绑本区 renderRoot（工具条+画布的 keydown 都能冒泡到），绝不能绑 document：
+      // ① 绑 document 则监听常驻全局，切到门户其他 tab 后仍在拦截按键（Delete/Ctrl+C/V 被当
+      //    画布快捷键 preventDefault，其他页面输入框复制粘贴删除全废）；
+      // ② diagram-js 只放行 target 为 input/textarea 的事件，而门户输入框藏在多层 shadow
+      //    root 里，事件冒泡到 document 时 target 已重定向为宿主元素 → 守卫失效。绑在本区
+      //    shadow 树内无重定向，原生守卫恢复有效（画布 tabindex="0" 保证焦点落在树内）。
+      keyboard: { bindTo: root },
       // 中文界面：经 bpmn-js 官方 translate 扩展点注入内置词典（零远程,词条对照 v17.11.1 bundle 提取）。
       additionalModules: [ZH_TRANSLATE_MODULE],
     })
