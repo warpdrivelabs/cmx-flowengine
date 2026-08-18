@@ -25,6 +25,23 @@ use cmx_flow_adapters::{FlowEvent, FlowEventKind};
 
 // ————————————————————— 出站 webhook emit 辅助 —————————————————————
 
+/// 读实例 `variables.initiator`（T0b 授权基准：发起人判定一律以服务端变量为准）。
+/// 实例不存在返回 Err；变量缺失返回 Ok(None)（老数据，调用方自行决定放行或收紧）。
+async fn instance_initiator(rt: &FlowRuntime, id: &str) -> Result<Option<String>> {
+    let snap = rt
+        .engine
+        .store()
+        .load_snapshot(id)
+        .await
+        .map_err(|_| FlowError::not_found(format!("实例不存在: {id}")))?;
+    Ok(snap
+        .instance
+        .variables
+        .get("initiator")
+        .and_then(|v| v.as_str())
+        .map(String::from))
+}
+
 /// 当前时刻 RFC3339（webhook 事件 occurred_at）。
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -616,7 +633,18 @@ pub async fn start_instance(
         .clone()
         .unwrap_or_else(|| "credit_approval".to_string());
 
-    let vars = req.resolve_variables();
+    let mut vars = req.resolve_variables();
+    // T0：initiator 缺失时从认证上下文兜底注入——「我发起的」过滤、撤销/取回护栏均按
+    // variables.initiator 判定，存量 UI 发起不带它会导致列表失联与授权误判。
+    let has_initiator = vars
+        .get("initiator")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    if !has_initiator
+        && let Some(user) = crate::tenant::current_user()
+    {
+        vars.set("initiator", json!(user));
+    }
     // businessKey 优先显式入参；兼容垫片下从 applicant 拼一个。
     let biz_key = req
         .business_key
@@ -712,11 +740,29 @@ pub struct CancelReq {
 }
 
 /// 撤单 / 取消一个流程实例（M3）。
+///
+/// T0b 授权：有用户身份时须为发起人（variables.initiator，服务端判定）；无身份放行——
+/// 覆盖两类合法通道：宿主未挂 auth 中间件（平台内嵌形态，平台 mw_auth 兜底）与纯服务调用
+/// （X-API-Key 无委托令牌，运维/业务后端代理）。initiator 缺失的老数据放行 + warn。
 pub async fn cancel_instance(
     Path(id): Path<String>,
     Json(req): Json<CancelReq>,
 ) -> Result<Json<ApiResp<Value>>> {
     let rt = flow().await?;
+    if let Some(user) = crate::tenant::current_user() {
+        let initiator = instance_initiator(&rt, &id).await?;
+        match initiator {
+            Some(init) if init != user => {
+                return Err(FlowError::business(format!(
+                    "无权取消该实例（非发起人）"
+                )));
+            }
+            Some(_) => {}
+            None => {
+                tracing::warn!(instance = %id, "实例缺少 initiator 变量，取消操作放行（老数据）");
+            }
+        }
+    }
     rt.engine
         .cancel_process(&id, req.reason)
         .await
@@ -737,14 +783,38 @@ pub struct WithdrawReq {
 }
 
 /// 撤回 / 取回一个流程实例（④）——发起人在下游未处理时拉回发起处，可改后重交。
+///
+/// T0b 授权：以服务端身份为准（`current_user`==`variables.initiator`），body.user 仅作
+/// 留痕回退——其来自前端 localStorage，与 JWT sub 可能不同源，不能作为鉴权依据。
+/// auth 中间件已生效却拿不到用户身份（纯服务调用/委托令牌验签失败）→ 拒绝（取回是敏感动作）。
 pub async fn withdraw_instance(
     Path(id): Path<String>,
     Json(req): Json<WithdrawReq>,
 ) -> Result<Json<ApiResp<Value>>> {
     let rt = flow().await?;
+    let user = match crate::tenant::current_user() {
+        Some(user) => {
+            let initiator = instance_initiator(&rt, &id).await?;
+            if let Some(init) = initiator
+                && init != user
+            {
+                return Err(FlowError::business("无权取回该实例（非发起人）"));
+            }
+            user
+        }
+        None => {
+            if crate::auth::auth_middleware_active() {
+                return Err(FlowError::business(
+                    "缺少用户身份，不能取回实例（需登录态或有效委托令牌）",
+                ));
+            }
+            // 宿主未挂 auth（内嵌形态）：维持旧口径，以 body.user 为准。
+            req.user.clone()
+        }
+    };
     let result = rt
         .engine
-        .withdraw_process(&id, &req.user, req.reason.as_deref())
+        .withdraw_process(&id, &user, req.reason.as_deref())
         .await
         .map_err(engine_err)?;
     // 取回落点的新任务归发起人 → 发一条 task.reassigned 事件（供待办刷新）。
@@ -939,11 +1009,38 @@ pub struct CompleteReq {
 }
 
 /// 办结一个任务。
+///
+/// T0：`operator` 留空时兜底取认证用户（`tenant::current_user()`），审批留痕不缺办理人。
+/// T0b 授权：有用户身份时须为该任务的 assignee 或候选（物化候选表）；auth 中间件已生效却
+/// 拿不到身份（纯服务调用/委托令牌验签失败）→ 拒绝——审批动作不允许无身份代办。
+/// 宿主未挂 auth（平台内嵌形态）→ 放行（平台 mw_auth 兜底，现状兼容）。
 pub async fn complete_task(
     Path(task_id): Path<String>,
     Json(req): Json<CompleteReq>,
 ) -> Result<Json<ApiResp<Value>>> {
     let rt = flow().await?;
+    match crate::tenant::current_user() {
+        Some(user) => {
+            let allowed = crate::biz_link::task_assignee(&rt, &req.instance_id, &task_id)
+                .await
+                .as_deref()
+                    == Some(user.as_str())
+                || crate::biz_link::task_has_candidate(&rt, &task_id, &user).await;
+            if !allowed {
+                return Err(FlowError::business(
+                    "无权办理该任务：既非办理人也非候选",
+                ));
+            }
+        }
+        None => {
+            if crate::auth::auth_middleware_active() {
+                return Err(FlowError::business(
+                    "缺少用户身份，不能办理任务（需登录态或有效委托令牌）",
+                ));
+            }
+        }
+    }
+    let operator = req.operator.clone().or_else(crate::tenant::current_user);
     let mut vars = Variables::from_json(req.variables.clone());
     if let Some(d) = &req.decision {
         vars.set("lastDecision", json!(d));
@@ -960,13 +1057,13 @@ pub async fn complete_task(
         .await
         .map_err(engine_err)?;
     // F3：意见留痕（有意见/决策/办理人才记）。失败仅告警，不影响办结结果。
-    if req.comment.is_some() || req.decision.is_some() || req.operator.is_some() {
+    if req.comment.is_some() || req.decision.is_some() || operator.is_some() {
         let _ = crate::biz_link::insert_task_comment(
             &rt,
             &req.instance_id,
             &task_id,
             &node_bpmn_id,
-            req.operator.clone(),
+            operator,
             req.decision.clone(),
             req.comment.clone(),
         )

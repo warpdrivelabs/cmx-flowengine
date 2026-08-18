@@ -192,6 +192,41 @@ pub async fn task_node_bpmn_id(
         .and_then(|row| get_opt(row, schema, "node_bpmn_id"))
 }
 
+/// 任务的当前办理人（assignee）。任务不存在或候选池未认领（assignee NULL）→ None。
+/// T0b complete 授权校验用。
+pub async fn task_assignee(
+    _rt: &FlowRuntime,
+    instance_id: &str,
+    task_id: &str,
+) -> Option<String> {
+    let sql = format!(
+        "SELECT assignee FROM cmx_flow_task WHERE id = '{}' AND instance_id = '{}'",
+        esc(task_id),
+        esc(instance_id)
+    );
+    let ds = query_sql(&db(), None, &sql, "flow_task_assignee").await.ok()?;
+    let schema = ds.schema.as_ref();
+    ds.iter().next().and_then(|row| get_opt(row, schema, "assignee"))
+}
+
+/// 用户是否为任务候选（发起时物化的 resolved_user_id）。T0b complete 授权校验用。
+pub async fn task_has_candidate(
+    _rt: &FlowRuntime,
+    task_id: &str,
+    user: &str,
+) -> bool {
+    let sql = format!(
+        "SELECT 1 AS hit FROM cmx_flow_task_candidate \
+         WHERE task_id = '{}' AND resolved_user_id = '{}' LIMIT 1",
+        esc(task_id),
+        esc(user)
+    );
+    query_sql(&db(), None, &sql, "flow_task_cand_hit")
+        .await
+        .map(|ds| ds.row_count() > 0)
+        .unwrap_or(false)
+}
+
 /// 办结时插一行意见留痕。
 pub async fn insert_task_comment(
     _rt: &FlowRuntime,

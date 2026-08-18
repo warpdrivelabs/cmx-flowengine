@@ -14,6 +14,7 @@
 //!   - `FLOW_JWT_TENANT_CLAIM`（默认 "tenant"）/`FLOW_JWT_ROLES_CLAIM`（默认 "roles"）自定 claim 名。
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::extract::Request;
 use axum::http::{StatusCode, header};
@@ -44,6 +45,18 @@ struct AuthConfig {
 }
 
 static AUTH: OnceLock<AuthConfig> = OnceLock::new();
+
+/// auth 中间件是否已在本进程处理过请求（即宿主确实挂载了本中间件）。
+///
+/// 任务端点授权（T0b）的 fail-open/fail-close 判据：宿主未挂载本中间件（平台内嵌形态）时
+/// `current_user()` 恒 None——此形态维持平台 mw_auth 边界、flow 层放行（现状兼容）；
+/// 已挂载仍拿不到用户（纯服务调用 / 委托令牌验签失败）则按端点语义收紧。
+static AUTH_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// auth 中间件是否生效（宿主挂载且有请求流过）。
+pub fn auth_middleware_active() -> bool {
+    AUTH_ACTIVE.load(Ordering::Relaxed)
+}
 
 fn auth_config() -> &'static AuthConfig {
     AUTH.get_or_init(|| {
@@ -124,6 +137,8 @@ struct Claims {
 ///
 /// 加在 flow 路由外层（flow-server / 平台壳各自 `.layer(from_fn(auth))`）。
 pub async fn auth(req: Request, next: Next) -> Response {
+    // 标记中间件已生效（T0b 授权的 fail-open/fail-close 判据）。
+    AUTH_ACTIVE.store(true, Ordering::Relaxed);
     let cfg = auth_config();
     // 先查 X-Api-Key（服务间 M2M，S3）：命中即以该 key 绑定的租户建 scope，免 JWT。
     if let Some(key) = header_str(&req, "x-api-key") {
