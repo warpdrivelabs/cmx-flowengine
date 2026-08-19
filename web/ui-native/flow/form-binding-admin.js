@@ -172,10 +172,12 @@ function explorerHtml () {
   const rows = filteredItems().map(rowHtml).join('')
   const total = filteredItems().length
   return `<section class="fba fba-explorer">
-    <div class="fba-tabs">${tabs}</div>
-    <div class="fba-search">
-      <ui5-input data-kw value="${esc(state.keyword)}" placeholder="过滤 formKey / 标题…"></ui5-input>
-      <ui5-button icon="add" design="Emphasized" data-act="new">新增</ui5-button>
+    <div class="fba-fixed-head">
+      <div class="fba-tabs">${tabs}</div>
+      <div class="fba-search">
+        <ui5-input data-kw value="${esc(state.keyword)}" placeholder="过滤 formKey / 标题…"></ui5-input>
+        <ui5-button icon="add" design="Emphasized" data-act="new">新增</ui5-button>
+      </div>
     </div>
     <div class="fba-list-head"><b>表单绑定</b><span>${total} / ${state.items.length}</span></div>
     <div class="fba-list">${rows || '<div class="fba-empty"><ui5-icon name="form"></ui5-icon><span>暂无绑定</span></div>'}</div>
@@ -416,6 +418,7 @@ function styleCss () {
   .fba { font: 13px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; color: var(--ink); height: 100%; box-sizing: border-box; display: flex; flex-direction: column; background: var(--bg); }
   .fba * { box-sizing: border-box; }
   /* explorer */
+  .fba-fixed-head { position: sticky; top: 0; z-index: 6; background: var(--bg); }
   .fba-tabs { display: flex; gap: 4px; padding: 8px; flex-wrap: wrap; border-bottom: 1px solid var(--line-soft); }
   .fba-tab { display: flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; font-weight: 700; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); cursor: pointer; }
   .fba-tab:hover { border-color: var(--brand); }
@@ -441,7 +444,7 @@ function styleCss () {
   .fba-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--muted); padding: 36px 16px; font-size: 12.5px; }
   .fba-empty ui5-icon { width: 28px; height: 28px; opacity: .5; }
   /* content */
-  .fba-toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line-soft); background: var(--panel); flex-wrap: wrap; }
+  .fba-toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line-soft); background: var(--panel); flex-wrap: wrap; position: sticky; top: 0; z-index: 5; }
   .fba-title { font-size: 14px; font-family: var(--mono); color: var(--ink); } .fba-tb-sp { flex: 1; }
   .fba-banner { margin: 12px 14px 0; padding: 10px 14px; background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); border-left: 3px solid var(--warn); border-radius: 0 8px 8px 0; font-size: 12.5px; color: var(--ink); }
   .fba-banner b { color: var(--warn); }
