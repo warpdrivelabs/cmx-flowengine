@@ -1818,9 +1818,16 @@ async function openWsNodeEditor (sourceEl) {
     const savedId = e?.detail?.id
     if (savedId && savedId !== wsId) return   // 不是本节点的工作台
     try {
+      // 已有绑定先 GET 合并原行（只更新 workspaceNode/title），防整行 upsert 覆盖管理页
+      // 维护的 console/bizTable/pkField 等字段；查不到（data=null）或查询失败按新注册 4 字段全量。
+      let body = { formKey: fk, kind: 'workspace', workspaceNode: wsId, title: `流程表单工作台 · ${fk}` }
+      try {
+        const b = await apiJson('/api/flow/forms/' + enc(fk))
+        if (b && b.formKey) { const { seeded, ...rest } = b; body = { ...rest, formKey: fk, kind: 'workspace', workspaceNode: wsId, title: body.title } }
+      } catch { /* 注册表查询失败 → 按新注册，不阻断 */ }
       await apiJson('/api/flow/forms', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ formKey: fk, kind: 'workspace', workspaceNode: wsId, title: `流程表单工作台 · ${fk}` }),
+        body: JSON.stringify(body),
       })
       toast(`已绑定 formKey=${fk} → 工作台 ${wsId}`)
     } catch (err) { toast('绑定注册表失败: ' + err.message) }

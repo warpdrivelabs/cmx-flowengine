@@ -140,6 +140,7 @@ where
             get(handlers::list_form_bindings).post(handlers::save_form_binding),
         )
         .route("/forms/{key}", get(handlers::get_form_binding))
+        .route("/forms/delete", post(handlers::delete_form_binding))
         .route("/startable", get(handlers::list_startable_definitions))
         // —— 任务 ——
         .route("/tasks/my", get(handlers::get_my_tasks))
