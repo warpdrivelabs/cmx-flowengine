@@ -1,0 +1,68 @@
+<svg viewBox="0 0 820 520" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,PingFang SC,sans-serif">
+  <rect width="820" height="520" fill="#fbfcfe"/>
+  <text x="410" y="26" font-size="14" font-weight="700" fill="#1c2530" text-anchor="middle">Crate 分层依赖图（依赖向下）</text>
+
+  <!-- Layer: shells -->
+  <rect x="30" y="44" width="760" height="66" rx="8" fill="#fdf0f0" opacity="0.5"/>
+  <text x="40" y="62" font-size="10.5" fill="#d1394a" font-weight="600">壳层 · 部署装配</text>
+  <rect x="60" y="70" width="150" height="34" rx="6" fill="#fff" stroke="#d1394a"/>
+  <text x="135" y="91" font-size="11" fill="#1c2530" text-anchor="middle">cmx-flow-server</text>
+  <rect x="230" y="70" width="150" height="34" rx="6" fill="#fff" stroke="#d1394a"/>
+  <text x="305" y="91" font-size="11" fill="#1c2530" text-anchor="middle">cmx-flow-demo</text>
+  <rect x="400" y="70" width="180" height="34" rx="6" fill="#fff" stroke="#d1394a" stroke-dasharray="4 3"/>
+  <text x="490" y="91" font-size="10.5" fill="#5a6b7b" text-anchor="middle">cmx-flow-api（cmx-container）</text>
+  <rect x="600" y="70" width="150" height="34" rx="6" fill="#fff" stroke="#5a6b7b" stroke-dasharray="4 3"/>
+  <text x="675" y="91" font-size="10.5" fill="#5a6b7b" text-anchor="middle">cmx-web-chassis</text>
+
+  <!-- Layer: app -->
+  <rect x="30" y="122" width="760" height="60" rx="8" fill="#eaf1fb" opacity="0.6"/>
+  <text x="40" y="140" font-size="10.5" fill="#0a6ed1" font-weight="600">应用层 · 一芯</text>
+  <rect x="300" y="146" width="220" height="30" rx="6" fill="#0a6ed1"/>
+  <text x="410" y="166" font-size="12" fill="#fff" text-anchor="middle" font-weight="700">cmx-flow-app（handler + 路由 + 装配）</text>
+
+  <!-- Layer: adapters/persistence -->
+  <rect x="30" y="194" width="760" height="66" rx="8" fill="#fff8ec" opacity="0.7"/>
+  <text x="40" y="212" font-size="10.5" fill="#c26a00" font-weight="600">适配 / 持久化层 · 实现内核 trait</text>
+  <rect x="55" y="220" width="150" height="34" rx="6" fill="#fff" stroke="#c26a00"/>
+  <text x="130" y="241" font-size="10.5" fill="#1c2530" text-anchor="middle">cmx-flow-store-pg</text>
+  <rect x="215" y="220" width="150" height="34" rx="6" fill="#fff" stroke="#c26a00"/>
+  <text x="290" y="241" font-size="10.5" fill="#1c2530" text-anchor="middle">cmx-flow-adapters</text>
+  <rect x="375" y="220" width="140" height="34" rx="6" fill="#fff" stroke="#c26a00"/>
+  <text x="445" y="241" font-size="10.5" fill="#1c2530" text-anchor="middle">cmx-flow-def</text>
+  <rect x="525" y="220" width="150" height="34" rx="6" fill="#fff" stroke="#c26a00"/>
+  <text x="600" y="241" font-size="10.5" fill="#1c2530" text-anchor="middle">cmx-flow-identity</text>
+
+  <!-- Layer: bpmn -->
+  <rect x="30" y="272" width="760" height="56" rx="8" fill="#f0f5f0" opacity="0.7"/>
+  <text x="40" y="290" font-size="10.5" fill="#178a5a" font-weight="600">编译层</text>
+  <rect x="320" y="292" width="180" height="30" rx="6" fill="#fff" stroke="#178a5a"/>
+  <text x="410" y="312" font-size="11" fill="#1c2530" text-anchor="middle">cmx-flow-bpmn（XML→IR）</text>
+
+  <!-- Layer: core -->
+  <rect x="30" y="340" width="760" height="76" rx="8" fill="#eef3fb"/>
+  <text x="40" y="358" font-size="10.5" fill="#1c2530" font-weight="600">内核层 · 语义中立 · 零基础设施依赖 · 可 wasm</text>
+  <rect x="200" y="366" width="180" height="40" rx="6" fill="#0a6ed1"/>
+  <text x="290" y="384" font-size="12" fill="#fff" text-anchor="middle" font-weight="700">cmx-flow-engine</text>
+  <text x="290" y="399" font-size="9" fill="#dceafd" text-anchor="middle">令牌执行内核</text>
+  <rect x="440" y="366" width="180" height="40" rx="6" fill="#093f7a"/>
+  <text x="530" y="384" font-size="12" fill="#fff" text-anchor="middle" font-weight="700">cmx-flow-model</text>
+  <text x="530" y="399" font-size="9" fill="#dceafd" text-anchor="middle">IR + DTO + 契约 trait</text>
+
+  <!-- infra -->
+  <rect x="30" y="428" width="760" height="60" rx="8" fill="#f4f6f9"/>
+  <text x="40" y="446" font-size="10.5" fill="#5a6b7b" font-weight="600">基础设施（跨 workspace 复用 cmx-container）</text>
+  <rect x="90" y="452" width="150" height="30" rx="6" fill="#fff" stroke="#9aa5b5"/>
+  <text x="165" y="472" font-size="10" fill="#5a6b7b" text-anchor="middle">cmx-database-pg</text>
+  <rect x="260" y="452" width="130" height="30" rx="6" fill="#fff" stroke="#9aa5b5"/>
+  <text x="325" y="472" font-size="10" fill="#5a6b7b" text-anchor="middle">cmx-core</text>
+  <rect x="410" y="452" width="160" height="30" rx="6" fill="#fff" stroke="#9aa5b5"/>
+  <text x="490" y="472" font-size="10" fill="#5a6b7b" text-anchor="middle">cmx-web-monitor</text>
+  <rect x="590" y="452" width="160" height="30" rx="6" fill="#fff" stroke="#9aa5b5"/>
+  <text x="670" y="472" font-size="10" fill="#5a6b7b" text-anchor="middle">cmx-service-base</text>
+
+  <!-- flow arrows -->
+  <path d="M410 176 L410 194" fill="none" stroke="#9aa5b5" stroke-width="1.2" marker-end="url(#ad)"/>
+  <path d="M410 254 L410 272" fill="none" stroke="#9aa5b5" stroke-width="1.2" marker-end="url(#ad)"/>
+  <path d="M410 322 L410 340" fill="none" stroke="#9aa5b5" stroke-width="1.2" marker-end="url(#ad)"/>
+  <defs><marker id="ad" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#9aa5b5"/></marker></defs>
+</svg>

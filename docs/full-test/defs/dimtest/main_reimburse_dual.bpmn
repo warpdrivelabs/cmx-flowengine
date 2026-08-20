@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:flowable="http://flowable.org/bpmn" xmlns:cmx="http://cmx.io/bpmn" targetNamespace="http://cmx.io/flow/test" id="d_reimburse_dual">
+  <bpmn:process id="reimburse_dual" name="报销双维度主流程" isExecutable="true">
+    <bpmn:startEvent id="s"><bpmn:outgoing>f0</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="apply" name="填写报销单" flowable:assignee="u_applicant"><bpmn:incoming>f0</bpmn:incoming><bpmn:outgoing>f1</bpmn:outgoing></bpmn:userTask>
+    <bpmn:callActivity id="callBudget" name="①预算审批(按组织)" cmx:calledKey="budget_appr" cmx:dimKey="org"><bpmn:incoming>f1</bpmn:incoming><bpmn:outgoing>f2</bpmn:outgoing></bpmn:callActivity>
+    <bpmn:callActivity id="callComp" name="②合规审查(按产品)" cmx:calledKey="prod_compliance" cmx:dimKey="product"><bpmn:incoming>f2</bpmn:incoming><bpmn:outgoing>f3</bpmn:outgoing></bpmn:callActivity>
+    <bpmn:userTask id="pay" name="出纳打款" flowable:assignee="u_cashier"><bpmn:incoming>f3</bpmn:incoming><bpmn:outgoing>f4</bpmn:outgoing></bpmn:userTask>
+    <bpmn:endEvent id="e"><bpmn:incoming>f4</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="f0" sourceRef="s" targetRef="apply"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="apply" targetRef="callBudget"/>
+    <bpmn:sequenceFlow id="f2" sourceRef="callBudget" targetRef="callComp"/>
+    <bpmn:sequenceFlow id="f3" sourceRef="callComp" targetRef="pay"/>
+    <bpmn:sequenceFlow id="f4" sourceRef="pay" targetRef="e"/>
+  </bpmn:process>
+</bpmn:definitions>

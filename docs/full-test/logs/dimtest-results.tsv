@@ -1,0 +1,8 @@
+P0-health	PASS	flow-server :8091 可达
+P0-dims	PASS	维度端点含 org+product
+P0-prod-entries	PASS	产品维度条目 6 个
+P0-org-entries	PASS	组织维度条目 5 个
+P1-deploy	PASS	主流程+8子流程共9个已部署
+P1-mainkey	PASS	主流程 key=reimburse_dual
+P2-bind-org	PASS	org 维度绑定 5 条
+P2-bind-prod	PASS	product 维度绑定 5 条(含1禁用)

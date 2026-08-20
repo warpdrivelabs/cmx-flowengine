@@ -1,0 +1,41 @@
+<svg viewBox="0 0 820 440" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,PingFang SC,sans-serif">
+  <rect width="820" height="440" fill="#fbfcfe"/>
+  <text x="410" y="26" font-size="14" font-weight="700" fill="#1c2530" text-anchor="middle">能力演进时间线</text>
+
+  <!-- spine -->
+  <line x1="70" y1="70" x2="70" y2="400" stroke="#c9d2e0" stroke-width="2"/>
+
+  <!-- M1 -->
+  <circle cx="70" cy="90" r="7" fill="#0a6ed1"/>
+  <rect x="90" y="72" width="700" height="36" rx="6" fill="#eaf1fb"/>
+  <text x="104" y="88" font-size="12" fill="#0a6ed1" font-weight="700">M1 顺序审批 · 内核地基</text>
+  <text x="104" y="102" font-size="10" fill="#5a6b7b">令牌内核 · arena/枚举/聚合快照 · 受控表达式 · serviceTask delegate · 排他网关+默认边</text>
+
+  <circle cx="70" cy="138" r="7" fill="#0a6ed1"/>
+  <rect x="90" y="120" width="700" height="36" rx="6" fill="#eef8f2"/>
+  <text x="104" y="136" font-size="12" fill="#178a5a" font-weight="700">M2 · M2.5 并行网关 · 历史归档 · 边界定时器</text>
+  <text x="104" y="150" font-size="10" fill="#5a6b7b">parallelGateway fork/join · RU/HI 分表终态归档 · 中断/非中断定时器 · 可注入时钟 · find_due_jobs</text>
+
+  <circle cx="70" cy="186" r="7" fill="#0a6ed1"/>
+  <rect x="90" y="168" width="700" height="36" rx="6" fill="#fff8ec"/>
+  <text x="104" y="184" font-size="12" fill="#c26a00" font-weight="700">M3 多实例 会签/或签 · 实例取消</text>
+  <text x="104" y="198" font-size="10" fill="#5a6b7b">并行会签(N人齐审) + 顺序或签(逐个) · completionCondition 提前结束 · MiScope 账本 · 取消归档</text>
+
+  <circle cx="70" cy="234" r="7" fill="#0a6ed1"/>
+  <rect x="90" y="216" width="700" height="52" rx="6" fill="#f3eefb"/>
+  <text x="104" y="232" font-size="12" fill="#7d4fd1" font-weight="700">M4 抄送 · 转签 · 角色岗位（M4.1/4.2/4.3）</text>
+  <text x="104" y="246" font-size="10" fill="#5a6b7b">M4.1 角色/岗位/组织/用户候选人 + 候选池认领 · M4.2 抄送只读知会+已读追踪</text>
+  <text x="104" y="260" font-size="10" fill="#5a6b7b">M4.3 转办/委派/加签(可嵌套) + 完整转签台账</text>
+
+  <circle cx="70" cy="298" r="7" fill="#0a6ed1"/>
+  <rect x="90" y="280" width="700" height="52" rx="6" fill="#eaf6fb"/>
+  <text x="104" y="296" font-size="12" fill="#0a8ec2" font-weight="700">M5 子流程（M5.1/5.2/5.3）</text>
+  <text x="104" y="310" font-size="10" fill="#5a6b7b">M5.1 callActivity 同步子流程(父子实例/逐层唤醒/变量映射/可嵌套)</text>
+  <text x="104" y="324" font-size="10" fill="#5a6b7b">M5.2 按组织路由 · M5.3 一主流程多挂载</text>
+
+  <circle cx="70" cy="362" r="7" fill="#178a5a"/>
+  <rect x="90" y="344" width="700" height="52" rx="6" fill="#eef8f2" stroke="#178a5a" stroke-dasharray="4 3"/>
+  <text x="104" y="360" font-size="12" fill="#178a5a" font-weight="700">RD0–RD4 路由维度泛化（承 M5）</text>
+  <text x="104" y="374" font-size="10" fill="#5a6b7b">子流程路由从「写死组织」泛化为「任意字典」· 同实例不同挂载点可按不同维度路由</text>
+  <text x="104" y="388" font-size="10" fill="#5a6b7b">已真机双维度端到端 25/25 绿（组织机构 + 产品）</text>
+</svg>

@@ -1,0 +1,52 @@
+<svg viewBox="0 0 820 320" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,PingFang SC,sans-serif">
+  <rect width="820" height="320" fill="#fbfcfe"/>
+  <text x="410" y="26" font-size="14" font-weight="700" fill="#1c2530" text-anchor="middle">多租户 db-per-tenant + task_local 作用域</text>
+
+  <!-- request -->
+  <rect x="40" y="60" width="140" height="40" rx="8" fill="#eaf1fb" stroke="#0a6ed1"/>
+  <text x="110" y="78" font-size="11" fill="#0a6ed1" text-anchor="middle" font-weight="600">HTTP 请求</text>
+  <text x="110" y="93" font-size="9" fill="#5a6b7b" text-anchor="middle">JWT/API-Key</text>
+
+  <rect x="220" y="60" width="160" height="40" rx="8" fill="#fff8ec" stroke="#c26a00"/>
+  <text x="300" y="78" font-size="11" fill="#c26a00" text-anchor="middle" font-weight="600">auth 中间件</text>
+  <text x="300" y="93" font-size="9" fill="#5a6b7b" text-anchor="middle">建 task_local 作用域</text>
+
+  <rect x="420" y="60" width="180" height="40" rx="8" fill="#eef8f2" stroke="#178a5a"/>
+  <text x="510" y="78" font-size="11" fill="#178a5a" text-anchor="middle" font-weight="600">current_tenant()</text>
+  <text x="510" y="93" font-size="9" fill="#5a6b7b" text-anchor="middle">全链路 await 无参透传</text>
+
+  <path d="M180 80 L218 80" stroke="#9aa5b5" stroke-width="1.3" marker-end="url(#a7)"/>
+  <path d="M380 80 L418 80" stroke="#9aa5b5" stroke-width="1.3" marker-end="url(#a7)"/>
+
+  <!-- runtime cache -->
+  <rect x="220" y="130" width="380" height="44" rx="8" fill="#eef3fb"/>
+  <text x="410" y="150" font-size="11" fill="#1c2530" text-anchor="middle" font-weight="600">per-tenant 引擎缓存（OnceCell 单飞）</text>
+  <text x="410" y="166" font-size="9" fill="#8b97b3" text-anchor="middle">map 锁只护取/插空 cell · 昂贵 build 不持锁 · 冷启租户不阻塞其它</text>
+  <path d="M510 100 L410 128" stroke="#9aa5b5" stroke-width="1.2" marker-end="url(#a7)"/>
+
+  <!-- tenant DBs -->
+  <g>
+    <rect x="90" y="212" width="180" height="80" rx="8" fill="#fff" stroke="#0a6ed1"/>
+    <text x="180" y="234" font-size="11" fill="#0a6ed1" text-anchor="middle" font-weight="700">租户 A</text>
+    <text x="180" y="252" font-size="9" fill="#5a6b7b" text-anchor="middle">flow_A 库</text>
+    <text x="180" y="267" font-size="9" fill="#5a6b7b" text-anchor="middle">独立引擎/定义/webhook</text>
+    <text x="180" y="282" font-size="8.5" fill="#8b97b3" text-anchor="middle">cmx_flow_* 表</text>
+
+    <rect x="320" y="212" width="180" height="80" rx="8" fill="#fff" stroke="#178a5a"/>
+    <text x="410" y="234" font-size="11" fill="#178a5a" text-anchor="middle" font-weight="700">租户 B</text>
+    <text x="410" y="252" font-size="9" fill="#5a6b7b" text-anchor="middle">flow_B 库</text>
+    <text x="410" y="267" font-size="9" fill="#5a6b7b" text-anchor="middle">物理隔离</text>
+    <text x="410" y="282" font-size="8.5" fill="#8b97b3" text-anchor="middle">cmx_flow_* 表</text>
+
+    <rect x="550" y="212" width="180" height="80" rx="8" fill="#fff" stroke="#c26a00"/>
+    <text x="640" y="234" font-size="11" fill="#c26a00" text-anchor="middle" font-weight="700">default（single）</text>
+    <text x="640" y="252" font-size="9" fill="#5a6b7b" text-anchor="middle">fico-db / primary</text>
+    <text x="640" y="267" font-size="9" fill="#5a6b7b" text-anchor="middle">零回归缺省形态</text>
+  </g>
+  <path d="M340 174 L180 210" stroke="#c9d2e0" stroke-width="1" fill="none"/>
+  <path d="M410 174 L410 210" stroke="#c9d2e0" stroke-width="1" fill="none"/>
+  <path d="M480 174 L640 210" stroke="#c9d2e0" stroke-width="1" fill="none"/>
+
+  <defs><marker id="a7" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#9aa5b5"/></marker></defs>
+  <text x="410" y="312" font-size="9.5" fill="#b0bac9" text-anchor="middle">注意：task_local 不跨 tokio::spawn——webhook worker / 定时器 poller 显式捕获租户</text>
+</svg>

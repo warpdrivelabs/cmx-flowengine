@@ -1,0 +1,75 @@
+<svg viewBox="0 0 820 470" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,PingFang SC,sans-serif">
+  <rect width="820" height="470" fill="#fbfcfe"/>
+  <text x="410" y="26" font-size="14" font-weight="700" fill="#1c2530" text-anchor="middle">数据模型（聚合根 + 子实体，无物理外键）</text>
+
+  <!-- aggregate root -->
+  <rect x="310" y="50" width="200" height="52" rx="10" fill="#0a6ed1"/>
+  <text x="410" y="72" font-size="12.5" fill="#fff" text-anchor="middle" font-weight="700">cmx_flow_instance</text>
+  <text x="410" y="90" font-size="9" fill="#dceafd" text-anchor="middle">聚合根 · variables/dimensions jsonb</text>
+
+  <!-- RU children -->
+  <g font-size="9.5">
+    <rect x="30" y="150" width="150" height="46" rx="7" fill="#eaf1fb" stroke="#0a6ed1"/>
+    <text x="105" y="169" font-size="10.5" fill="#1c2530" text-anchor="middle" font-weight="600">cmx_flow_token</text>
+    <text x="105" y="184" fill="#8b97b3" text-anchor="middle">令牌=当前节点+态</text>
+
+    <rect x="200" y="150" width="150" height="46" rx="7" fill="#eaf1fb" stroke="#0a6ed1"/>
+    <text x="275" y="169" font-size="10.5" fill="#1c2530" text-anchor="middle" font-weight="600">cmx_flow_task</text>
+    <text x="275" y="184" fill="#8b97b3" text-anchor="middle">用户任务(等待态)</text>
+
+    <rect x="370" y="150" width="150" height="46" rx="7" fill="#eaf1fb" stroke="#0a6ed1"/>
+    <text x="445" y="169" font-size="10.5" fill="#1c2530" text-anchor="middle" font-weight="600">cmx_flow_mi_scope</text>
+    <text x="445" y="184" fill="#8b97b3" text-anchor="middle">会签/或签账本</text>
+
+    <rect x="540" y="150" width="150" height="46" rx="7" fill="#eaf1fb" stroke="#0a6ed1"/>
+    <text x="615" y="169" font-size="10.5" fill="#1c2530" text-anchor="middle" font-weight="600">cmx_flow_job</text>
+    <text x="615" y="184" fill="#8b97b3" text-anchor="middle">定时器到期作业</text>
+
+    <rect x="115" y="208" width="150" height="46" rx="7" fill="#eaf1fb" stroke="#0a6ed1"/>
+    <text x="190" y="227" font-size="10" fill="#1c2530" text-anchor="middle" font-weight="600">task_candidate</text>
+    <text x="190" y="242" fill="#8b97b3" text-anchor="middle">候选池(认领)</text>
+
+    <rect x="285" y="208" width="150" height="46" rx="7" fill="#eaf1fb" stroke="#0a6ed1"/>
+    <text x="360" y="227" font-size="10.5" fill="#1c2530" text-anchor="middle" font-weight="600">cmx_flow_cc</text>
+    <text x="360" y="242" fill="#8b97b3" text-anchor="middle">抄送+已读</text>
+
+    <rect x="455" y="208" width="150" height="46" rx="7" fill="#eaf1fb" stroke="#0a6ed1"/>
+    <text x="530" y="227" font-size="10" fill="#1c2530" text-anchor="middle" font-weight="600">task_delegation</text>
+    <text x="530" y="242" fill="#8b97b3" text-anchor="middle">转签台账</text>
+  </g>
+  <text x="70" y="130" font-size="10.5" fill="#0a6ed1" font-weight="600">RU 运行态（随聚合快照全删重插）</text>
+
+  <!-- lines to root -->
+  <g stroke="#c9d2e0" stroke-width="1" fill="none">
+    <path d="M105 150 L360 102"/><path d="M275 150 L390 102"/><path d="M445 150 L430 102"/><path d="M615 150 L460 102"/>
+    <path d="M190 208 L370 104"/><path d="M360 208 L410 104"/><path d="M530 208 L450 104"/>
+  </g>
+
+  <!-- HI -->
+  <text x="140" y="290" font-size="10.5" fill="#178a5a" font-weight="600">HI 历史态（终态归档）</text>
+  <rect x="120" y="300" width="180" height="44" rx="7" fill="#eef8f2" stroke="#178a5a"/>
+  <text x="210" y="319" font-size="10.5" fill="#1c2530" text-anchor="middle" font-weight="600">cmx_flow_hi_instance</text>
+  <text x="210" y="334" font-size="9" fill="#8b97b3" text-anchor="middle">历史实例 + duration_ms</text>
+  <rect x="320" y="300" width="180" height="44" rx="7" fill="#eef8f2" stroke="#178a5a"/>
+  <text x="410" y="319" font-size="10.5" fill="#1c2530" text-anchor="middle" font-weight="600">cmx_flow_hi_task</text>
+  <text x="410" y="334" font-size="9" fill="#8b97b3" text-anchor="middle">历史任务 + 办理时长</text>
+  <path d="M410 102 L210 298" stroke="#178a5a" stroke-width="1" stroke-dasharray="4 3" fill="none" marker-end="url(#a6)"/>
+  <text x="290" y="200" font-size="9" fill="#178a5a">终态同事务归档→</text>
+
+  <!-- design-time -->
+  <text x="560" y="290" font-size="10.5" fill="#c26a00" font-weight="600">定义态 / 配置态</text>
+  <rect x="540" y="300" width="130" height="44" rx="7" fill="#fff8ec" stroke="#c26a00"/>
+  <text x="605" y="319" font-size="9.5" fill="#1c2530" text-anchor="middle">definition</text>
+  <text x="605" y="334" font-size="8.5" fill="#8b97b3" text-anchor="middle">+ version 版本</text>
+  <rect x="685" y="300" width="115" height="44" rx="7" fill="#fff8ec" stroke="#c26a00"/>
+  <text x="742" y="319" font-size="9" fill="#1c2530" text-anchor="middle">subflow</text>
+  <text x="742" y="334" font-size="8.5" fill="#8b97b3" text-anchor="middle">_binding 绑定</text>
+
+  <defs><marker id="a6" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#178a5a"/></marker></defs>
+
+  <!-- snapshot txn -->
+  <rect x="120" y="376" width="580" height="72" rx="10" fill="#fff" stroke="#c9ced4"/>
+  <text x="410" y="396" font-size="11.5" fill="#1c2530" text-anchor="middle" font-weight="700">聚合快照单事务持久化</text>
+  <text x="410" y="415" font-size="9.5" fill="#5a6b7b" text-anchor="middle">save_snapshot = 一个事务：update instance + 子实体 delete-all-then-reinsert</text>
+  <text x="410" y="432" font-size="9.5" fill="#8b97b3" text-anchor="middle">子实体数量小（审批多为个位数），全删重插最简且原子 · 一次提交 = 一个 BPMN 等待态提交点</text>
+</svg>

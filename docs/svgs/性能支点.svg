@@ -1,0 +1,40 @@
+<svg viewBox="0 0 820 400" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,PingFang SC,sans-serif">
+  <rect width="820" height="400" fill="#fbfcfe"/>
+  <text x="410" y="26" font-size="14" font-weight="700" fill="#1c2530" text-anchor="middle">性能支点</text>
+
+  <g>
+    <rect x="40" y="50" width="360" height="90" rx="10" fill="#eaf1fb" stroke="#0a6ed1"/>
+    <text x="60" y="74" font-size="12.5" fill="#0a6ed1" font-weight="700">① 语言与运行时</text>
+    <text x="60" y="94" font-size="9.5" fill="#5a6b7b">· Rust edition 2024，release opt-level=3 + LTO thin</text>
+    <text x="60" y="110" font-size="9.5" fill="#5a6b7b">· tokio 全异步；axum 0.8；tower-http 压缩</text>
+    <text x="60" y="126" font-size="9.5" fill="#5a6b7b">· arena+索引 IR，无 Rc/RefCell 图，枚举分派</text>
+
+    <rect x="420" y="50" width="360" height="90" rx="10" fill="#eef8f2" stroke="#178a5a"/>
+    <text x="440" y="74" font-size="12.5" fill="#178a5a" font-weight="700">② 数据访问</text>
+    <text x="440" y="94" font-size="9.5" fill="#5a6b7b">· 连接池（deadpool，默认 max=10）</text>
+    <text x="440" y="110" font-size="9.5" fill="#5a6b7b">· 聚合快照：一实例 3 条 SELECT 重建，非事件回放</text>
+    <text x="440" y="126" font-size="9.5" fill="#5a6b7b">· HTTP 适配器复用单 reqwest::Client（连接复用）</text>
+
+    <rect x="40" y="156" width="360" height="90" rx="10" fill="#fff8ec" stroke="#c26a00"/>
+    <text x="60" y="180" font-size="12.5" fill="#c26a00" font-weight="700">③ 执行模型</text>
+    <text x="60" y="200" font-size="9.5" fill="#5a6b7b">· 等待态即提交点：一段推进一次事务，无中间落盘</text>
+    <text x="60" y="216" font-size="9.5" fill="#5a6b7b">· 引擎纯函数无后台线程，可确定性测试</text>
+    <text x="60" y="232" font-size="9.5" fill="#5a6b7b">· 条件/决策请求驱动求值（无 poller）</text>
+
+    <rect x="420" y="156" width="360" height="90" rx="10" fill="#f3eefb" stroke="#7d4fd1"/>
+    <text x="440" y="180" font-size="12.5" fill="#7d4fd1" font-weight="700">④ 定时器</text>
+    <text x="440" y="200" font-size="9.5" fill="#5a6b7b">· 5s tokio interval poller，遍历已建租户运行时</text>
+    <text x="440" y="216" font-size="9.5" fill="#5a6b7b">· find_due_jobs 按 due_at 索引跨实例扫描</text>
+    <text x="440" y="232" font-size="9.5" fill="#5a6b7b">· trigger 带 limit 上限，防到期作业雪崩</text>
+  </g>
+
+  <!-- monitor -->
+  <rect x="120" y="270" width="580" height="60" rx="10" fill="#eef3fb"/>
+  <text x="410" y="292" font-size="12" fill="#1c2530" text-anchor="middle" font-weight="700">可观测性（cmx-web-monitor · /_mon）</text>
+  <text x="410" y="311" font-size="9.5" fill="#5a6b7b" text-anchor="middle">系统采样（sysinfo 3s）+ DB 池状态（零查询开销）+ 请求遥测 + 服务拓扑探测</text>
+  <text x="410" y="325" font-size="9" fill="#8b97b3" text-anchor="middle">节点时效分析 /analytics/node-timing 按 node_bpmn_id 聚合，支持 SLA 阈值</text>
+
+  <text x="410" y="360" font-size="10.5" fill="#d1394a" text-anchor="middle" font-weight="600">⚠ 扩展边界（如实披露）</text>
+  <text x="410" y="378" font-size="9.5" fill="#8b97b3" text-anchor="middle">无 SKIP LOCKED / 分布式协调——定时器 poller 假设每租户库单写者，多副本 poller 需自行加分布式锁</text>
+  <text x="410" y="393" font-size="9" fill="#b0bac9" text-anchor="middle">当前为单实例 + PG 轮询模型；水平扩展读可多副本，定时器写侧需 leader 选举（未内建）</text>
+</svg>

@@ -1,0 +1,47 @@
+<svg viewBox="0 0 820 400" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,PingFang SC,sans-serif">
+  <rect width="820" height="400" fill="#fbfcfe"/>
+  <text x="410" y="26" font-size="14" font-weight="700" fill="#1c2530" text-anchor="middle">同实例双维度路由（报销主流程）</text>
+
+  <!-- main flow -->
+  <circle cx="70" cy="90" r="16" fill="#fff" stroke="#178a5a" stroke-width="2"/><text x="70" y="94" font-size="9" fill="#178a5a" text-anchor="middle">开始</text>
+  <rect x="120" y="72" width="100" height="36" rx="6" fill="#fff8ec" stroke="#c26a00"/><text x="170" y="94" font-size="10" fill="#c26a00" text-anchor="middle">填报销单</text>
+  <rect x="250" y="66" width="140" height="48" rx="8" fill="#f3eefb" stroke="#7d4fd1" stroke-width="2"/>
+  <text x="320" y="86" font-size="10.5" fill="#7d4fd1" text-anchor="middle" font-weight="600">①预算审批</text>
+  <text x="320" y="102" font-size="9" fill="#5a6b7b" text-anchor="middle">dimKey=org</text>
+  <rect x="420" y="66" width="140" height="48" rx="8" fill="#eaf6fb" stroke="#0a8ec2" stroke-width="2"/>
+  <text x="490" y="86" font-size="10.5" fill="#0a8ec2" text-anchor="middle" font-weight="600">②合规审查</text>
+  <text x="490" y="102" font-size="9" fill="#5a6b7b" text-anchor="middle">dimKey=product</text>
+  <rect x="590" y="72" width="100" height="36" rx="6" fill="#fff8ec" stroke="#c26a00"/><text x="640" y="94" font-size="10" fill="#c26a00" text-anchor="middle">出纳打款</text>
+  <circle cx="740" cy="90" r="16" fill="#fff" stroke="#d1394a" stroke-width="3"/><text x="740" y="94" font-size="9" fill="#d1394a" text-anchor="middle">结束</text>
+
+  <line x1="86" y1="90" x2="118" y2="90" stroke="#9aa5b5" stroke-width="1.3"/>
+  <line x1="220" y1="90" x2="248" y2="90" stroke="#9aa5b5" stroke-width="1.3"/>
+  <line x1="390" y1="90" x2="418" y2="90" stroke="#9aa5b5" stroke-width="1.3"/>
+  <line x1="560" y1="90" x2="588" y2="90" stroke="#9aa5b5" stroke-width="1.3"/>
+  <line x1="690" y1="90" x2="722" y2="90" stroke="#9aa5b5" stroke-width="1.3"/>
+
+  <!-- instance dims -->
+  <rect x="250" y="140" width="310" height="34" rx="6" fill="#eef3fb"/>
+  <text x="405" y="161" font-size="10.5" fill="#1c2530" text-anchor="middle">实例维度上下文 dimensions = {"org":"上海","product":"信用卡"}</text>
+
+  <!-- org dim resolution -->
+  <path d="M320 114 L320 195" stroke="#7d4fd1" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#a5)"/>
+  <rect x="200" y="200" width="240" height="150" rx="8" fill="#faf7ff" stroke="#7d4fd1"/>
+  <text x="320" y="220" font-size="11" fill="#7d4fd1" text-anchor="middle" font-weight="600">org 维度（cmx_org 斜杠路径）</text>
+  <text x="320" y="240" font-size="9.5" fill="#5a6b7b" text-anchor="middle">按 dimValue=上海 查绑定</text>
+  <rect x="230" y="250" width="180" height="26" rx="5" fill="#fff" stroke="#c9ced4"/><text x="320" y="268" font-size="9.5" fill="#1c2530" text-anchor="middle">① 精确：上海→上海预算子</text>
+  <rect x="230" y="282" width="180" height="26" rx="5" fill="#fff" stroke="#c9ced4"/><text x="320" y="300" font-size="9.5" fill="#1c2530" text-anchor="middle">② 继承：沿 path 向上找祖先</text>
+  <rect x="230" y="314" width="180" height="26" rx="5" fill="#fff" stroke="#c9ced4"/><text x="320" y="332" font-size="9.5" fill="#1c2530" text-anchor="middle">③ 兜底：默认绑定</text>
+
+  <!-- product dim resolution -->
+  <path d="M490 114 L490 195" stroke="#0a8ec2" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#a5)"/>
+  <rect x="480" y="200" width="240" height="150" rx="8" fill="#f2fafd" stroke="#0a8ec2"/>
+  <text x="600" y="220" font-size="11" fill="#0a8ec2" text-anchor="middle" font-weight="600">product 维度（cf_product 点路径）</text>
+  <text x="600" y="240" font-size="9.5" fill="#5a6b7b" text-anchor="middle">按 dimValue=信用卡 查绑定</text>
+  <rect x="510" y="250" width="180" height="26" rx="5" fill="#fff" stroke="#c9ced4"/><text x="600" y="268" font-size="9.5" fill="#1c2530" text-anchor="middle">① 精确：信用卡→信用卡合规</text>
+  <rect x="510" y="282" width="180" height="26" rx="5" fill="#fff" stroke="#c9ced4"/><text x="600" y="300" font-size="9.5" fill="#1c2530" text-anchor="middle">② 继承：沿 full_path 向上</text>
+  <rect x="510" y="314" width="180" height="26" rx="5" fill="#fff" stroke="#c9ced4"/><text x="600" y="332" font-size="9.5" fill="#1c2530" text-anchor="middle">③ 兜底：通用合规</text>
+
+  <defs><marker id="a5" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#9aa5b5"/></marker></defs>
+  <text x="410" y="380" font-size="10" fill="#8b97b3" text-anchor="middle">org 用斜杠 id 路径、product 用点 code 路径——分隔符/段来源因字典而异，DimSpec 参数化承载</text>
+</svg>

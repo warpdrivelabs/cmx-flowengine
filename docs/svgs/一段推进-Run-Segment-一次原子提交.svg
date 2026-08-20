@@ -1,0 +1,38 @@
+<svg viewBox="0 0 820 320" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,PingFang SC,sans-serif">
+  <rect width="820" height="320" fill="#fbfcfe"/>
+  <text x="410" y="26" font-size="14" font-weight="700" fill="#1c2530" text-anchor="middle">一段推进（Run Segment）= 一次原子提交</text>
+
+  <rect x="40" y="60" width="150" height="52" rx="8" fill="#eaf1fb" stroke="#0a6ed1"/>
+  <text x="115" y="82" font-size="12" fill="#0a6ed1" text-anchor="middle" font-weight="600">① 装载快照</text>
+  <text x="115" y="99" font-size="9.5" fill="#5a6b7b" text-anchor="middle">load_snapshot</text>
+
+  <rect x="230" y="60" width="180" height="52" rx="8" fill="#eef8f2" stroke="#178a5a"/>
+  <text x="320" y="80" font-size="12" fill="#178a5a" text-anchor="middle" font-weight="600">② 内存推进</text>
+  <text x="320" y="96" font-size="9.5" fill="#5a6b7b" text-anchor="middle">run_to_wait 循环取 Active 令牌</text>
+  <text x="320" y="108" font-size="9" fill="#8b97b3" text-anchor="middle">STEP_LIMIT=10000 防死循环</text>
+
+  <rect x="450" y="60" width="150" height="52" rx="8" fill="#fff8ec" stroke="#c26a00"/>
+  <text x="525" y="82" font-size="12" fill="#c26a00" text-anchor="middle" font-weight="600">③ 落到等待态</text>
+  <text x="525" y="99" font-size="9.5" fill="#5a6b7b" text-anchor="middle">userTask/callActivity</text>
+
+  <rect x="640" y="60" width="140" height="52" rx="8" fill="#eaf1fb" stroke="#0a6ed1"/>
+  <text x="710" y="82" font-size="12" fill="#0a6ed1" text-anchor="middle" font-weight="600">④ 单事务落库</text>
+  <text x="710" y="99" font-size="9.5" fill="#5a6b7b" text-anchor="middle">save_snapshot</text>
+
+  <path d="M190 86 L228 86" stroke="#9aa5b5" stroke-width="1.3" marker-end="url(#a2)"/>
+  <path d="M410 86 L448 86" stroke="#9aa5b5" stroke-width="1.3" marker-end="url(#a2)"/>
+  <path d="M600 86 L638 86" stroke="#9aa5b5" stroke-width="1.3" marker-end="url(#a2)"/>
+  <defs><marker id="a2" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#9aa5b5"/></marker></defs>
+
+  <!-- snapshot content -->
+  <rect x="120" y="150" width="580" height="120" rx="10" fill="#fff" stroke="#c9ced4"/>
+  <text x="410" y="172" font-size="12" fill="#1c2530" text-anchor="middle" font-weight="700">InstanceSnapshot（原子持久化单元 = 聚合根）</text>
+  <rect x="140" y="186" width="120" height="30" rx="5" fill="#eef3fb"/><text x="200" y="206" font-size="10" fill="#1c2530" text-anchor="middle">instance</text>
+  <rect x="270" y="186" width="120" height="30" rx="5" fill="#eef3fb"/><text x="330" y="206" font-size="10" fill="#1c2530" text-anchor="middle">tokens[]</text>
+  <rect x="400" y="186" width="120" height="30" rx="5" fill="#eef3fb"/><text x="460" y="206" font-size="10" fill="#1c2530" text-anchor="middle">tasks[]</text>
+  <rect x="530" y="186" width="150" height="30" rx="5" fill="#eef3fb"/><text x="605" y="206" font-size="10" fill="#1c2530" text-anchor="middle">mi_scopes[] · jobs[]</text>
+  <rect x="140" y="224" width="160" height="30" rx="5" fill="#eef3fb"/><text x="220" y="244" font-size="10" fill="#1c2530" text-anchor="middle">candidates[]</text>
+  <rect x="310" y="224" width="160" height="30" rx="5" fill="#eef3fb"/><text x="390" y="244" font-size="10" fill="#1c2530" text-anchor="middle">cc_records[]</text>
+  <rect x="480" y="224" width="200" height="30" rx="5" fill="#eef3fb"/><text x="580" y="244" font-size="10" fill="#1c2530" text-anchor="middle">delegations[]</text>
+  <text x="410" y="292" font-size="10" fill="#8b97b3" text-anchor="middle">重启恢复 = 从 PG 重建聚合（MI 计数 / 定时器到期 / 父子唤醒全部可恢复）——可靠性试金石</text>
+</svg>

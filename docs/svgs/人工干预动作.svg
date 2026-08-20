@@ -1,0 +1,62 @@
+<svg viewBox="0 0 820 320" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,PingFang SC,sans-serif">
+  <rect width="820" height="320" fill="#fbfcfe"/>
+  <text x="410" y="24" font-size="13" font-weight="700" fill="#1c2530" text-anchor="middle">人工干预动作</text>
+  <g font-size="10.5">
+    <rect x="40" y="44" width="170" height="58" rx="8" fill="#eaf1fb" stroke="#0a6ed1"/>
+    <text x="125" y="66" font-size="12" fill="#0a6ed1" text-anchor="middle" font-weight="600">认领 Claim</text>
+    <text x="125" y="84" font-size="9.5" fill="#5a6b7b" text-anchor="middle">候选池 → 指派本人</text>
+    <text x="125" y="97" font-size="8.5" fill="#8b97b3" text-anchor="middle">幂等，已被他人认领报错</text>
+
+    <rect x="230" y="44" width="170" height="58" rx="8" fill="#eef8f2" stroke="#178a5a"/>
+    <text x="315" y="66" font-size="12" fill="#178a5a" text-anchor="middle" font-weight="600">转办 Transfer</text>
+    <text x="315" y="84" font-size="9.5" fill="#5a6b7b" text-anchor="middle">彻底移交</text>
+    <text x="315" y="97" font-size="8.5" fill="#8b97b3" text-anchor="middle">assignee+owner 都换人</text>
+
+    <rect x="420" y="44" width="170" height="58" rx="8" fill="#fff8ec" stroke="#c26a00"/>
+    <text x="505" y="66" font-size="12" fill="#c26a00" text-anchor="middle" font-weight="600">委派 Delegate</text>
+    <text x="505" y="84" font-size="9.5" fill="#5a6b7b" text-anchor="middle">代办不转所有权</text>
+    <text x="505" y="97" font-size="8.5" fill="#8b97b3" text-anchor="middle">owner 保留，办完归还</text>
+
+    <rect x="610" y="44" width="170" height="58" rx="8" fill="#f3eefb" stroke="#7d4fd1"/>
+    <text x="695" y="66" font-size="12" fill="#7d4fd1" text-anchor="middle" font-weight="600">加签 AddSign</text>
+    <text x="695" y="84" font-size="9.5" fill="#5a6b7b" text-anchor="middle">临时增审批人</text>
+    <text x="695" y="97" font-size="8.5" fill="#8b97b3" text-anchor="middle">前/后加签，可嵌套</text>
+
+    <rect x="40" y="116" width="170" height="58" rx="8" fill="#fdf0f0" stroke="#d1394a"/>
+    <text x="125" y="138" font-size="12" fill="#d1394a" text-anchor="middle" font-weight="600">回退 Reject</text>
+    <text x="125" y="156" font-size="9.5" fill="#5a6b7b" text-anchor="middle">退到任意上游节点</text>
+    <text x="125" y="169" font-size="8.5" fill="#8b97b3" text-anchor="middle">reject_targets 列可选</text>
+
+    <rect x="230" y="116" width="170" height="58" rx="8" fill="#eaf6fb" stroke="#0a8ec2"/>
+    <text x="315" y="138" font-size="12" fill="#0a8ec2" text-anchor="middle" font-weight="600">取回 Withdraw</text>
+    <text x="315" y="156" font-size="9.5" fill="#5a6b7b" text-anchor="middle">发起人撤回</text>
+    <text x="315" y="169" font-size="8.5" fill="#8b97b3" text-anchor="middle">strict/lenient 策略</text>
+
+    <rect x="420" y="116" width="170" height="58" rx="8" fill="#eaf1fb" stroke="#0a6ed1"/>
+    <text x="505" y="138" font-size="12" fill="#0a6ed1" text-anchor="middle" font-weight="600">抄送 CC</text>
+    <text x="505" y="156" font-size="9.5" fill="#5a6b7b" text-anchor="middle">只读知会</text>
+    <text x="505" y="169" font-size="8.5" fill="#8b97b3" text-anchor="middle">节点级/手动 + 已读追踪</text>
+
+    <rect x="610" y="116" width="170" height="58" rx="8" fill="#eef8f2" stroke="#178a5a"/>
+    <text x="695" y="138" font-size="12" fill="#178a5a" text-anchor="middle" font-weight="600">催办 Urge</text>
+    <text x="695" y="156" font-size="9.5" fill="#5a6b7b" text-anchor="middle">提醒办理人</text>
+    <text x="695" y="169" font-size="8.5" fill="#8b97b3" text-anchor="middle">写台账</text>
+  </g>
+  <text x="410" y="204" font-size="11" fill="#c26a00" font-weight="600" text-anchor="middle">— 运维/管理动作 —</text>
+  <g font-size="10.5">
+    <rect x="90" y="216" width="150" height="44" rx="8" fill="#fff" stroke="#9aa5b5"/>
+    <text x="165" y="234" font-size="11" fill="#1c2530" text-anchor="middle">自由跳转 Jump</text>
+    <text x="165" y="250" font-size="8.5" fill="#8b97b3" text-anchor="middle">管理员跳任意 userTask</text>
+    <rect x="255" y="216" width="150" height="44" rx="8" fill="#fff" stroke="#9aa5b5"/>
+    <text x="330" y="234" font-size="11" fill="#1c2530" text-anchor="middle">挂起/恢复</text>
+    <text x="330" y="250" font-size="8.5" fill="#8b97b3" text-anchor="middle">级联子实例</text>
+    <rect x="420" y="216" width="150" height="44" rx="8" fill="#fff" stroke="#9aa5b5"/>
+    <text x="495" y="234" font-size="11" fill="#1c2530" text-anchor="middle">改变量 SetVars</text>
+    <text x="495" y="250" font-size="8.5" fill="#8b97b3" text-anchor="middle">运维修数据</text>
+    <rect x="585" y="216" width="150" height="44" rx="8" fill="#fdf0f0" stroke="#d1394a"/>
+    <text x="660" y="234" font-size="11" fill="#d1394a" text-anchor="middle">Incident 重试</text>
+    <text x="660" y="250" font-size="8.5" fill="#8b97b3" text-anchor="middle">修绑定后 retry</text>
+  </g>
+  <text x="410" y="295" font-size="10" fill="#8b97b3" text-anchor="middle">候选人类型 CandidateKind（7 种）：用户/角色/岗位/组织/部门领导/发起人/发起人上级</text>
+  <text x="410" y="312" font-size="9.5" fill="#b0bac9" text-anchor="middle">办理人解析是「令牌到达时快照」——避免角色变更导致待办凭空消失</text>
+</svg>

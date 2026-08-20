@@ -65,10 +65,12 @@ const state = {
   shownVersion: null,    // 当前画布加载的是哪个版本（null=草稿/当前）
   versionDialog: null,   // { key } 打开版本管理对话框时置，null=关闭
   versionError: '',      // 对话框内错误提示
-  // 子流程组织路由（对标 M5.2：callActivity 写逻辑 key，运行期按组织解析成具体子流程）。
+  // 子流程路由（M5.2 组织路由 → RD4 维度泛化：callActivity 写逻辑 key + 维度 key，运行期按维度取值解析）。
   orgs: [],              // 组织树扁平表（/api/flow/orgs），懒加载一次
-  bindingDialog: null,   // { calledKey } 打开组织绑定对话框时置
-  bindings: [],          // 当前 calledKey 的组织绑定列表
+  dims: null,            // 可选路由维度（/api/flow/dimensions），懒加载一次；org 内建置顶
+  dimEntries: {},        // { [dimKey]: [{id,name,parentId,path}] } 各维度条目缓存
+  bindingDialog: null,   // { calledKey, dimKey } 打开维度绑定对话框时置
+  bindings: [],          // 当前 calledKey 的维度绑定列表
   bindingError: '',      // 绑定对话框内错误
   // 分支条件可视化构造器（P2-c：把单个 ${expr} 文本框升级为行式构造器）。
   fnCatalog: null,       // 内置函数目录（/api/flow/conditions/functions），懒加载一次并缓存
@@ -1004,25 +1006,29 @@ function nodePropBodyHtml () {
   if (el.type === 'bpmn:CallActivity') {
     const calledKey = getCalledKey(b)
     const calledElement = b.get?.('calledElement') || ''
+    const dimKey = getFormAttr(b, 'dimKey') || 'org'
     // 模式判定：显式记 state.subMode[el.id]（解决新建节点两者皆空时固定模式弹回的死循环 F5）。
     const explicit = state.subMode[el.id]
     const fixedMode = explicit ? explicit === 'fixed' : (!!calledElement && !calledKey)
     h += sec('子流程')
     h += `<div class="flow-mode">
       <button class="flow-mode-opt ${!fixedMode ? 'on' : ''}" data-sub-mode="org">
-        <b>按组织路由</b><small>各组织跑各自子流程（推荐）</small></button>
+        <b>按维度路由</b><small>各维度取值跑各自子流程（推荐）</small></button>
       <button class="flow-mode-opt ${fixedMode ? 'on' : ''}" data-sub-mode="fixed">
-        <b>固定子流程</b><small>所有组织同一个（少见）</small></button>
+        <b>固定子流程</b><small>所有情形同一个（少见）</small></button>
     </div>`
     if (fixedMode) {
-      h += field('固定子流程 key (calledElement)', 'calledElement', calledElement, '写死具体子流程定义 key，不区分组织')
+      h += field('固定子流程 key (calledElement)', 'calledElement', calledElement, '写死具体子流程定义 key，不区分维度')
     } else {
-      h += field('逻辑子流程名 (cmx:calledKey)', 'calledKey', calledKey, '如 fin_review；运行期按发起组织解析到具体子流程')
+      // RD4：路由维度选择器（cmx:dimKey）。默认组织机构；可选其它已注册字典。
+      const dimOpts = dimSelectOptionsHtml(dimKey)
+      h += `<label class="flow-field"><span>路由维度 (cmx:dimKey)</span><select data-prop="dimKey">${dimOpts}</select><div class="flow-hint">按哪个字典区分子流程：组织机构 / 法人公司 / 其它已注册维度。各挂载点可选不同维度。</div></label>`
+      h += field('逻辑子流程名 (cmx:calledKey)', 'calledKey', calledKey, '如 fin_review；运行期按发起实例的该维度取值解析到具体子流程')
       const nBind = state.bindingDialog?.calledKey === calledKey ? state.bindings.length : null
       h += `<div class="flow-field">
         <button class="flow-btn block" data-open-bindings ${calledKey ? '' : 'disabled'}>
-          <ui5-icon name="org-chart"></ui5-icon> 仅配置组织绑定${nBind != null ? `（${nBind}）` : ''}</button>
-        <div class="flow-hint">${calledKey ? '为各组织指定该逻辑子流程对应的具体流程；未匹配的组织沿组织树向上继承，最后落到默认绑定。' : '先填逻辑子流程名，再配置组织绑定。'}</div>
+          <ui5-icon name="org-chart"></ui5-icon> 配置维度绑定${nBind != null ? `（${nBind}）` : ''}</button>
+        <div class="flow-hint">${calledKey ? '为该维度各取值指定对应的具体子流程；未匹配的取值沿维度字典树向上继承，最后落到默认绑定。' : '先填逻辑子流程名，再配置维度绑定。'}</div>
       </div>`
     }
     // ★ 主入口：打开全屏子流程编辑器（固定=直接编辑；组织路由=变体侧栏+编辑；绑定+设计合一）。
@@ -1432,8 +1438,12 @@ function defaultFlowFieldHtml (el, b) {
 
 // 组织下拉选项：按 path 缩进呈现层级；已被其他绑定占用的组织仍可选（覆盖）。
 function orgOptionsHtml (selected) {
-  const opts = state.orgs.map((o) => {
-    const depth = Math.max(0, String(o.path || '').split('/').filter(Boolean).length - 1)
+  // RD4：按当前对话框维度取条目；缩进按物化路径段数（org 用 '/'、cf_* 用 '.'，都能算深度）。
+  const dk = state.bindingDialog?.dimKey || 'org'
+  const entries = state.dimEntries[dk] || state.orgs
+  const opts = entries.map((o) => {
+    const p = String(o.path || '')
+    const depth = Math.max(0, p.split(/[/.]/).filter(Boolean).length - 1)
     const indent = '　'.repeat(depth)
     return `<option value="${esc(o.id)}" ${o.id === selected ? 'selected' : ''}>${indent}${esc(o.name)}</option>`
   }).join('')
@@ -1451,22 +1461,24 @@ function subflowTargetOptionsHtml (selected) {
 function bindingDialogHtml () {
   if (!state.bindingDialog) return ''
   const key = state.bindingDialog.calledKey
+  const dimKey = state.bindingDialog.dimKey || 'org'
+  const dimName = (state.dims || []).find((d) => d.dimKey === dimKey)?.name || (dimKey === 'org' ? '组织机构' : dimKey)
   const rows = state.bindings.length
     ? state.bindings.map((bd) => `<div class="flow-vrow ${bd.isDefault ? 'cur' : ''}">
         <div class="flow-vrow-main">
-          <b>${bd.isDefault ? '默认（兜底）' : esc(bd.orgName || bd.orgId)}</b>${bd.isDefault ? '<span class="flow-vtag">fallback</span>' : ''}${!bd.enabled ? '<span class="flow-vtag off">停用</span>' : ''}
+          <b>${bd.isDefault ? '默认（兜底）' : esc(bd.dimValueName || bd.dimValue || bd.orgName || bd.orgId)}</b>${bd.isDefault ? '<span class="flow-vtag">fallback</span>' : ''}${!bd.enabled ? '<span class="flow-vtag off">停用</span>' : ''}
           <em>→ ${esc(bd.targetKey)}</em>
         </div>
         <div class="flow-vrow-act">
           <button class="flow-btn slim danger" data-bind-del="${esc(bd.id)}" title="删除绑定"><ui5-icon name="delete"></ui5-icon></button>
         </div>
       </div>`).join('')
-    : `<div class="flow-vempty"><ui5-icon name="org-chart"></ui5-icon><b>暂无组织绑定</b><span>下方为组织指定子流程；建议先加一条「默认兜底」。</span></div>`
+    : `<div class="flow-vempty"><ui5-icon name="org-chart"></ui5-icon><b>暂无维度绑定</b><span>下方为该维度取值指定子流程；建议先加一条「默认兜底」。</span></div>`
   return `<div class="flow-dialog-mask" data-bind-mask>
     <section class="flow-dialog">
       <div class="flow-dialog-head">
         <span class="flow-dialog-ic"><ui5-icon name="org-chart"></ui5-icon></span>
-        <div><b>组织绑定</b><em>逻辑子流程 ${esc(key)}</em></div>
+        <div><b>维度绑定 · ${esc(dimName)}</b><em>逻辑子流程 ${esc(key)}</em></div>
         <button class="flow-icon-btn" data-bind-close title="关闭"><ui5-icon name="decline"></ui5-icon></button>
       </div>
       ${state.bindingError ? `<div class="flow-dialog-err">${esc(state.bindingError)}</div>` : ''}
@@ -1475,9 +1487,9 @@ function bindingDialogHtml () {
         <div class="flow-vlist">${rows}</div>
         <div class="flow-vnew">
           <div class="flow-vnew-title"><ui5-icon name="add"></ui5-icon> 新增/更新绑定</div>
-          <label class="flow-field"><span>组织机构</span><select data-bind-org>${orgOptionsHtml('')}</select></label>
+          <label class="flow-field"><span>${esc(dimName)}</span><select data-bind-org>${orgOptionsHtml('')}</select></label>
           <label class="flow-field"><span>目标子流程</span><select data-bind-target>${subflowTargetOptionsHtml('')}</select></label>
-          <div class="flow-hint">同一组织重复保存会覆盖旧绑定。留「默认（兜底）」= 所有未单独配置的组织都走它。</div>
+          <div class="flow-hint">同一取值重复保存会覆盖旧绑定。留「默认（兜底）」= 所有未单独配置的取值都走它。</div>
           <button class="flow-btn primary block" data-bind-save><ui5-icon name="accept"></ui5-icon> 保存绑定</button>
         </div>
       </div>
@@ -1934,12 +1946,16 @@ function bindProperty (root) {
     const el = state.selectedElement
     if (el) { setEndTerminate(el, btn.dataset.endMode === 'terminate'); refreshProp() }
   }))
-  // 打开组织绑定对话框（挂在 property 区）。
+  // 打开维度绑定对话框（挂在 property 区）。
   root.querySelector('[data-open-bindings]')?.addEventListener('click', () => {
     const el = state.selectedElement
     const key = el ? getCalledKey(el.businessObject) : ''
     if (key) openBindingDialog(key)
   })
+  // RD4：CallActivity 面板首次渲染时懒加载可选维度，回来重渲让维度下拉出全部选项。
+  if (state.selectedElement?.type === 'bpmn:CallActivity' && !state.dims) {
+    loadDims().then(() => { if (state.selectedElement?.type === 'bpmn:CallActivity') refreshView('property') })
+  }
   // ★ 钻入式进入子流程编辑（主入口）。
   root.querySelector('[data-edit-subflow]')?.addEventListener('click', () => {
     const el = state.selectedElement
@@ -2077,7 +2093,7 @@ function bindBindingDialog (root) {
   root.querySelectorAll('[data-bind-del]').forEach((b) => b.addEventListener('click', () => deleteBinding(b.dataset.bindDel)))
 }
 
-// ————————————————————— 组织绑定动作 —————————————————————
+// ————————————————————— 维度绑定动作（RD4） —————————————————————
 
 async function loadOrgs () {
   if (state.orgs.length) return
@@ -2087,11 +2103,45 @@ async function loadOrgs () {
   } catch (e) { toast('加载组织失败: ' + e.message) }
 }
 
+// 加载可选路由维度（org 内建 + 已注册字典）。失败兜底仅 org（不破旧流程）。
+async function loadDims () {
+  if (state.dims) return
+  try {
+    const d = await apiJson('/api/flow/dimensions')
+    state.dims = d.dimensions || [{ dimKey: 'org', name: '组织机构', builtin: true }]
+  } catch (e) {
+    state.dims = [{ dimKey: 'org', name: '组织机构', builtin: true }]
+  }
+}
+
+// 加载某维度的条目（org 复用 orgs；其余走 /api/flow/dimension/{k}/entries），缓存。
+async function loadDimEntries (dimKey) {
+  const dk = dimKey || 'org'
+  if (state.dimEntries[dk]) return state.dimEntries[dk]
+  if (dk === 'org') { await loadOrgs(); state.dimEntries.org = state.orgs; return state.orgs }
+  try {
+    const d = await apiJson('/api/flow/dimension/' + encodeURIComponent(dk) + '/entries')
+    state.dimEntries[dk] = d.entries || []
+  } catch (e) { state.dimEntries[dk] = []; toast('加载维度条目失败: ' + e.message) }
+  return state.dimEntries[dk]
+}
+
+// 维度选择器选项（面板 cmx:dimKey 下拉）。org 置顶。
+function dimSelectOptionsHtml (selected) {
+  const dims = state.dims || [{ dimKey: 'org', name: '组织机构' }]
+  return dims.map((d) =>
+    `<option value="${esc(d.dimKey)}" ${d.dimKey === selected ? 'selected' : ''}>${esc(d.name || d.dimKey)}${d.builtin ? '（内建）' : ''}</option>`).join('')
+}
+
 async function openBindingDialog (calledKey) {
-  state.bindingDialog = { calledKey }
+  // 取当前选中 callActivity 的维度（cmx:dimKey，缺省 org）。
+  const b = state.selectedElement?.businessObject
+  const dimKey = (b && getFormAttr(b, 'dimKey')) || 'org'
+  state.bindingDialog = { calledKey, dimKey }
   state.bindingError = ''
   state.bindings = []
-  await loadOrgs()
+  await loadDims()
+  await loadDimEntries(dimKey)
   await reloadBindings(calledKey)
   refreshView('property')
 }
@@ -2415,19 +2465,20 @@ async function reloadBindings (calledKey) {
 async function saveBinding (root) {
   const key = state.bindingDialog?.calledKey
   if (!key) return
-  const orgId = root.querySelector('[data-bind-org]')?.value || ''
+  const dimKey = state.bindingDialog?.dimKey || 'org'
+  const dimValue = root.querySelector('[data-bind-org]')?.value || ''
   const targetKey = root.querySelector('[data-bind-target]')?.value || ''
   if (!targetKey) { state.bindingError = '请选择目标子流程'; refreshView('property'); return }
-  // U4：同组织已有绑定 → 保存会覆盖，先确认。orgId 空 = 默认兜底绑定。
-  const existing = (state.bindings || []).find((bd) => (bd.orgId || '') === orgId)
+  // U4：同取值已有绑定 → 保存会覆盖，先确认。dimValue 空 = 默认兜底绑定。
+  const existing = (state.bindings || []).find((bd) => (bd.dimValue || '') === dimValue)
   if (existing && existing.targetKey !== targetKey && typeof window !== 'undefined' && window.confirm) {
-    const who = orgId ? (existing.orgName || orgId) : '默认（兜底）'
+    const who = dimValue ? (existing.dimValueName || dimValue) : '默认（兜底）'
     if (!window.confirm(`「${who}」已绑定到「${existing.targetKey}」，保存将覆盖为「${targetKey}」。确定？`)) return
   }
   try {
     await apiJson('/api/flow/subflow-bindings', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ calledKey: key, orgId: orgId || null, targetKey, enabled: true }),
+      body: JSON.stringify({ calledKey: key, dimKey, dimValue: dimValue || null, targetKey, enabled: true }),
     })
     state.bindingError = ''
     await reloadBindings(key)
@@ -3020,6 +3071,12 @@ function applyProp (prop, value) {
     else if (prop === 'candidateGroups') modeling.updateProperties(el, { 'flowable:candidateGroups': value || undefined })
     else if (prop === 'calledElement') modeling.updateProperties(el, { calledElement: value || undefined })
     else if (prop === 'calledKey') setCalledKey(el, value)
+    else if (prop === 'dimKey') {
+      // RD4：路由维度（cmx:dimKey）。org 为默认，写 undefined 省属性（向后兼容）。切维度后清空该 key
+      // 的绑定缓存，下次开对话框按新维度重取条目。
+      setFormAttr(el, 'dimKey', value === 'org' ? '' : value)
+      state.bindingDialog = null; state.bindings = []
+    }
     else if (prop === 'delegate') setAttrKey(el, 'flowable:delegateExpression', value, ['flowable:delegateExpression', 'delegateExpression', 'flowable:class', 'class', 'cmx:delegate', 'delegate', 'type'])
     else if (prop === 'decisionRef') setAttrKey(el, 'flowable:decisionRef', value, ['flowable:decisionRef', 'decisionRef', 'cmx:decision', 'decision'])
     else if (prop === 'messageName') setAttrKey(el, 'cmx:message', value, ['cmx:message', 'message'])

@@ -1,0 +1,35 @@
+<svg viewBox="0 0 820 300" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,PingFang SC,sans-serif">
+  <rect width="820" height="300" fill="#fbfcfe"/>
+  <text x="410" y="26" font-size="14" font-weight="700" fill="#1c2530" text-anchor="middle">前端微前端三壳</text>
+
+  <rect x="40" y="56" width="230" height="180" rx="10" fill="#eaf1fb" stroke="#0a6ed1"/>
+  <text x="155" y="80" font-size="12" fill="#0a6ed1" text-anchor="middle" font-weight="700">壳① 门户内嵌 native 页</text>
+  <text x="155" y="102" font-size="9.5" fill="#5a6b7b" text-anchor="middle">design-workbench（bpmn-js 设计器）</text>
+  <text x="155" y="120" font-size="9.5" fill="#5a6b7b" text-anchor="middle">todo-center 待办中心</text>
+  <text x="155" y="138" font-size="9.5" fill="#5a6b7b" text-anchor="middle">task-form 办理表单</text>
+  <text x="155" y="156" font-size="9.5" fill="#5a6b7b" text-anchor="middle">identity-workbench 身份台</text>
+  <text x="155" y="174" font-size="9.5" fill="#5a6b7b" text-anchor="middle">ops-console 运维台</text>
+  <text x="155" y="200" font-size="8.5" fill="#8b97b3" text-anchor="middle">API-backed（非静态）</text>
+  <text x="155" y="214" font-size="8.5" fill="#8b97b3" text-anchor="middle">rev=xxhash64 字节对齐门户信封</text>
+
+  <rect x="295" y="56" width="230" height="180" rx="10" fill="#eef8f2" stroke="#178a5a"/>
+  <text x="410" y="80" font-size="12" fill="#178a5a" text-anchor="middle" font-weight="700">壳② Web Component</text>
+  <text x="410" y="102" font-size="9.5" fill="#5a6b7b" text-anchor="middle">&lt;flow-todo&gt;</text>
+  <text x="410" y="120" font-size="9.5" fill="#5a6b7b" text-anchor="middle">&lt;flow-designer&gt;</text>
+  <text x="410" y="138" font-size="9.5" fill="#5a6b7b" text-anchor="middle">&lt;flow-task-form&gt;</text>
+  <text x="410" y="162" font-size="8.5" fill="#8b97b3" text-anchor="middle">框架无关自定义元素</text>
+  <text x="410" y="178" font-size="8.5" fill="#8b97b3" text-anchor="middle">shadow DOM 隔离</text>
+  <text x="410" y="194" font-size="8.5" fill="#8b97b3" text-anchor="middle">属性 api-base/token/tenant/user</text>
+  <text x="410" y="212" font-size="8.5" fill="#8b97b3" text-anchor="middle">链塌缩为冒泡 CustomEvent</text>
+
+  <rect x="550" y="56" width="230" height="180" rx="10" fill="#fdf0f0" stroke="#d1394a"/>
+  <text x="665" y="80" font-size="12" fill="#d1394a" text-anchor="middle" font-weight="700">壳③ 完全无头</text>
+  <text x="665" y="106" font-size="9.5" fill="#5a6b7b" text-anchor="middle">第三方自建 UI</text>
+  <text x="665" y="128" font-size="9.5" fill="#5a6b7b" text-anchor="middle">只消费 /api/flow/v1/*</text>
+  <text x="665" y="150" font-size="9.5" fill="#5a6b7b" text-anchor="middle">+ SSE 事件流</text>
+  <text x="665" y="172" font-size="9.5" fill="#5a6b7b" text-anchor="middle">+ OpenAPI 契约</text>
+  <text x="665" y="200" font-size="8.5" fill="#8b97b3" text-anchor="middle">零前端依赖</text>
+
+  <text x="410" y="264" font-size="10.5" fill="#8b97b3" text-anchor="middle">共享内核 web/core/（S4 抽取的 vendor 拷贝，勿手改）· 四耦合点经 CFG 配置接缝</text>
+  <text x="410" y="284" font-size="9.5" fill="#b0bac9" text-anchor="middle">bpmn-js 设计器 · UI5 双主题 · 门户 F3 反代透明（字节对齐信封）</text>
+</svg>

@@ -1,0 +1,56 @@
+<svg viewBox="0 0 820 300" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,PingFang SC,sans-serif">
+  <rect width="820" height="300" fill="#fbfcfe"/>
+  <text x="410" y="26" font-size="14" font-weight="700" fill="#1c2530" text-anchor="middle">TokenState 状态机</text>
+
+  <!-- Active center -->
+  <circle cx="410" cy="150" r="42" fill="#0a6ed1"/>
+  <text x="410" y="148" font-size="13" fill="#fff" text-anchor="middle" font-weight="700">Active</text>
+  <text x="410" y="164" font-size="9" fill="#dceafd" text-anchor="middle">推进中</text>
+
+  <!-- Waiting -->
+  <circle cx="180" cy="80" r="36" fill="#fff8ec" stroke="#c26a00" stroke-width="1.5"/>
+  <text x="180" y="78" font-size="11" fill="#c26a00" text-anchor="middle" font-weight="600">Waiting</text>
+  <text x="180" y="93" font-size="8.5" fill="#8b97b3" text-anchor="middle">userTask</text>
+
+  <!-- Joining -->
+  <circle cx="180" cy="220" r="36" fill="#eef8f2" stroke="#178a5a" stroke-width="1.5"/>
+  <text x="180" y="218" font-size="11" fill="#178a5a" text-anchor="middle" font-weight="600">Joining</text>
+  <text x="180" y="233" font-size="8.5" fill="#8b97b3" text-anchor="middle">网关合并</text>
+
+  <!-- WaitingSubflow -->
+  <circle cx="640" cy="70" r="40" fill="#f3eefb" stroke="#7d4fd1" stroke-width="1.5"/>
+  <text x="640" y="66" font-size="10.5" fill="#7d4fd1" text-anchor="middle" font-weight="600">Waiting</text>
+  <text x="640" y="80" font-size="10.5" fill="#7d4fd1" text-anchor="middle" font-weight="600">Subflow</text>
+  <text x="640" y="95" font-size="8.5" fill="#8b97b3" text-anchor="middle">callActivity</text>
+
+  <!-- WaitingMessage -->
+  <circle cx="640" cy="200" r="40" fill="#eaf6fb" stroke="#0a8ec2" stroke-width="1.5"/>
+  <text x="640" y="196" font-size="10.5" fill="#0a8ec2" text-anchor="middle" font-weight="600">Waiting</text>
+  <text x="640" y="210" font-size="10.5" fill="#0a8ec2" text-anchor="middle" font-weight="600">Message</text>
+  <text x="640" y="225" font-size="8.5" fill="#8b97b3" text-anchor="middle">消息捕获</text>
+
+  <!-- Incident -->
+  <circle cx="410" cy="265" r="30" fill="#fdf0f0" stroke="#d1394a" stroke-width="1.5"/>
+  <text x="410" y="263" font-size="10.5" fill="#d1394a" text-anchor="middle" font-weight="600">Incident</text>
+  <text x="410" y="277" font-size="8" fill="#8b97b3" text-anchor="middle">失败挂起</text>
+
+  <!-- Ended -->
+  <circle cx="410" cy="40" r="26" fill="#eceff3" stroke="#5a6b7b" stroke-width="1.5"/>
+  <text x="410" y="44" font-size="10.5" fill="#5a6b7b" text-anchor="middle" font-weight="600">Ended</text>
+
+  <!-- arrows -->
+  <path d="M375 120 Q280 90 214 88" fill="none" stroke="#c26a00" stroke-width="1.3" marker-end="url(#a3)"/>
+  <path d="M210 100 Q300 140 370 145" fill="none" stroke="#178a5a" stroke-width="1.3" marker-end="url(#a3)" stroke-dasharray="3 2"/>
+  <text x="255" y="130" font-size="9" fill="#5a6b7b">complete→</text>
+  <path d="M378 130 Q280 200 214 210" fill="none" stroke="#178a5a" stroke-width="1.3" marker-end="url(#a3)"/>
+  <path d="M448 128 Q560 90 604 82" fill="none" stroke="#7d4fd1" stroke-width="1.3" marker-end="url(#a3)"/>
+  <path d="M610 90 Q520 150 448 152" fill="none" stroke="#7d4fd1" stroke-width="1.3" marker-end="url(#a3)" stroke-dasharray="3 2"/>
+  <text x="530" y="118" font-size="9" fill="#5a6b7b">子完成→</text>
+  <path d="M446 168 Q560 190 604 195" fill="none" stroke="#0a8ec2" stroke-width="1.3" marker-end="url(#a3)"/>
+  <path d="M410 108 L410 66" fill="none" stroke="#5a6b7b" stroke-width="1.3" marker-end="url(#a3)"/>
+  <path d="M410 192 L410 236" fill="none" stroke="#d1394a" stroke-width="1.3" marker-end="url(#a3)"/>
+  <path d="M436 250 Q470 190 448 172" fill="none" stroke="#178a5a" stroke-width="1.3" marker-end="url(#a3)" stroke-dasharray="3 2"/>
+  <text x="455" y="225" font-size="9" fill="#5a6b7b">retry→</text>
+  <defs><marker id="a3" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#9aa5b5"/></marker></defs>
+  <text x="410" y="295" font-size="9.5" fill="#8b97b3" text-anchor="middle">实例状态 InstanceState：Active / Suspended / Completed / Terminated</text>
+</svg>

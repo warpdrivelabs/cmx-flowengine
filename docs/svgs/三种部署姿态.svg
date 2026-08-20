@@ -1,0 +1,41 @@
+<svg viewBox="0 0 820 280" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,PingFang SC,sans-serif">
+  <rect width="820" height="280" fill="#fbfcfe"/>
+  <text x="410" y="26" font-size="14" font-weight="700" fill="#1c2530" text-anchor="middle">三种部署姿态</text>
+
+  <!-- posture 1 -->
+  <rect x="30" y="50" width="240" height="200" rx="10" fill="#eaf1fb" stroke="#0a6ed1"/>
+  <text x="150" y="74" font-size="12" fill="#0a6ed1" text-anchor="middle" font-weight="700">① 平台内嵌</text>
+  <rect x="60" y="90" width="180" height="40" rx="6" fill="#fff" stroke="#0a6ed1"/>
+  <text x="150" y="114" font-size="10" fill="#1c2530" text-anchor="middle">cmx-container 平台进程</text>
+  <rect x="80" y="140" width="140" height="34" rx="6" fill="#eef3fb"/>
+  <text x="150" y="161" font-size="9.5" fill="#5a6b7b" text-anchor="middle">FlowModule 内嵌</text>
+  <text x="150" y="200" font-size="9" fill="#8b97b3" text-anchor="middle">同进程同鉴权</text>
+  <text x="150" y="216" font-size="9" fill="#8b97b3" text-anchor="middle">urls.flow 为空</text>
+  <text x="150" y="236" font-size="8.5" fill="#b0bac9" text-anchor="middle">最省资源，强耦合</text>
+
+  <!-- posture 2 -->
+  <rect x="290" y="50" width="240" height="200" rx="10" fill="#eef8f2" stroke="#178a5a"/>
+  <text x="410" y="74" font-size="12" fill="#178a5a" text-anchor="middle" font-weight="700">② 独立 + 反代</text>
+  <rect x="320" y="90" width="180" height="34" rx="6" fill="#fff" stroke="#178a5a"/>
+  <text x="410" y="111" font-size="9.5" fill="#1c2530" text-anchor="middle">平台 FlowProxyModule</text>
+  <path d="M410 124 L410 150" stroke="#178a5a" stroke-width="1.3" marker-end="url(#a9)"/>
+  <rect x="320" y="152" width="180" height="40" rx="6" fill="#fff" stroke="#178a5a"/>
+  <text x="410" y="172" font-size="10" fill="#1c2530" text-anchor="middle">flow-server :8091</text>
+  <text x="410" y="186" font-size="8.5" fill="#8b97b3" text-anchor="middle">独立进程/库</text>
+  <text x="410" y="214" font-size="9" fill="#8b97b3" text-anchor="middle">双向流式 SSE 透传</text>
+  <text x="410" y="232" font-size="8.5" fill="#b0bac9" text-anchor="middle">独立伸缩，平台无感</text>
+
+  <!-- posture 3 -->
+  <rect x="550" y="50" width="240" height="200" rx="10" fill="#fdf0f0" stroke="#d1394a"/>
+  <text x="670" y="74" font-size="12" fill="#d1394a" text-anchor="middle" font-weight="700">③ 完全无头</text>
+  <rect x="580" y="90" width="180" height="34" rx="6" fill="#fff" stroke="#d1394a"/>
+  <text x="670" y="111" font-size="9.5" fill="#1c2530" text-anchor="middle">第三方系统</text>
+  <path d="M670 124 L670 150" stroke="#d1394a" stroke-width="1.3" marker-end="url(#a9)"/>
+  <rect x="580" y="152" width="180" height="40" rx="6" fill="#fff" stroke="#d1394a"/>
+  <text x="670" y="172" font-size="10" fill="#1c2530" text-anchor="middle">flow-server :8091</text>
+  <text x="670" y="186" font-size="8.5" fill="#8b97b3" text-anchor="middle">v1 API + SSE + OpenAPI</text>
+  <text x="670" y="214" font-size="9" fill="#8b97b3" text-anchor="middle">API-Key + 委托令牌</text>
+  <text x="670" y="232" font-size="8.5" fill="#b0bac9" text-anchor="middle">多租户 SaaS 场景</text>
+
+  <defs><marker id="a9" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#9aa5b5"/></marker></defs>
+</svg>

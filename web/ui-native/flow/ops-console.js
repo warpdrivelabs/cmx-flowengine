@@ -17,8 +17,10 @@ const CFG = {
   apiBase: '',
   fetchInit: { credentials: 'same-origin' },
   authHeaders: () => ({}),
+  bpmnBase: '/portal/vendor/bpmn-js',   // P4：bpmn-js 只读查看器静态资产根（同设计器）
 }
 function configure (o) { Object.assign(CFG, o || {}); return CFG }
+function bpmnBase () { return CFG.bpmnBase }
 
 const state = {
   list: [],          // 实例列表
@@ -27,6 +29,10 @@ const state = {
   detail: null,      // 当前实例详情（含 incidents/tokens/tasks/variables）
   loading: false,
   hosts: new Set(),
+  viewer: null,      // P4：bpmn-js 只读查看器实例（单例，跨渲染复用）
+  viewerEl: null,    // 查看器当前挂载的容器
+  viewerKey: null,   // 查看器当前载入的定义 key（换实例/定义才重导入）
+  bpmnCache: {},     // definitionKey → bpmnXml（避免重复拉取）
 }
 
 const esc = (s) => String(s ?? '')
@@ -167,6 +173,8 @@ function contentHtml () {
     : '<tr><td colspan="2" class="ops-muted">无变量</td></tr>'
   return `<section class="ops ops-content">
     ${toolbar}
+    <div class="ops-sec">流程图（令牌位置高亮）</div>
+    <div class="ops-diagram" data-ops-canvas><div class="ops-diagram-loading">加载流程图…</div></div>
     <div class="ops-sec">令牌位置</div>
     <div class="ops-nodes">${tokens}</div>
     <div class="ops-sec">未办结任务</div>
@@ -217,6 +225,104 @@ function delKind (k) {
 
 // ————————————————————— 绑定 —————————————————————
 
+// ————————————————————— P4：bpmn-js 只读令牌位置图 —————————————————————
+
+let _bpmnLoad = null
+function ensureBpmnJs () {
+  if (window.BpmnJS) return Promise.resolve()
+  if (_bpmnLoad) return _bpmnLoad
+  _bpmnLoad = new Promise((resolve, reject) => {
+    const s = document.createElement('script')
+    // NavigatedViewer 够用（只读 + 平移缩放），但门户 vendor 打包的是 modeler bundle，
+    // 它同样导出 window.BpmnJS 且可只读用（不挂 palette）。直接复用设计器同一资产，零新增下载。
+    s.src = `${bpmnBase()}/bpmn-modeler.production.min.js`
+    s.onload = resolve
+    s.onerror = () => reject(new Error('bpmn-js 加载失败'))
+    document.head.appendChild(s)
+  })
+  return _bpmnLoad
+}
+
+function injectBpmnCss (root) {
+  if (!document.head.querySelector('style[data-bpmn-font]')) {
+    const st = document.createElement('style')
+    st.setAttribute('data-bpmn-font', '1')
+    const bb = bpmnBase()
+    st.textContent = `@font-face{font-family:'bpmn';font-style:normal;font-weight:normal;
+      src:url('${bb}/assets/bpmn-font/font/bpmn.woff2') format('woff2'),
+          url('${bb}/assets/bpmn-font/font/bpmn.woff') format('woff'),
+          url('${bb}/assets/bpmn-font/font/bpmn.ttf') format('truetype');}`
+    document.head.appendChild(st)
+  }
+  if (root.querySelector('link[data-bpmn-css]')) return
+  for (const f of ['assets/diagram-js.css', 'assets/bpmn-js.css', 'assets/bpmn-font/css/bpmn.css']) {
+    const l = document.createElement('link')
+    l.rel = 'stylesheet'; l.href = `${bpmnBase()}/${f}`; l.setAttribute('data-bpmn-css', '1')
+    root.appendChild(l)
+  }
+  // 令牌高亮标记样式（注入 shadow root，diagram-js addMarker 加的 class 生效）。
+  if (!root.querySelector('style[data-ops-marker]')) {
+    const st = document.createElement('style')
+    st.setAttribute('data-ops-marker', '1')
+    st.textContent = `
+      .ops-tok-run .djs-visual > :nth-child(1){stroke:#3b82f6 !important;stroke-width:3px !important;fill:#dbeafe !important}
+      .ops-tok-inc .djs-visual > :nth-child(1){stroke:#dc2626 !important;stroke-width:3px !important;fill:#fee2e2 !important}
+      .ops-tok-wait .djs-visual > :nth-child(1){stroke:#d97706 !important;stroke-width:3px !important;fill:#fef3c7 !important}
+      .ops-tok-end .djs-visual > :nth-child(1){stroke:#16a34a !important;stroke-width:3px !important}`
+    root.appendChild(st)
+  }
+}
+
+// 令牌状态 → marker class（决定节点高亮色）。
+function tokMarkerClass (s) {
+  if (s === 'INCIDENT') return 'ops-tok-inc'
+  if (s === 'ENDED') return 'ops-tok-end'
+  if (s === 'ACTIVE' || s === 'JOINING') return 'ops-tok-run'
+  return 'ops-tok-wait'  // WAITING / WAITING_* / 其它挂起态
+}
+
+// 挂载/更新只读流程图 + 令牌高亮（在每次 content 渲染后调用；容器随 innerHTML 重建，故 viewer 重挂）。
+async function mountDiagram (root) {
+  const el = root.querySelector('[data-ops-canvas]')
+  const d = state.detail
+  if (!el || !d) return
+  try {
+    injectBpmnCss(root)
+    await ensureBpmnJs()
+    // 取定义 bpmnXml（按 definitionKey 缓存，换实例同定义不重复拉）。
+    const key = d.definitionKey
+    let xml = state.bpmnCache[key]
+    if (!xml) {
+      try {
+        const def = await apiJson('/api/flow/definitions/' + enc(key))
+        xml = def && def.bpmnXml
+        if (xml) state.bpmnCache[key] = xml
+      } catch { /* 定义拉取失败：降级只显示文字令牌位置 */ }
+    }
+    if (!xml) { el.innerHTML = '<div class="ops-diagram-loading">（无流程图，见下方文字令牌位置）</div>'; return }
+    // 语义-only 定义（无 BPMNDiagram 图形布局，如 seed/代码构建的流程）：bpmn-js 无法渲染，
+    // 直接优雅降级到文字令牌位置，而非抛「加载失败」误导为错误。设计器产出的定义含 DI，走下方图形路径。
+    if (!/BPMNDiagram|bpmndi:/.test(xml)) {
+      el.innerHTML = '<div class="ops-diagram-loading">该流程无图形布局，见下方文字令牌位置</div>'; return
+    }
+    // content 每次重渲染 el 都是新节点 → 重建 viewer 挂到它。
+    if (state.viewer) { try { state.viewer.destroy() } catch {} state.viewer = null }
+    el.innerHTML = ''
+    state.viewer = new window.BpmnJS({ container: el })
+    state.viewerEl = el
+    await state.viewer.importXML(xml)
+    const canvas = state.viewer.get('canvas')
+    canvas.zoom('fit-viewport', 'auto')
+    // 清旧标记 + 按当前令牌位置打标记。
+    for (const t of (d.tokens || [])) {
+      if (t.state === 'ENDED') continue  // 已结束令牌不高亮（避免整图铺满）
+      try { canvas.addMarker(t.nodeBpmnId, tokMarkerClass(t.state)) } catch { /* 节点 id 不在图中，跳过 */ }
+    }
+  } catch (e) {
+    el.innerHTML = `<div class="ops-diagram-loading">流程图加载失败：${esc(e.message)}</div>`
+  }
+}
+
 function bind (root, view, host) {
   if (view === 'explorer') {
     const s = root.querySelector('[data-search]')
@@ -234,6 +340,8 @@ function bind (root, view, host) {
     root.querySelector('[data-act="resume"]')?.addEventListener('click', () => doSuspendResume('resume'))
     root.querySelector('[data-act="cancel"]')?.addEventListener('click', () => doCancel())
     root.querySelectorAll('[data-urge]').forEach((b) => b.addEventListener('click', () => doUrge(b.dataset.urge)))
+    // P4：渲染只读流程图 + 令牌位置高亮（异步，不阻塞事件绑定）。
+    mountDiagram(root)
   }
 }
 
@@ -390,6 +498,9 @@ function styleCss () {
   .ops-btn.danger { color:var(--danger); border-color:#ffc9c9; }
   .ops-btn:disabled { opacity:.4; cursor:not-allowed; }
   .ops-sec { font-size:11px; font-weight:800; color:var(--brand-d); text-transform:uppercase; margin:14px 14px 8px; padding-bottom:5px; border-bottom:1px solid var(--line-soft); }
+  .ops-diagram { position:relative; margin:0 14px; height:300px; border:1px solid var(--line-soft); border-radius:8px; overflow:hidden; background:var(--bg-soft, #fafafa); }
+  .ops-diagram .djs-container { background:transparent; }
+  .ops-diagram-loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:12px; color:var(--muted); }
   .ops-nodes { display:flex; flex-wrap:wrap; gap:6px; padding:0 14px; }
   .ops-node { display:inline-flex; flex-direction:column; align-items:center; font-family:var(--mono); font-size:12px; padding:6px 12px; border:1.5px solid var(--brand); border-radius:8px; color:var(--brand-d); }
   .ops-node em { font-family:inherit; font-size:10px; font-style:normal; color:var(--muted); }
