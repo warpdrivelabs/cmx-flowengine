@@ -48,7 +48,7 @@ async function resolveForm (formKey) {
   try {
     const b = await apiJson('/api/flow/forms/' + enc(formKey))
     if (b && b.formKey) {
-      const f = { kind: b.kind || 'native', nativePage: b.nativePage || '', nativeView: b.nativeView || b.view || 'content', htmlPage: b.htmlPage || '', workspaceNode: b.workspaceNode || '', bizTable: b.bizTable || '', domain: b.domain || '', application: b.application || '', module: b.module || '', file: b.file || '', apiPath: b.apiPath || '', title: b.title || '' }
+      const f = { kind: b.kind || 'native', nativePage: b.nativePage || '', nativeView: b.nativeView || b.view || 'content', htmlPage: b.htmlPage || '', workspaceNode: b.workspaceNode || '', bizTable: b.bizTable || '', domain: b.domain || '', application: b.application || '', module: b.module || '', file: b.file || '', apiPath: b.apiPath || '', title: b.title || '', console: b.console || 'platform' }
       formCache[formKey] = f
       return f
     }
@@ -594,11 +594,14 @@ function buildAndOpenTaskForm (t, f, sourceEl) {
   const sid = slug(`${t.instanceId}-${t.taskId}`)
   const title = `${t.businessKey || t.instanceId} · ${t.nodeName || ''}`
 
-  // property 区永远是 task-form 的审批控制台（同意/驳回/意见/轨迹）；与 content 表单类型无关。
+  // property 区默认挂 task-form 通用审批控制台（同意/驳回/意见/轨迹）；表单绑定声明
+  // console='none' 时省略——该表单自带审批操作（业务模块封装审批动作，如 MDM M7.1），
+  // content 全屏承载，避免同一动作出现「平台控制台直调引擎 + 业务按钮走业务端点」双口径。
   const propView = {
     id: `flow-task-${sid}-prop`, tabLabel: '审批', icon: 'detail-view',
     type: 'native_pages', native_page: 'portal.flow.task-form', view: 'property', props: { ...taskCtx },
   }
+  const usePlatformConsole = f.console !== 'none' 
 
   // content 区 = 节点 formKey 定义的真实表单页。三种来源：
   //   ① html_page → 门户原生 hydrate 的 html-pages 业务表单
@@ -632,7 +635,17 @@ function buildAndOpenTaskForm (t, f, sourceEl) {
     workspace: {
       id: `flow_task_${sid}`, params: taskCtx,
       content: contentRegion,
-      property: { caption: '审批', icon: 'detail-view', views: [propView] },
+      // console='none'：property 挂 task-form 的只读轨迹视图（viewOnly——意见历史+轨迹，
+      // 无办结动作）；审批操作在 content 表单内（业务封装端点）。门户 workspace 对无
+      // property/空 views 的节点渲染异常，故保留结构挂只读视图而非省略。
+      ...(usePlatformConsole
+          ? { property: { caption: '审批', icon: 'detail-view', views: [propView] } }
+          : {
+              property: {
+                caption: '流程轨迹', icon: 'detail-view',
+                views: [Object.assign({}, propView, { props: { ...taskCtx, viewOnly: true } })],
+              },
+            }),
     },
   }
   openWorkNode(workNode, sourceEl, initialContext)

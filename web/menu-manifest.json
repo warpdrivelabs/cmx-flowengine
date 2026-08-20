@@ -5,7 +5,7 @@
     "module": "flow"
   },
   "service": "cmx-flowengine",
-  "version": "2026.08.12",
+  "version": "2026.08.19",
   "note": "流程微服务自持的前端资源清单（F1 源码归位 + F3b 菜单归位）。pages=归本仓 web/ui(+ui-html) 的 native/html 页；menu=流程管理顶级组（从门户 gl 模块抽出）。门户 F3 反代页面 + 构建期镜像菜单回 cmx_menu。",
   "menu": [
     {
@@ -62,6 +62,59 @@
                   "icon": "detail-view",
                   "type": "native_pages",
                   "native_page": "portal.flow.design-workbench",
+                  "view": "property"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "fi-gl-flow-form-binding-admin",
+          "name": "flow-form-binding-admin",
+          "caption": "表单注册表",
+          "type": "workspace-node",
+          "permissionId": null,
+          "icon": "form",
+          "workspace": {
+            "id": "flow_form_binding_admin",
+            "explorer": {
+              "caption": "表单绑定",
+              "icon": "form",
+              "views": [
+                {
+                  "id": "flow-form-binding-admin-explorer",
+                  "tabLabel": "绑定",
+                  "icon": "form",
+                  "type": "native_pages",
+                  "native_page": "portal.flow.form-binding-admin",
+                  "view": "explorer"
+                }
+              ]
+            },
+            "content": {
+              "caption": "绑定编辑",
+              "icon": "detail-view",
+              "views": [
+                {
+                  "id": "flow-form-binding-admin-content",
+                  "tabLabel": "编辑",
+                  "icon": "detail-view",
+                  "type": "native_pages",
+                  "native_page": "portal.flow.form-binding-admin",
+                  "view": "content"
+                }
+              ]
+            },
+            "property": {
+              "caption": "字段说明",
+              "icon": "hint",
+              "views": [
+                {
+                  "id": "flow-form-binding-admin-prop",
+                  "tabLabel": "说明",
+                  "icon": "hint",
+                  "type": "native_pages",
+                  "native_page": "portal.flow.form-binding-admin",
                   "view": "property"
                 }
               ]
@@ -265,6 +318,13 @@
       "details": "native_pages 四区流程实例运维台（H4）",
       "sourceType": "js",
       "relPath": "flow/ops-console.js"
+    },
+    {
+      "id": "portal.flow.form-binding-admin",
+      "name": "表单注册表管理",
+      "details": "native_pages 四区表单注册表管理工作台（002 债务落地）：explorer kind 筛选+关键字过滤+绑定卡片列表（内置/console=none 角标）、content 编辑表单（字段按 kind 联动、formKey 编辑态禁改）、property 字段说明+消费方/seed 复位警示；数据源 /api/flow/forms（列表/upsert/delete）。",
+      "sourceType": "js",
+      "relPath": "flow/form-binding-admin.js"
     }
   ],
   "htmlPages": [

@@ -16,19 +16,24 @@
 
 // —— S4 抽核：配置接缝 ——（详见 todo-center.js 同名 CFG 注释）
 // 设计器无门户 Tab 链，耦合只两处：apiBase（/api/* 前缀）+ bpmnBase（bpmn-js 静态资产根）。
-// 门户壳默认：同源 fetch + 资产走门户 /portal/vendor/bpmn-js（打包进 CMXPortalManager，不访问远程 CDN）。
+// 门户壳默认：同源 fetch + 资产走门户 vendor/bpmn-js（打包进 CMXPortalManager，不访问远程 CDN）。
 // 组件壳/headless 壳 configure({ apiBase, authHeaders, bpmnBase })：资产可指向自建 CDN 或组件包内路径。
 const CFG = {
   apiBase: '',
   fetchInit: { credentials: 'same-origin' },
   authHeaders: () => ({}),
-  bpmnBase: '/portal/vendor/bpmn-js',        // bpmn-js UMD + 字体/CSS 资产根
+  bpmnBase: '',        // 空 = 按部署形态自动推断（见 bpmnBase()）
 }
 function configure (o) { Object.assign(CFG, o || {}); return CFG }
 
-// bpmn-js 本地资产根（每次读 CFG.bpmnBase，故 configure() 覆盖对后续加载即时生效；门户默认
-// 打包进 CMXPortalManager 经 /portal/ 静态托管，无远程 CDN）。
-function bpmnBase () { return CFG.bpmnBase }
+// bpmn-js 本地资产根（每次读 CFG.bpmnBase，故 configure()/bpmn-base 属性覆盖对后续加载即时生效）。
+// 缺省按部署形态自动推断：生产门户挂在 /portal/ 基座（CMXPortalManager dist 经后端静态托管），
+// Vite dev server 基座是 /（public/ 资产挂根路径）。写死任一边都会在另一边加载失败——dev 下
+// script 404、CSS 被 SPA fallback 冒充 200 html 静默失效——故按当前路径前缀推断，显式配置优先。
+function bpmnBase () {
+  if (CFG.bpmnBase) return CFG.bpmnBase
+  return location.pathname.startsWith('/portal/') ? '/portal/vendor/bpmn-js' : '/vendor/bpmn-js'
+}
 
 const state = {
   definitions: [],
@@ -420,7 +425,7 @@ function defItemHtml (d) {
 function contentHtml () {
   return `<section class="flow flow-content">
     <div class="flow-toolbar" data-flow-toolbar>${toolbarInnerHtml()}</div>
-    <div class="flow-canvas-wrap"><div class="flow-canvas" data-flow-canvas></div><div data-vdialog-host>${versionDialogHtml()}</div></div>
+    <div class="flow-canvas-wrap"><div class="flow-canvas" data-flow-canvas tabindex="0"></div><div data-vdialog-host>${versionDialogHtml()}</div></div>
     <div class="flow-toast"></div>
   </section>`
 }
@@ -1825,9 +1830,16 @@ async function openWsNodeEditor (sourceEl) {
     const savedId = e?.detail?.id
     if (savedId && savedId !== wsId) return   // 不是本节点的工作台
     try {
+      // 已有绑定先 GET 合并原行（只更新 workspaceNode/title），防整行 upsert 覆盖管理页
+      // 维护的 console/bizTable/pkField 等字段；查不到（data=null）或查询失败按新注册 4 字段全量。
+      let body = { formKey: fk, kind: 'workspace', workspaceNode: wsId, title: `流程表单工作台 · ${fk}` }
+      try {
+        const b = await apiJson('/api/flow/forms/' + enc(fk))
+        if (b && b.formKey) { const { seeded, ...rest } = b; body = { ...rest, formKey: fk, kind: 'workspace', workspaceNode: wsId, title: body.title } }
+      } catch { /* 注册表查询失败 → 按新注册，不阻断 */ }
       await apiJson('/api/flow/forms', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ formKey: fk, kind: 'workspace', workspaceNode: wsId, title: `流程表单工作台 · ${fk}` }),
+        body: JSON.stringify(body),
       })
       toast(`已绑定 formKey=${fk} → 工作台 ${wsId}`)
     } catch (err) { toast('绑定注册表失败: ' + err.message) }
@@ -2732,7 +2744,13 @@ async function bootCanvas (root, host) {
     await waitForSize(canvasEl)
     state.modeler = new window.BpmnJS({
       container: canvasEl,
-      keyboard: { bindTo: document },
+      // 键盘监听绑本区 renderRoot（工具条+画布的 keydown 都能冒泡到），绝不能绑 document：
+      // ① 绑 document 则监听常驻全局，切到门户其他 tab 后仍在拦截按键（Delete/Ctrl+C/V 被当
+      //    画布快捷键 preventDefault，其他页面输入框复制粘贴删除全废）；
+      // ② diagram-js 只放行 target 为 input/textarea 的事件，而门户输入框藏在多层 shadow
+      //    root 里，事件冒泡到 document 时 target 已重定向为宿主元素 → 守卫失效。绑在本区
+      //    shadow 树内无重定向，原生守卫恢复有效（画布 tabindex="0" 保证焦点落在树内）。
+      keyboard: { bindTo: root },
       // 中文界面：经 bpmn-js 官方 translate 扩展点注入内置词典（零远程,词条对照 v17.11.1 bundle 提取）。
       additionalModules: [ZH_TRANSLATE_MODULE],
     })

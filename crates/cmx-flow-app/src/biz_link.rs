@@ -78,6 +78,9 @@ pub const DDL_STATEMENTS: &[&str] = &[
     "ALTER TABLE cmx_flow_form_binding ADD COLUMN IF NOT EXISTS pk_field VARCHAR(64)",
     // kind='workspace' 时指向门户工作区节点库（data/node/nodes.json）的一个完整 workspace node id。
     "ALTER TABLE cmx_flow_form_binding ADD COLUMN IF NOT EXISTS workspace_node VARCHAR(128)",
+    // property 区审批控制台归属：'platform'（默认，挂 task-form 通用控制台）/ 'none'
+    // （表单自带审批操作，待办中心不再挂控制台——业务封装审批动作的模块用，如 MDM M7.1）。
+    "ALTER TABLE cmx_flow_form_binding ADD COLUMN IF NOT EXISTS console VARCHAR(32) NOT NULL DEFAULT 'platform'",
 ];
 
 /// 自举建表（engine build 后调一次）。失败仅告警，不阻断启动。
@@ -630,19 +633,21 @@ pub struct FormBinding {
     pub title: Option<String>,
     /// kind='workspace' 时指向门户工作区节点库的完整 workspace node id。
     pub workspace_node: Option<String>,
+    /// property 区审批控制台归属：platform（默认）/ none（表单自带审批操作）。
+    pub console: Option<String>,
 }
 
 /// upsert 一条表单绑定（form_key 主键）。
 pub async fn upsert_form_binding(b: FormBinding) -> Result<(), String> {
     let sql = "INSERT INTO cmx_flow_form_binding \
-        (form_key, kind, native_page, native_view, html_page, biz_table, domain, application, module, file, pk_field, title, workspace_node, updated_at) \
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) \
+        (form_key, kind, native_page, native_view, html_page, biz_table, domain, application, module, file, pk_field, title, workspace_node, console, updated_at) \
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) \
         ON CONFLICT (form_key) DO UPDATE SET \
           kind=EXCLUDED.kind, native_page=EXCLUDED.native_page, native_view=EXCLUDED.native_view, \
           html_page=EXCLUDED.html_page, biz_table=EXCLUDED.biz_table, domain=EXCLUDED.domain, \
           application=EXCLUDED.application, module=EXCLUDED.module, file=EXCLUDED.file, \
           pk_field=EXCLUDED.pk_field, title=EXCLUDED.title, workspace_node=EXCLUDED.workspace_node, \
-          updated_at=EXCLUDED.updated_at";
+          console=EXCLUDED.console, updated_at=EXCLUDED.updated_at";
     let params = SqlParams::DataValues(vec![
         DataValue::String(b.form_key),
         DataValue::String(b.kind),
@@ -657,6 +662,8 @@ pub async fn upsert_form_binding(b: FormBinding) -> Result<(), String> {
         opt_str(b.pk_field),
         opt_str(b.title),
         opt_str(b.workspace_node),
+        // 缺省 platform（与列默认一致；显式传入以便覆盖旧值）。
+        DataValue::String(b.console.unwrap_or_else(|| "platform".to_string())),
         DataValue::DateTime(Utc::now()),
     ]);
     execute_sql_with_params(&db(), None, sql, params)
@@ -669,9 +676,13 @@ fn form_binding_json(
     row: &cmx_core::model::data::dataset::Row,
     schema: &cmx_core::model::data::dataset::Schema,
 ) -> Value {
+    let form_key = get_str(row, schema, "form_key");
+    // 内置条目标记：seed 每次引擎构建幂等重写这 3 条（删除复活、编辑复位），管理页据此打角标提示。
+    let seeded = SEEDED_FORM_KEYS.contains(&form_key.as_str());
     json!({
-        "formKey": get_str(row, schema, "form_key"),
+        "formKey": form_key,
         "kind": get_str(row, schema, "kind"),
+        "console": get_opt(row, schema, "console").unwrap_or_else(|| "platform".to_string()),
         "nativePage": get_opt(row, schema, "native_page"),
         "nativeView": get_opt(row, schema, "native_view"),
         "htmlPage": get_opt(row, schema, "html_page"),
@@ -683,10 +694,11 @@ fn form_binding_json(
         "pkField": get_opt(row, schema, "pk_field"),
         "title": get_opt(row, schema, "title"),
         "workspaceNode": get_opt(row, schema, "workspace_node"),
+        "seeded": seeded,
     })
 }
 
-const FORM_BINDING_COLS: &str = "form_key, kind, native_page, native_view, html_page, biz_table, domain, application, module, file, pk_field, title, workspace_node";
+const FORM_BINDING_COLS: &str = "form_key, kind, native_page, native_view, html_page, biz_table, domain, application, module, file, pk_field, title, workspace_node, console";
 
 /// 取一条表单绑定；不存在返回 None。
 pub async fn get_form_binding(form_key: &str) -> Result<Option<Value>, String> {
@@ -709,6 +721,21 @@ pub async fn list_form_bindings() -> Result<Vec<Value>, String> {
         .map_err(|e| format!("查表单绑定列表失败: {e}"))?;
     let schema = ds.schema.as_ref();
     Ok(ds.iter().map(|row| form_binding_json(row, schema)).collect())
+}
+
+/// 内置示例绑定的 form_key 清单（与 seed_form_bindings 同步维护）。
+/// 管理页「内置」角标与复位提示用；seed 每次引擎构建幂等重写这些行。
+pub const SEEDED_FORM_KEYS: &[&str] = &["pay.review", "pay.review.html", "expense.form"];
+
+/// 删一条表单绑定（管理页删除按钮）。
+///
+/// 返回受影响行数：0 = 本就不存在（幂等语义，调用方据此区分「真删了」与「本来就没有」）。
+pub async fn delete_form_binding(form_key: &str) -> Result<u64, String> {
+    let sql = "DELETE FROM cmx_flow_form_binding WHERE form_key = $1";
+    let params = SqlParams::DataValues(vec![DataValue::String(form_key.to_string())]);
+    execute_sql_with_params(&db(), None, sql, params)
+        .await
+        .map_err(|e| format!("删表单绑定失败: {e}"))
 }
 
 /// 种入内置示例绑定（幂等 upsert）。engine build 时调一次。

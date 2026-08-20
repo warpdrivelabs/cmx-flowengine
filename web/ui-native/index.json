@@ -1,5 +1,5 @@
 {
-  "version": "2026.08.12",
+  "version": "2026.08.19",
   "pages": [
     {
       "id": "portal.flow.design-workbench",
@@ -35,6 +35,13 @@
       "details": "native_pages 四区流程实例运维台（H4）：explorer 实例列表(异常高亮)、content 详情(令牌位置/任务/变量)+干预工具条(重试异常/改变量/取消)、property 异常明细+流转台账。数据源 /api/flow/instances/*，消费 H2 incident。",
       "sourceType": "js",
       "relPath": "flow/ops-console.js"
+    },
+    {
+      "id": "portal.flow.form-binding-admin",
+      "name": "表单注册表管理",
+      "details": "native_pages 四区表单注册表管理工作台（002 债务落地）：explorer kind 筛选+关键字过滤+绑定卡片列表（内置/console=none 角标）、content 编辑表单（字段按 kind 联动、formKey 编辑态禁改）、property 字段说明+消费方/seed 复位警示；数据源 /api/flow/forms（列表/upsert/delete）。",
+      "sourceType": "js",
+      "relPath": "flow/form-binding-admin.js"
     }
   ]
 }

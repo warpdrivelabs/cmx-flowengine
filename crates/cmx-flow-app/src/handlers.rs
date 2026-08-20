@@ -943,6 +943,9 @@ pub struct FormBindingReq {
     title: Option<String>,
     #[serde(default)]
     workspace_node: Option<String>,
+    /// property 区审批控制台归属：platform（默认）/ none（表单自带审批操作，不挂平台控制台）。
+    #[serde(default)]
+    console: Option<String>,
 }
 fn default_native() -> String {
     "native".to_string()
@@ -952,6 +955,13 @@ pub async fn save_form_binding(
     Json(req): Json<FormBindingReq>,
 ) -> Result<Json<ApiResp<Value>>> {
     let _rt = flow().await?;
+    // kind 枚举校验：非法值在消费端被 `b.kind || 'native'` 兜底掩盖，写入层直接拒绝。
+    if !matches!(req.kind.as_str(), "workspace" | "html" | "native") {
+        return Err(msg_err(format!(
+            "kind 非法: {}（仅 workspace/html/native）",
+            req.kind
+        )));
+    }
     let form_key = req.form_key.clone();
     crate::biz_link::upsert_form_binding(crate::biz_link::FormBinding {
         form_key: req.form_key,
@@ -967,10 +977,28 @@ pub async fn save_form_binding(
         pk_field: req.pk_field,
         title: req.title,
         workspace_node: req.workspace_node,
+        console: req.console,
     })
     .await
     .map_err(msg_err)?;
     Ok(Json(ApiResp::ok(json!({ "formKey": form_key }))))
+}
+
+/// 删除一条表单绑定（管理页）。幂等：不存在也返回成功（deleted=0）。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteFormBindingReq {
+    form_key: String,
+}
+
+pub async fn delete_form_binding(
+    Json(req): Json<DeleteFormBindingReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let _rt = flow().await?;
+    let deleted = crate::biz_link::delete_form_binding(&req.form_key)
+        .await
+        .map_err(msg_err)?;
+    Ok(Json(ApiResp::ok(json!({ "formKey": req.form_key, "deleted": deleted }))))
 }
 
 /// 可发起流程列表（发起态）：引擎已装载定义 + 其 startFormKey。只列可发起的。
@@ -1181,6 +1209,10 @@ pub async fn reject_task(
 ) -> Result<Json<ApiResp<Value>>> {
     let rt = flow().await?;
     let vars = Variables::from_json(req.variables.clone());
+    // 退回前取节点 bpmn_id（意见留痕用），失败不阻断。
+    let node_bpmn_id = crate::biz_link::task_node_bpmn_id(&rt, &req.instance_id, &task_id)
+        .await
+        .unwrap_or_default();
     rt.engine
         .reject_task(
             &req.instance_id,
@@ -1192,6 +1224,20 @@ pub async fn reject_task(
         )
         .await
         .map_err(engine_err)?;
+    // 意见留痕（与 complete 对称）：退回意见/办理人也进 cmx_flow_task_comment，
+    // 否则审批历史缺退回环节（业务封装端点 return 的 reason 在此落库）。
+    if req.reason.is_some() || req.from_user.is_some() {
+        let _ = crate::biz_link::insert_task_comment(
+            &rt,
+            &req.instance_id,
+            &task_id,
+            &node_bpmn_id,
+            req.from_user.clone(),
+            Some("return".to_string()),
+            req.reason.clone(),
+        )
+        .await;
+    }
     load_view(&rt, &req.instance_id).await
 }
 
