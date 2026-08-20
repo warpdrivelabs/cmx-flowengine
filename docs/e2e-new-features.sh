@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # 新功能真机 E2E（对 PG 后端 :8091），保留测试数据供运维台查看。
-# 覆盖无需自定义 delegate 即可端到端的功能：A7 外部 worker、A9 迁移。
-# 需自定义 throwing/async delegate 的（P1/P2/A8/A3）由 Rust 集成测试覆盖。
+# 覆盖 A7 外部 worker、A9 迁移、P1 异步、A8 错误边界、A3 事件子流程。
+#
+# 前置：起服务须带 FLOW_ENABLE_E2E_DELEGATES=1 才会注册 e2eOkDelegate/e2eBpmnErr/e2eAlwaysFail
+# （P1/A8/A3 用），生产默认不注册。示例：
+#   FLOW_ENABLE_E2E_DELEGATES=1 FLOW_AUTH_MODE=off \
+#   FLOW_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/fico \
+#   IAM_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/cmx \
+#   FLOW_PORT=8091 ./target/debug/cmx-flow-server &
 set -u
 BASE="http://localhost:8091/api/flow"
 PASS=0; FAIL=0

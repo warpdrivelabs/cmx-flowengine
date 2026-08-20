@@ -276,10 +276,17 @@ async fn build_for(
     // serviceTask delegate：内置 riskDelegate 始终注册（进程内，零外部）；另按配置注册
     // httpDelegate（外包外部 URL）或 mockDelegate（no-op）——BPMN 用哪个由节点 delegate 键决定。
     engine.register_delegate("riskDelegate", RiskDelegate);
-    // E2E/测试用 delegate：真机验证 P1/P2/A8/A3 的服务任务路径（生产可按需保留或移除）。
-    engine.register_delegate("e2eOkDelegate", E2eOkDelegate); // 成功（配 async 验 P1）
-    engine.register_delegate("e2eBpmnErr", E2eBpmnErrDelegate); // 抛 BPMN 错误 E_RISK（验 A8/A3）
-    engine.register_delegate("e2eAlwaysFail", E2eAlwaysFailDelegate); // 恒失败（验 P2 死信）
+    // E2E/测试用 delegate：仅当 `FLOW_ENABLE_E2E_DELEGATES=1`（或 true）时注册——生产二进制默认不含。
+    // 用于真机验证 P1（异步）/A8·A3（抛 BPMN 错误）/P2（恒失败死信）的服务任务路径。
+    if std::env::var("FLOW_ENABLE_E2E_DELEGATES")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        engine.register_delegate("e2eOkDelegate", E2eOkDelegate); // 成功（配 async 验 P1）
+        engine.register_delegate("e2eBpmnErr", E2eBpmnErrDelegate); // 抛 BPMN 错误 E_RISK（验 A8/A3）
+        engine.register_delegate("e2eAlwaysFail", E2eAlwaysFailDelegate); // 恒失败（验 P2 死信）
+        tracing::warn!("已注册 E2E 测试 delegate（FLOW_ENABLE_E2E_DELEGATES 开启）——生产环境勿开");
+    }
     match cfg.delegate_mode {
         AdapterMode::Http => match &cfg.delegate_url {
             Some(url) => {
