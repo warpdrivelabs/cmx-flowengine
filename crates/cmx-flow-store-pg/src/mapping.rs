@@ -108,7 +108,9 @@ fn parse_candidate_kind(s: &str) -> StoreResult<CandidateKind> {
 fn opt_text(v: &Option<String>) -> DataValue {
     match v {
         Some(s) => DataValue::String(s.clone()),
-        None => DataValue::Null,
+        // 可空文本列的 None 必须带类型标记：某些 tokio-postgres 版本对裸 Null 绑 VARCHAR 会
+        // "error serializing parameter"（org_id 等列真机复现）。与 opt_ts/opt_json 一致用 NullTyped。
+        None => DataValue::NullTyped(SqlTypeMarker::Text),
     }
 }
 
@@ -158,7 +160,9 @@ pub fn insert_instance(inst: &ProcessInstance) -> (String, SqlParams) {
 /// 维度上下文 → jsonb 参数（RD3）。空 map → NULL（列可空，省存储）。
 fn dimensions_param(dims: &std::collections::BTreeMap<String, String>) -> DataValue {
     if dims.is_empty() {
-        DataValue::Null
+        // 空维度 → jsonb NULL 必须带类型标记（裸 Null 绑 jsonb 会 "error serializing parameter"，
+        // 真机复现：不带 orgId 发起实例时 dimensions 为空 → param 序列化失败）。
+        DataValue::NullTyped(SqlTypeMarker::Json)
     } else {
         DataValue::Json(serde_json::to_string(dims).unwrap_or_else(|_| "{}".into()))
     }

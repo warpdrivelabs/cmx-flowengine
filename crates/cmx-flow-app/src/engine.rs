@@ -276,6 +276,10 @@ async fn build_for(
     // serviceTask delegate：内置 riskDelegate 始终注册（进程内，零外部）；另按配置注册
     // httpDelegate（外包外部 URL）或 mockDelegate（no-op）——BPMN 用哪个由节点 delegate 键决定。
     engine.register_delegate("riskDelegate", RiskDelegate);
+    // E2E/测试用 delegate：真机验证 P1/P2/A8/A3 的服务任务路径（生产可按需保留或移除）。
+    engine.register_delegate("e2eOkDelegate", E2eOkDelegate); // 成功（配 async 验 P1）
+    engine.register_delegate("e2eBpmnErr", E2eBpmnErrDelegate); // 抛 BPMN 错误 E_RISK（验 A8/A3）
+    engine.register_delegate("e2eAlwaysFail", E2eAlwaysFailDelegate); // 恒失败（验 P2 死信）
     match cfg.delegate_mode {
         AdapterMode::Http => match &cfg.delegate_url {
             Some(url) => {
@@ -469,4 +473,34 @@ impl JavaDelegate for RiskDelegate {
 /// 把任意错误消息桥成 FlowError（同抽核前 BizError 桥语义：业务错误）。
 fn bridge(msg: String) -> crate::resp::FlowError {
     crate::resp::FlowError::business(msg)
+}
+
+// ———————— E2E/测试用 delegate（真机验证服务任务三条路径） ————————
+
+/// 成功 delegate：写标记变量（配 flowable:async="true" 验 P1 异步执行器）。
+struct E2eOkDelegate;
+#[async_trait]
+impl JavaDelegate for E2eOkDelegate {
+    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), cmx_flow_engine::DelegateError> {
+        ctx.variables.set("e2eDelegateRan", json!(true));
+        Ok(())
+    }
+}
+
+/// 抛类型化 BPMN 错误 E_RISK 的 delegate（验 A8 错误边界 / A3 错误事件子流程）。
+struct E2eBpmnErrDelegate;
+#[async_trait]
+impl JavaDelegate for E2eBpmnErrDelegate {
+    async fn execute(&self, _ctx: &mut DelegateContext<'_>) -> Result<(), cmx_flow_engine::DelegateError> {
+        Err(cmx_flow_engine::DelegateError::bpmn("E_RISK", "E2E 业务异常"))
+    }
+}
+
+/// 恒失败 delegate（验 P2 死信队列：配 async 后重试耗尽转死信 + Incident）。
+struct E2eAlwaysFailDelegate;
+#[async_trait]
+impl JavaDelegate for E2eAlwaysFailDelegate {
+    async fn execute(&self, _ctx: &mut DelegateContext<'_>) -> Result<(), cmx_flow_engine::DelegateError> {
+        Err("E2E 外部服务持续不可达".into())
+    }
 }

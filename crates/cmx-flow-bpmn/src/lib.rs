@@ -265,8 +265,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_timer_boundary_event() {
-        // 非定时器边界事件（error）——M2.5 不支持，应报错。
+    fn compiles_error_boundary_event() {
+        use cmx_flow_model::NodeKind;
+        // 错误边界事件（A8）——现已支持：boundaryEvent + errorEventDefinition → BoundaryErrorEvent。
         let xml = r#"<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL">
           <process id="p" isExecutable="true">
             <startEvent id="s"/>
@@ -274,15 +275,41 @@ mod tests {
             <userTask id="t"/>
             <sequenceFlow id="f1" sourceRef="t" targetRef="done"/>
             <boundaryEvent id="err" attachedToRef="t">
-              <errorEventDefinition/>
+              <errorEventDefinition errorRef="E_X"/>
             </boundaryEvent>
             <sequenceFlow id="f2" sourceRef="err" targetRef="done"/>
+            <endEvent id="done"/>
+          </process></definitions>"#;
+        let def = compile(xml).expect("错误边界事件应可编译（A8）");
+        let node = def.node_by_bpmn("err").expect("应有 err 节点");
+        match &node.kind {
+            NodeKind::BoundaryErrorEvent(be) => {
+                assert_eq!(be.attached_to_bpmn_id, "t");
+                assert_eq!(be.error_code.as_deref(), Some("E_X"));
+            }
+            other => panic!("err 应为 BoundaryErrorEvent，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_boundary_event() {
+        // 非定时器/错误边界事件（如 signal）——仍不支持，应报错。
+        let xml = r#"<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL">
+          <process id="p" isExecutable="true">
+            <startEvent id="s"/>
+            <sequenceFlow id="f0" sourceRef="s" targetRef="t"/>
+            <userTask id="t"/>
+            <sequenceFlow id="f1" sourceRef="t" targetRef="done"/>
+            <boundaryEvent id="sig" attachedToRef="t">
+              <signalEventDefinition/>
+            </boundaryEvent>
+            <sequenceFlow id="f2" sourceRef="sig" targetRef="done"/>
             <endEvent id="done"/>
           </process></definitions>"#;
         let err = compile(xml).unwrap_err();
         assert!(
             matches!(err, Error::Unsupported(_)),
-            "非定时器边界事件应报不支持"
+            "非定时器/错误边界事件应报不支持"
         );
     }
 
