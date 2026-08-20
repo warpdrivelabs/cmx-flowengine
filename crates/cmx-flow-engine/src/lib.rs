@@ -18,7 +18,7 @@ pub mod error;
 pub mod memory_store;
 
 pub use clock::{Clock, SystemClock, TestClock};
-pub use delegate::{DelegateContext, DelegateRegistry, JavaDelegate};
+pub use delegate::{DelegateContext, DelegateError, DelegateRegistry, JavaDelegate};
 pub use engine::{Engine, ExecutionResult, FiredTimer, RejectTarget, RejectTargetInfo, TaskView};
 pub use error::{Error, Result};
 pub use memory_store::InMemoryStore;
@@ -29,5 +29,6 @@ pub use cmx_flow_model::{
     InstanceSnapshot,
     InstanceState, ProcessDefinition, ProcessInstance, ResolveContext, ResolveError, ResolveResult,
     RouteError, RouteResult, RuntimeStore, SubflowRouter, Task, TaskCandidate, TaskDelegation,
-    Token, TokenState, Variables,
+    Token, TokenState, Variables, DIM_ORG,
+    MigrationPlan, MigrationValidation, MigrationViolation, MigrationViolationCode,
 };

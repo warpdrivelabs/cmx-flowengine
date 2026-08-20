@@ -1,7 +1,7 @@
-//! HttpSubflowRouter —— 子流程组织路由的外部 HTTP 实现（方案 §4②）。
+//! HttpSubflowRouter —— 子流程路由的外部 HTTP 实现（方案 §4②）。
 //!
-//! 实现 `SubflowRouter`：把「逻辑子流程 key + 组织 id」POST 给外部组织服务解析成具体子流程
-//! 定义 key，替代 Pg 版沿 cmx_org.path 继承的库内解析。组织树/绑定的真相在外部组织服务。
+//! 实现 `SubflowRouter`：把「逻辑子流程 key + 路由维度 + 维度取值」POST 给外部服务解析成具体子流程
+//! 定义 key，替代 Pg 版沿维度字典物化路径继承的库内解析。维度字典/绑定的真相在外部服务。
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -20,8 +20,10 @@ pub struct HttpSubflowRouter {
 struct RouteReq<'a> {
     #[serde(rename = "calledKey")]
     called_key: &'a str,
-    #[serde(rename = "orgId", skip_serializing_if = "Option::is_none")]
-    org_id: Option<&'a str>,
+    #[serde(rename = "dimKey")]
+    dim_key: &'a str,
+    #[serde(rename = "dimValue", skip_serializing_if = "Option::is_none")]
+    dim_value: Option<&'a str>,
 }
 
 /// 期望响应体：解析出的目标子流程定义 key（无解时 targetKey 为 null/缺省）。
@@ -42,9 +44,14 @@ impl HttpSubflowRouter {
 
 #[async_trait]
 impl SubflowRouter for HttpSubflowRouter {
-    async fn resolve(&self, called_key: &str, org_id: Option<&str>) -> RouteResult<String> {
+    async fn resolve(
+        &self,
+        called_key: &str,
+        dim_key: &str,
+        dim_value: Option<&str>,
+    ) -> RouteResult<String> {
         let url = format!("{}/subflow/resolve", self.base_url);
-        let body = RouteReq { called_key, org_id };
+        let body = RouteReq { called_key, dim_key, dim_value };
         let resp = self
             .http
             .post(&url)
@@ -58,7 +65,8 @@ impl SubflowRouter for HttpSubflowRouter {
         if status == reqwest::StatusCode::NOT_FOUND {
             return Err(RouteError::NoBinding {
                 called_key: called_key.to_string(),
-                org: org_id.map(|s| s.to_string()),
+                dim_key: dim_key.to_string(),
+                dim_value: dim_value.map(|s| s.to_string()),
             });
         }
         if !status.is_success() {
@@ -75,7 +83,8 @@ impl SubflowRouter for HttpSubflowRouter {
             // 200 但无 targetKey → 同样无解。
             None => Err(RouteError::NoBinding {
                 called_key: called_key.to_string(),
-                org: org_id.map(|s| s.to_string()),
+                dim_key: dim_key.to_string(),
+                dim_value: dim_value.map(|s| s.to_string()),
             }),
         }
     }

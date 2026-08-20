@@ -21,7 +21,7 @@ struct CalcDaysDelegate;
 
 #[async_trait::async_trait]
 impl JavaDelegate for CalcDaysDelegate {
-    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), String> {
+    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), cmx_flow_engine::DelegateError> {
         let hours = ctx
             .variables
             .get("hours")

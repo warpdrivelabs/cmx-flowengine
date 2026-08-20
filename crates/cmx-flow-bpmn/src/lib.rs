@@ -224,7 +224,7 @@ mod tests {
         match &timeout.kind {
             NodeKind::BoundaryTimerEvent(bt) => {
                 assert_eq!(bt.attached_to_bpmn_id, "approve");
-                assert_eq!(bt.duration.seconds, 24 * 3600);
+                assert_eq!(bt.spec, cmx_flow_model::TimerSpec::Duration { seconds: 24 * 3600 });
                 assert!(bt.cancel_activity, "缺省应为中断型");
             }
             other => panic!("timeout 应为边界定时器，实际 {other:?}"),
@@ -258,7 +258,7 @@ mod tests {
         match &remind.kind {
             NodeKind::BoundaryTimerEvent(bt) => {
                 assert!(!bt.cancel_activity, "cancelActivity=false → 非中断型");
-                assert_eq!(bt.duration.seconds, 7200);
+                assert_eq!(bt.spec, cmx_flow_model::TimerSpec::Duration { seconds: 7200 });
             }
             other => panic!("remind 应为边界定时器，实际 {other:?}"),
         }

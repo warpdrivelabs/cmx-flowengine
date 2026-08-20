@@ -33,7 +33,7 @@ pub use auth::auth as auth_middleware;
 pub use observe::observe as observe_middleware;
 pub use engine::{
     FLOW_DB_ID, FlowRuntime, IAM_DB_ID, current_flow_db_id, flow, flow_for_tenant,
-    spawn_timer_poller,
+    spawn_async_job_poller, spawn_timer_poller,
 };
 pub use resp::{ApiResp, FlowError, Result};
 pub use tenant::{TenantCtx, current_tenant, current_user, identity_snapshot};
@@ -106,6 +106,19 @@ where
         )
         .route("/instances/{id}", get(handlers::get_instance))
         .route("/instances/{id}/children", get(handlers::get_children))
+        .route(
+            "/instances/{id}/activities",
+            get(handlers::get_instance_activities),
+        )
+        // —— 实例迁移（A9：节点映射迁到新定义版本） ——
+        .route(
+            "/instances/{id}/migrate",
+            post(handlers::migrate_instance),
+        )
+        .route(
+            "/instances/{id}/migrate/validate",
+            post(handlers::validate_migration),
+        )
         .route("/instances/{id}/cancel", post(handlers::cancel_instance))
         .route("/instances/{id}/withdraw", post(handlers::withdraw_instance))
         .route("/instances/{id}/withdrawable", get(handlers::get_withdrawable))
@@ -163,8 +176,32 @@ where
         .route("/cc", get(handlers::list_cc))
         .route("/cc/{id}/read", post(handlers::mark_cc_read))
         .route("/timers/trigger", post(handlers::trigger_timers))
-        // —— 子流程组织路由（绑定管理 + 组织树） ——
+        // —— 外部 worker：异步 Job 执行器（P1；SKIP LOCKED 集群安全） ——
+        .route("/async-jobs/acquire", post(handlers::acquire_async_jobs))
+        .route(
+            "/async-jobs/{id}/complete",
+            post(handlers::complete_async_job),
+        )
+        .route("/async-jobs/{id}/fail", post(handlers::fail_async_job))
+        // —— 外部 Worker Task（A7；按 topic 拉取，complete/fail 复用 async-jobs 端点） ——
+        .route(
+            "/external-worker/jobs/acquire",
+            post(handlers::acquire_external_worker_jobs),
+        )
+        // —— 死信队列（P2；Job 重试耗尽的托底，运维台可见可重投可删除） ——
+        .route("/dead-letter-jobs", get(handlers::list_dead_letter_jobs))
+        .route(
+            "/dead-letter-jobs/{id}/retry",
+            post(handlers::retry_dead_letter_job),
+        )
+        .route(
+            "/dead-letter-jobs/{id}",
+            delete(handlers::discard_dead_letter_job),
+        )
+        // —— 子流程路由（绑定管理 + 维度/条目；RD2 泛化，org 为内建维度） ——
         .route("/orgs", get(handlers::list_orgs))
+        .route("/dimensions", get(handlers::list_dimensions))
+        .route("/dimension/{dimKey}/entries", get(handlers::list_dimension_entries))
         .route("/subflow-bindings", post(handlers::upsert_subflow_binding))
         .route(
             "/subflow-bindings/{key}",

@@ -69,10 +69,68 @@ pub struct FlowRuntime {
     pub def_svc: Arc<DefinitionService<PgDefinitionStore>>,
     /// 子流程组织绑定管理（设计态 CRUD + 组织树；与运行期 PgSubflowRouter 同表 IAM 库）。
     pub binding_store: Arc<PgSubflowBindingStore>,
+    /// 已注册的自分级路由维度字典（RD2）：供 /flow/dimensions 列举 + 维度条目读取。org 内建不在内。
+    pub dimension_specs: Arc<Vec<DimRegistration>>,
     /// 出站生命周期 webhook 发送器（app 层 handler emit 事件，后台异步投递第三方）。
     pub webhook: WebhookSender,
     /// 本运行时所属租户（供后台任务/日志标识）。
     pub tenant: String,
+}
+
+/// 一个自分级路由维度字典的注册项（RD2）——把 DCT 字典元数据映射成路由所需的物理规格 + 展示信息。
+#[derive(Clone, Debug)]
+pub struct DimRegistration {
+    /// 维度 key（= 字典 dictCode）。
+    pub dim_key: String,
+    /// 展示名（维度选择器显示）。
+    pub name: String,
+    /// 物理规格（表/pk/路径列/分隔符）——喂给 PgSubflowRouter 做继承解析。
+    pub spec: cmx_flow_store_pg::DimSpec,
+    /// 条目展示名列（如 name / label）。
+    pub name_col: String,
+    /// 父引用列（自分级有；None = 平级）。
+    pub parent_col: Option<String>,
+    /// 是否自分级（有物化路径可继承）。
+    pub self_hierarchy: bool,
+}
+
+/// 从环境变量 `FLOW_ROUTING_DIMENSIONS`（JSON 数组）解析路由维度注册（RD2）。
+/// 每项形如：`{"dimKey":"legal_entity","name":"法人公司","table":"cf_legal_entity",
+///   "idCol":"id","pathCol":"full_path","delim":".","nameCol":"name","parentCol":"parent_id"}`。
+/// 缺省/解析失败 → 空（仅内建 org 维度，向后兼容）。
+fn parse_dim_registrations() -> Vec<DimRegistration> {
+    let raw = match std::env::var("FLOW_ROUTING_DIMENSIONS") {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => return Vec::new(),
+    };
+    let arr: Vec<serde_json::Value> = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "FLOW_ROUTING_DIMENSIONS 解析失败，忽略（仅内建 org 维度）");
+            return Vec::new();
+        }
+    };
+    let s = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_str()).map(|x| x.to_string());
+    arr.into_iter()
+        .filter_map(|v| {
+            let dim_key = s(&v, "dimKey")?;
+            let table = s(&v, "table")?;
+            let parent_col = s(&v, "parentCol");
+            Some(DimRegistration {
+                name: s(&v, "name").unwrap_or_else(|| dim_key.clone()),
+                self_hierarchy: parent_col.is_some(),
+                spec: cmx_flow_store_pg::DimSpec {
+                    table,
+                    id_col: s(&v, "idCol").unwrap_or_else(|| "id".into()),
+                    path_col: s(&v, "pathCol").unwrap_or_else(|| "full_path".into()),
+                    delim: s(&v, "delim").unwrap_or_else(|| ".".into()),
+                },
+                name_col: s(&v, "nameCol").unwrap_or_else(|| "name".into()),
+                parent_col,
+                dim_key,
+            })
+        })
+        .collect()
 }
 
 /// 每租户运行时缓存：tenant → 该租户运行时的 OnceCell。懒建（首访某租户时建一次）。
@@ -188,14 +246,20 @@ async fn build_for(
         }
     }
 
-    // 子流程组织路由：pg 沿 cmx_org.path 继承 / http 接外部组织服务 / mock 逻辑 key 直返。
+    // 子流程路由：pg 沿维度字典物化路径继承 / http 接外部服务 / mock 逻辑 key 直返。
+    // RD2：pg 模式下把已注册的自分级维度字典规格喂给 router（org 内建，其余从 FLOW_ROUTING_DIMENSIONS）。
+    let dim_regs = parse_dim_registrations();
     match cfg.subflow_mode {
         AdapterMode::Pg => {
-            engine.set_subflow_router(Arc::new(PgSubflowRouter::new(iam_db_id)));
+            let mut router = PgSubflowRouter::new(iam_db_id);
+            for d in &dim_regs {
+                router.register_dim(d.dim_key.clone(), d.spec.clone());
+            }
+            engine.set_subflow_router(Arc::new(router));
         }
         AdapterMode::Http => match &cfg.subflow_url {
             Some(url) => {
-                tracing::info!(url, "子流程路由走外部组织服务(http)");
+                tracing::info!(url, "子流程路由走外部服务(http)");
                 engine.set_subflow_router(Arc::new(HttpSubflowRouter::new(url.clone())));
             }
             None => {
@@ -287,6 +351,7 @@ async fn build_for(
         definitions: Arc::new(RwLock::new(definitions)),
         def_svc: Arc::new(def_svc),
         binding_store: Arc::new(binding_store),
+        dimension_specs: Arc::new(dim_regs),
         webhook,
         tenant: tenant.to_string(),
     })
@@ -335,12 +400,55 @@ pub async fn spawn_timer_poller() -> crate::resp::Result<()> {
     Ok(())
 }
 
+/// 启动后台异步 Job 执行器：每 3 秒抢占并执行一批**所有已建租户**的异步服务任务作业（P1）。
+///
+/// 与定时器 poller 同构：遍历运行时缓存逐个 `run_async_jobs`。集群安全靠 store 侧
+/// `acquire_async_jobs` 的 SKIP LOCKED——多进程各自跑本 poller，拿到互不相交的作业集，
+/// 不会重复执行同一作业。`worker_id` 进程内唯一（pid + 启动纳秒），作为锁持有者标识。
+pub async fn spawn_async_job_poller() -> crate::resp::Result<()> {
+    let _ = flow_for_tenant(DEFAULT_TENANT).await?;
+    // 进程唯一 worker 标识：同一 pid 内两次启动（理论上不会）也因纳秒不同而区分。
+    let worker_id = format!(
+        "async-worker-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    );
+    tracing::info!("✅ 流程引擎异步 Job 执行器已启动（SKIP LOCKED 集群安全，worker={worker_id}）");
+    tokio::spawn(async move {
+        // 锁定时长 60s：单个 delegate 应远快于此；崩溃/超时后锁自然过期，作业可被重抢（至少一次语义）。
+        const LOCK_SECS: i64 = 60;
+        const BATCH: usize = 50;
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3));
+        loop {
+            ticker.tick().await;
+            let rts: Vec<Arc<FlowRuntime>> = runtimes()
+                .read()
+                .await
+                .values()
+                .filter_map(|cell| cell.get().cloned())
+                .collect();
+            for rt in rts {
+                match rt.engine.run_async_jobs(&worker_id, LOCK_SECS, BATCH).await {
+                    Ok(n) if n > 0 => {
+                        tracing::info!(tenant = %rt.tenant, completed = n, "⚙️ 异步服务任务已执行")
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(tenant = %rt.tenant, error = %e, "异步 Job 执行出错")
+                    }
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
 /// serviceTask delegate：按金额算风险等级写回变量（从 demo 移植）。
 struct RiskDelegate;
 
 #[async_trait]
 impl JavaDelegate for RiskDelegate {
-    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), String> {
+    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), cmx_flow_engine::DelegateError> {
         let amount = ctx
             .variables
             .get("amount")

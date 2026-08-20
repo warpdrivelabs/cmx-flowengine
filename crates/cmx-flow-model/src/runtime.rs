@@ -51,6 +51,22 @@ pub enum TokenState {
     /// 消息等待（A4）：停在消息中间捕获事件，等外部经 `correlate_message` 按消息名+相关键唤醒。
     /// 与 WaitingSubflow 并列的挂起等待态；唤醒信号来自外部系统回调，非内部推进。
     WaitingMessage,
+    /// 定时等待（A1）：停在中间定时捕获事件（`intermediateCatchEvent` + timer），等 TimerJob 到期。
+    /// 与 WaitingMessage 并列的挂起等待态；唤醒信号来自 `trigger_due_timers`（时间驱动），
+    /// 到期后令牌转 Active 沿唯一出边前进。审批场景「等 N 天后自动推进/发提醒」的建模基石。
+    WaitingTimer,
+    /// 异步服务任务等待（P1）：停在 `serviceTask`（`flowable:async="true"`），等后台 worker 执行完毕。
+    ///
+    /// `run_to_wait` 为异步 serviceTask 建一个 `AsyncJob` 并把令牌停为 WaitingAsync；
+    /// worker 通过 `acquire_async_jobs`（SKIP LOCKED）抢占并执行 delegate，完成后调
+    /// `complete_async_job` 把令牌转 Active 并继续 run_to_wait。慢外部调用不再阻塞推进线程。
+    WaitingAsync,
+    /// 事件网关等待（A10）：停在 `eventBasedGateway`，等所有出边后继事件中第一个触发的到来。
+    ///
+    /// 引擎为所有后继节点注册竞争事件（TimerJob / MessageSubscription）；第一个触发时令牌从
+    /// 网关节点前进到胜出后继，其余竞争事件全部撤销。此状态在 cancel/terminate 时与
+    /// WaitingMessage/WaitingTimer 同等处理（清理所有关联竞争事件）。
+    WaitingEventGateway,
     /// 异常挂起（H2 Incident）：serviceTask/delegate 执行失败且重试耗尽——令牌停在故障节点，
     /// 实例**不丢失、不终止**，等待人工介入 `retry_incident` 重试或改数据后恢复。失败原因与
     /// 已重试次数记在实例变量 `__incident`。这是生产可用性的关键：失败可见、可恢复，而非静默丢。
@@ -103,8 +119,15 @@ pub struct ProcessInstance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<DateTime<Utc>>,
     /// 所属组织（M5.2 子流程组织路由的依据；M5.1 恒为 None，向后兼容）。
+    /// RD0 起是 `dimensions["org"]` 的快捷别名/兼容投影（见 [`Self::dimensions`]）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org_id: Option<String>,
+    /// 维度上下文（RD0/RD3）：实例在各路由维度上的取值，`dim_key → dim_value`。
+    /// 子流程按挂载点的 `dim_key` 从此取维度值路由。`"org"` 维度缺省回退 `org_id`（向后兼容）。
+    /// 一个实例可同时携带多个维度取值（如 `{"org":"df_bj","legal_entity":"LE_CN"}`），
+    /// 支持「同实例内挂载 A 按组织、挂载 B 按法人」各走不同维度。
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub dimensions: std::collections::BTreeMap<String, String>,
     /// 父实例 id（M5：子实例指向调用它的主实例；主实例/顶层实例为 None）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_instance_id: Option<String>,
@@ -341,6 +364,9 @@ pub struct InstanceSnapshot {
     /// 该实例当前挂起的定时器作业（边界定时器到期表）。M2.5 新增，默认空，向后兼容。
     #[serde(default)]
     pub jobs: Vec<TimerJob>,
+    /// 该实例当前挂起的异步服务任务作业（P1）。默认空，向后兼容。
+    #[serde(default)]
+    pub async_jobs: Vec<AsyncJob>,
     /// 该实例当前的任务候选人（多人候选待认领）。M4.1 新增，默认空，向后兼容。
     #[serde(default)]
     pub candidates: Vec<TaskCandidate>,
@@ -350,6 +376,16 @@ pub struct InstanceSnapshot {
     /// 该实例的转签台账（转办/加签/委派流转链）。M4.3 新增，默认空，向后兼容。
     #[serde(default)]
     pub delegations: Vec<TaskDelegation>,
+    /// 本次推进段待写入的消息订阅（P3 + A2）。**不持久化**（serde skip）：
+    /// `run_to_wait` 把新增的 Catch 订阅追加到此，调用方在 `save_snapshot` 后批量 `upsert_message_subscription`。
+    /// 重启后由订阅表重建，此字段仅为推进段内暂存，不参与快照序列化。
+    #[serde(skip)]
+    pub pending_subs: Vec<MessageSubscription>,
+    /// 本次推进段闭合的活动历史记录（A6）。**不持久化**（serde skip）：令牌离开节点时
+    /// `transition_token` 把闭合的 ActivityRecord 追加到此，调用方在 `save_snapshot` 后批量
+    /// `upsert_hi_activity`。与 pending_subs 同构——推进段内暂存，落库后即弃，不参与快照序列化。
+    #[serde(skip)]
+    pub pending_activities: Vec<ActivityRecord>,
 }
 
 impl InstanceSnapshot {
@@ -403,30 +439,207 @@ pub struct InstanceSummary {
     pub updated_at: DateTime<Utc>,
 }
 
-/// 定时器作业 —— 一个「到期待触发」的边界定时器实例（M2.5）。
+/// 定时器作业的类型 —— 触发时令牌怎么走（M2.5 边界 / A1 中间捕获）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TimerJobKind {
+    /// 边界定时器（M2.5）：触发时令牌改走 `boundary_bpmn_id` 边界事件节点（中断型重定位宿主令牌，
+    /// 非中断型发旁路令牌）。默认值，保证既有快照反序列化为此类型（向后兼容）。
+    #[default]
+    Boundary,
+    /// 中间定时捕获（A1）：令牌停在 `intermediateCatchEvent` 节点等待（WaitingTimer），触发时
+    /// 就地转 Active 沿该节点唯一出边前进（不重定位到别的节点）。`boundary_bpmn_id` 存本节点自身
+    /// bpmn_id（仅供追溯）。
+    IntermediateCatch,
+}
+
+impl TimerJobKind {
+    /// 是否为边界类型（serde skip 用：默认值不写盘，保持既有快照字节一致）。
+    pub fn is_boundary(&self) -> bool {
+        matches!(self, TimerJobKind::Boundary)
+    }
+}
+
+/// 定时器作业 —— 一个「到期待触发」的定时器实例（M2.5 边界 / A1 中间捕获）。
 ///
-/// 令牌到达挂有边界定时器的 userTask 时，为每个边界定时器建一条 TimerJob，记 `due_at`。
-/// 外部（引擎的 trigger_due_timers）在 `now >= due_at` 时触发它：令牌改走定时器出边
-/// （中断型）或发旁路令牌（非中断型）。随聚合快照持久化，重启后定时器不丢。
+/// 令牌到达挂有边界定时器的 userTask（或中间定时捕获事件）时建一条 TimerJob，记 `due_at`。
+/// 外部（引擎的 trigger_due_timers）在 `now >= due_at` 时触发它。随聚合快照持久化，重启后不丢。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimerJob {
     /// 作业唯一 id。
     pub id: String,
     /// 所属实例 id。
     pub instance_id: String,
-    /// 挂载该定时器的令牌 id（停在宿主 userTask 的令牌）。令牌离开宿主即撤销本作业。
+    /// 挂载该定时器的令牌 id（停在宿主 userTask / 中间捕获节点的令牌）。令牌离开即撤销本作业。
     pub token_id: String,
-    /// 触发时令牌要去的边界事件节点 bpmn_id。
+    /// 边界类型：触发时令牌要去的边界事件节点 bpmn_id。中间捕获类型：本捕获节点自身 bpmn_id（追溯用）。
     pub boundary_bpmn_id: String,
-    /// 是否中断型（冗余存，触发时免回查定义）。
+    /// 是否中断型（边界类型冗余存，触发时免回查定义；中间捕获恒 false）。
     pub cancel_activity: bool,
-    /// 到期时刻（宿主到达时刻 + 时长）。
+    /// 到期时刻（宿主到达时刻 + 时长，或绝对时刻）。
     pub due_at: DateTime<Utc>,
     /// 作业创建时间。
     pub created_at: DateTime<Utc>,
+    /// 作业类型（A1）。默认 Boundary，既有快照反序列化不变。
+    #[serde(default, skip_serializing_if = "TimerJobKind::is_boundary")]
+    pub kind: TimerJobKind,
+    /// 周期定时器（A5 timeCycle）：每次间隔秒数。None = 非周期（触发一次即止）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_interval_seconds: Option<i64>,
+    /// 周期定时器剩余重复次数。None = 无界（引擎按上限封顶）；Some(0) = 用尽不再重发。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_remaining: Option<u32>,
 }
 
-/// 跨实例的「到期作业」轻量视图 —— `RuntimeStore::find_due_jobs` 返回。
+/// 异步服务任务作业（P1）：serviceTask `flowable:async="true"` 触发，令牌停为 WaitingAsync。
+///
+/// 集群安全：worker 通过 `acquire_async_jobs`（SKIP LOCKED）抢占执行；
+/// 完成后调 `complete_async_job` 把令牌转 Active 继续推进。
+///
+/// A7 外部 Worker：`topic` 非空的作业由**外部进程**（多语言 worker）按 topic 拉取执行，
+/// `delegate_key` 为空；`topic` 为空的作业由**进程内** poller 执行注册的 delegate。两者靠
+/// `acquire_async_jobs` 的 topic 过滤天然隔离（poller 只取 topic IS NULL，外部 worker 按 topic）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AsyncJob {
+    /// 作业唯一 id。
+    pub id: String,
+    /// 所属实例 id。
+    pub instance_id: String,
+    /// 宿主令牌 id（WaitingAsync 令牌）。
+    pub token_id: String,
+    /// 服务任务节点的 bpmn_id（delegate key 来源）。
+    pub node_bpmn_id: String,
+    /// delegate class/key（对应 flowable:class 或 flowable:expression）。外部 Worker 作业为空串。
+    pub delegate_key: String,
+    /// 外部 Worker 主题（A7，`flowable:type="external-worker"` + `flowable:topic`）。
+    /// `Some` = 外部 worker 按此 topic 拉取执行（进程内 poller 不碰）；`None` = 进程内 delegate 执行。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// 重试次数上限（默认 3）。
+    pub max_retries: i32,
+    /// 已重试次数。
+    pub retries: i32,
+    /// 重试退避（秒），None = 不退避。
+    pub retry_backoff_seconds: Option<i64>,
+    /// 锁定者（worker id）；None = 可抢占。SKIP LOCKED 集群安全依赖此列。
+    pub locked_by: Option<String>,
+    /// 锁定到期时间；超时后其它 worker 可抢占。
+    pub lock_expires_at: Option<DateTime<Utc>>,
+    /// 创建时间。
+    pub created_at: DateTime<Utc>,
+}
+
+/// 活动历史记录（A6）：一次「令牌在某节点的停留」的完整时段——节点级审计/SLA 看板的原子行。
+///
+/// 与 `Task`/`hi_task` 的关系类比：**已闭合**的活动（令牌已离开该节点）落此表，正在进行的活动
+/// 由活动令牌派生（token.node_bpmn_id + updated_at 即「当前在哪、何时进入」），不落表——与
+/// 「未办结任务留 cmx_flow_task、办结才进 hi_task」同构。故一条节点访问的时序：令牌进入节点时
+/// 记 enter（= token.updated_at），令牌离开时闭合成一条 ActivityRecord 写入。等待态节点
+/// （userTask/WaitingAsync/WaitingTimer）的停留跨多个 run_to_wait 段，enter/exit 之差即真实
+/// 等待时长——这是 SLA 分析的核心，快照差分法（只在终态归档）无法捕获。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActivityRecord {
+    /// 记录唯一 id。
+    pub id: String,
+    /// 所属实例 id。
+    pub instance_id: String,
+    /// 产生该活动的令牌 id（并行多令牌时区分各分支）。
+    pub token_id: String,
+    /// 节点 bpmn_id。
+    pub activity_bpmn_id: String,
+    /// 节点名（取自定义，冗余存便于报表免回查定义）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_name: Option<String>,
+    /// 节点类型文本（startEvent/userTask/serviceTask/… 供按类型聚合）。
+    pub activity_type: String,
+    /// 进入时刻。
+    pub entered_at: DateTime<Utc>,
+    /// 离开时刻（闭合时置位）。
+    pub exited_at: DateTime<Utc>,
+    /// 停留时长毫秒（exited - entered，冗余存便于 SQL 聚合 SLA）。
+    pub duration_ms: i64,
+    /// 办理人（userTask 活动记 assignee，供按人聚合工作量；其它节点为 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    /// 租户 id（多租户隔离；单租户 "default"）。
+    pub tenant_id: String,
+}
+
+/// 死信作业（P2）：异步 Job 重试耗尽后的托底记录 —— 失败不丢，运维台可见可重试可删除。
+///
+/// 与 `AsyncJob` 的关系：async job 在 worker 侧 `fail_async_job` 重试到 0 时，**从抢占池
+/// 删除**并在此表落一条死信；同时其宿主令牌转 `Incident`（两视图一致：实例卡在故障节点、
+/// 死信表存作业级明细）。运维经 `retry_dead_letter_job` 把它重新投回抢占池（重建 AsyncJob +
+/// 令牌回 WaitingAsync），或 `delete_dead_letter_job` 判定放弃。保留原 async job 的全部身份
+/// 字段以便原样重建，另记最终失败原因与死信时刻供审计。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeadLetterJob {
+    /// 死信记录唯一 id（复用原 AsyncJob.id，便于溯源与幂等）。
+    pub id: String,
+    /// 所属实例 id。
+    pub instance_id: String,
+    /// 原宿主令牌 id（重试时令牌从 Incident 回 WaitingAsync）。
+    pub token_id: String,
+    /// 服务任务节点 bpmn_id（重建 AsyncJob 的节点锚点）。
+    pub node_bpmn_id: String,
+    /// delegate class/key（重建 AsyncJob 用）。
+    pub delegate_key: String,
+    /// 原重试次数上限（重投时恢复为此值）。
+    pub max_retries: i32,
+    /// 最终失败原因（末次 delegate 返回的错误）。
+    pub error: String,
+    /// 原作业创建时刻（溯源）。
+    pub original_created_at: DateTime<Utc>,
+    /// 转入死信的时刻。
+    pub dead_lettered_at: DateTime<Utc>,
+    /// 租户 id（多租户隔离；单租户 "default"）。
+    pub tenant_id: String,
+}
+
+/// 消息订阅 —— 持久化「谁在等哪条消息」，重启后不丢（P3 + A2）。
+///
+/// `kind = Catch`：实例里的令牌停在 `MessageCatchEvent`，等 `correlate_message` 唤醒。
+/// 引擎在令牌变 `WaitingMessage` 时写入，`correlate_message` / 取消 / 终止时删除。
+///
+/// `kind = Start`：已部署的流程定义声明了消息启动事件（A2），等 `start_by_message` 触发。
+/// 引擎在 `deploy` 时写入（扫描 startEvent 里的 messageEventDefinition），撤部署时删除。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MessageSubscription {
+    /// 订阅唯一 id。
+    pub id: String,
+    /// 订阅类型。
+    pub kind: MessageSubscriptionKind,
+    /// 消息名（BPMN message name）。
+    pub message_name: String,
+    /// Catch 类型：所属实例 id；Start 类型：为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+    /// Catch 类型：等待中的令牌 id（correlate 按此精确唤醒）；Start 类型：为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_id: Option<String>,
+    /// Catch 类型：等待节点 bpmn_id；Start 类型：startEvent bpmn_id。
+    pub node_bpmn_id: String,
+    /// 相关键变量名（`MessageCatch.correlation_var` / 消息启动事件 cmx:correlationVar）。None = 无相关键。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_var: Option<String>,
+    /// Start 类型：流程定义 key（用于按消息名 + tenant 找对应定义）；Catch 类型：为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_key: Option<String>,
+    /// 租户 id（多租户隔离；单租户模式为 "default"）。
+    pub tenant_id: String,
+    /// 创建时间。
+    pub created_at: DateTime<Utc>,
+}
+
+/// 消息订阅的类型：等待令牌 vs 启动事件。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MessageSubscriptionKind {
+    /// 中间消息捕获：实例令牌等待外部消息唤醒（P3）。
+    Catch,
+    /// 消息启动：已部署定义等待消息触发发起新实例（A2）。
+    Start,
+}
 ///
 /// 定时器推进器先用它跨实例查出所有到期作业，再按 instance_id 分组逐个 load→fire→save，
 /// 避免为扫描到期作业而载入全部实例聚合。

@@ -17,6 +17,7 @@ pub mod duration;
 pub mod error;
 pub mod expr;
 pub mod ir;
+pub mod migration;
 pub mod resolver;
 pub mod runtime;
 pub mod store;
@@ -28,21 +29,24 @@ pub mod variables;
 pub use error::{Error, Result};
 pub use expr::{BuiltinFn, builtin_catalog, eval_condition, eval_value, interpolate, validate_syntax};
 pub use ir::{
-    BoundaryTimer, BusinessRule, CallActivity, CandidateKind, CandidateRef, FlowNode, MessageCatch,
-    MultiInstance, NodeId, NodeKind, ProcessDefinition, SequenceFlow, ServiceTask, TimerDuration,
-    UserTask, VarMapping,
+    BoundaryError, BoundaryTimer, BusinessRule, CallActivity, CandidateKind, CandidateRef,
+    ErrorStart, FlowNode, MessageCatch, MessageStart, MultiInstance, NodeId, NodeKind,
+    ProcessDefinition, SequenceFlow, ServiceTask, TimerDuration, TimerSpec, UserTask, VarMapping,
 };
 pub use resolver::{AssigneeResolver, ResolveContext, ResolveError, ResolveResult};
-pub use decision::{
+pub use migration::{
+    MigrationPlan, MigrationValidation, MigrationViolation, MigrationViolationCode,
+};pub use decision::{
     DecisionResult, DecisionRule, DecisionTable, HitPolicy, decision_from_json,
     evaluate as evaluate_decision,
 };
 pub use runtime::{
-    CcRecord, CcSummary, DueJob, InstanceSnapshot, InstanceState, InstanceSummary, MiScope,
-    ProcessInstance, Task, TaskCandidate, TaskDelegation, TimerJob, Token, TokenState,
+    AsyncJob, ActivityRecord, CcRecord, CcSummary, DeadLetterJob, DueJob, InstanceSnapshot,
+    InstanceState, InstanceSummary, MessageSubscription, MessageSubscriptionKind, MiScope,
+    ProcessInstance, Task, TaskCandidate, TaskDelegation, TimerJob, TimerJobKind, Token, TokenState,
 };
 pub use store::{RuntimeStore, StoreError, StoreResult};
-pub use subflow::{RouteError, RouteResult, SubflowRouter};
+pub use subflow::{RouteError, RouteResult, SubflowRouter, DIM_ORG};
 pub use var_schema::{
     VarDecl, VarPath, VarSchema, VarScope, VarSource, VarType, VarViolation, VarViolationCode,
 };

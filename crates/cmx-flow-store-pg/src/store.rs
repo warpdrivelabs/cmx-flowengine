@@ -21,7 +21,8 @@ use cmx_database_pg::{
     query_sql_with_params,
 };
 use cmx_flow_model::{
-    DueJob, InstanceSnapshot, InstanceSummary, RuntimeStore, StoreError, StoreResult,
+    ActivityRecord, AsyncJob, DeadLetterJob, DueJob, InstanceSnapshot, InstanceSummary,
+    RuntimeStore, StoreError, StoreResult,
 };
 
 use crate::mapping;
@@ -166,7 +167,7 @@ impl RuntimeStore for PgRuntimeStore {
         // 实例。
         let inst_sql = format!(
             "SELECT id, definition_key, business_key, state, variables, created_at, updated_at, ended_at, \
-                    org_id, parent_instance_id, parent_token_id, parent_node_bpmn_id \
+                    org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id \
              FROM cmx_flow_instance WHERE id = '{}'",
             escape(instance_id)
         );
@@ -212,9 +213,10 @@ impl RuntimeStore for PgRuntimeStore {
             .map_err(|e| StoreError::Backend(format!("查询多实例域失败: {e}")))?;
         let mi_scopes = mapping::rows_to_mi_scopes(&mi_ds)?;
 
-        // 定时器作业。
+        // 定时器作业（含 A1/A5 的 kind + 周期列）。
         let job_sql = format!(
-            "SELECT id, instance_id, token_id, boundary_bpmn_id, cancel_activity, due_at, created_at \
+            "SELECT id, instance_id, token_id, boundary_bpmn_id, cancel_activity, due_at, created_at, \
+             kind, cycle_interval_seconds, cycle_remaining \
              FROM cmx_flow_job WHERE instance_id = '{}'",
             escape(instance_id)
         );
@@ -256,15 +258,32 @@ impl RuntimeStore for PgRuntimeStore {
             .map_err(|e| StoreError::Backend(format!("查询转签台账失败: {e}")))?;
         let delegations = mapping::rows_to_delegations(&deleg_ds)?;
 
+        // 异步作业（P1）：侧表，随实例一起载回快照。锁列（locked_by/lock_expires_at）
+        // 只由 acquire/fail 改，save_snapshot 不重写本表、flush 用 ON CONFLICT DO NOTHING，
+        // 故载回后即便再存也不会抹掉 worker 的锁。
+        let async_sql = format!(
+            "SELECT id, instance_id, token_id, node_bpmn_id, delegate_key, topic, max_retries, \
+                    retries, retry_backoff_seconds, locked_by, lock_expires_at, created_at \
+             FROM cmx_flow_async_job WHERE instance_id = '{}'",
+            escape(instance_id)
+        );
+        let async_ds = query_sql(&self.db_id, None, &async_sql, "flow_async_job")
+            .await
+            .map_err(|e| StoreError::Backend(format!("查询异步作业失败: {e}")))?;
+        let async_jobs = mapping::rows_to_async_jobs(&async_ds)?;
+
         Ok(InstanceSnapshot {
             instance,
             tokens,
             tasks,
             mi_scopes,
             jobs,
+            async_jobs,
             candidates,
             cc_records,
             delegations,
+            pending_subs: Vec::new(),
+            pending_activities: Vec::new(),
         })
     }
 
@@ -366,7 +385,7 @@ impl RuntimeStore for PgRuntimeStore {
     ) -> StoreResult<Vec<cmx_flow_model::ProcessInstance>> {
         let sql = format!(
             "SELECT id, definition_key, business_key, state, variables, created_at, updated_at, ended_at, \
-                    org_id, parent_instance_id, parent_token_id, parent_node_bpmn_id \
+                    org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id \
              FROM cmx_flow_instance WHERE parent_instance_id = '{}'",
             escape(parent_instance_id)
         );
@@ -374,6 +393,306 @@ impl RuntimeStore for PgRuntimeStore {
             .await
             .map_err(|e| StoreError::Backend(format!("查询子实例失败: {e}")))?;
         mapping::rows_to_instances(&ds)
+    }
+
+    // ============================ 消息订阅（P3 + A2） ============================
+
+    async fn upsert_message_subscription(
+        &self,
+        sub: &cmx_flow_model::MessageSubscription,
+    ) -> StoreResult<()> {
+        let (sql, params) = mapping::upsert_message_subscription(sub);
+        execute_sql_with_params(&self.db_id, None, &sql, params)
+            .await
+            .map_err(|e| StoreError::Backend(format!("写入消息订阅失败: {e}")))?;
+        Ok(())
+    }
+
+    async fn find_catch_subscription(
+        &self,
+        message_name: &str,
+        correlation_key: Option<&str>,
+        tenant_id: &str,
+    ) -> StoreResult<Option<cmx_flow_model::MessageSubscription>> {
+        // 先按 message_name + tenant_id + kind=CATCH 找候选，再在 Rust 侧做相关键校验。
+        // 生产上相关键可以下推进 SQL — 但这里保持与 InMemory 一致的「候选 + 精确匹配」语义。
+        let sql = format!(
+            "SELECT id, kind, message_name, instance_id, token_id, node_bpmn_id, \
+                    correlation_var, definition_key, tenant_id, created_at \
+             FROM cmx_flow_message_subscription \
+             WHERE message_name = '{}' AND tenant_id = '{}' AND kind = 'CATCH' \
+             ORDER BY created_at ASC LIMIT 100",
+            escape(message_name),
+            escape(tenant_id)
+        );
+        let ds = query_sql(&self.db_id, None, &sql, "flow_catch_sub")
+            .await
+            .map_err(|e| StoreError::Backend(format!("查询消息订阅失败: {e}")))?;
+        let subs = mapping::rows_to_message_subscriptions(&ds)?;
+        // 相关键过滤：无相关键 → 首个匹配；有相关键 → 要求 correlation_var 有值（精确匹配由引擎做）。
+        let result = subs
+            .into_iter()
+            .find(|s| match (correlation_key, &s.correlation_var) {
+                (Some(_key), Some(_var)) => true, // 引擎层做变量值比对
+                (None, _) => true,
+                _ => false,
+            });
+        Ok(result)
+    }
+
+    async fn find_start_subscription(
+        &self,
+        message_name: &str,
+        tenant_id: &str,
+    ) -> StoreResult<Option<cmx_flow_model::MessageSubscription>> {
+        let sql = format!(
+            "SELECT id, kind, message_name, instance_id, token_id, node_bpmn_id, \
+                    correlation_var, definition_key, tenant_id, created_at \
+             FROM cmx_flow_message_subscription \
+             WHERE message_name = '{}' AND tenant_id = '{}' AND kind = 'START' \
+             ORDER BY created_at DESC LIMIT 1",
+            escape(message_name),
+            escape(tenant_id)
+        );
+        let ds = query_sql(&self.db_id, None, &sql, "flow_start_sub")
+            .await
+            .map_err(|e| StoreError::Backend(format!("查询消息启动订阅失败: {e}")))?;
+        let mut subs = mapping::rows_to_message_subscriptions(&ds)?;
+        Ok(subs.pop())
+    }
+
+    async fn delete_message_subscription(&self, sub_id: &str) -> StoreResult<()> {
+        let sql = format!(
+            "DELETE FROM cmx_flow_message_subscription WHERE id = '{}'",
+            escape(sub_id)
+        );
+        execute_sql(&self.db_id, None, &sql)
+            .await
+            .map_err(|e| StoreError::Backend(format!("删除消息订阅失败: {e}")))?;
+        Ok(())
+    }
+
+    async fn delete_subscriptions_by_instance(&self, instance_id: &str) -> StoreResult<()> {
+        let sql = format!(
+            "DELETE FROM cmx_flow_message_subscription WHERE instance_id = '{}'",
+            escape(instance_id)
+        );
+        execute_sql(&self.db_id, None, &sql)
+            .await
+            .map_err(|e| StoreError::Backend(format!("批量删除实例消息订阅失败: {e}")))?;
+        Ok(())
+    }
+
+    async fn delete_start_subscriptions_by_def(&self, definition_key: &str) -> StoreResult<()> {
+        let sql = format!(
+            "DELETE FROM cmx_flow_message_subscription WHERE definition_key = '{}' AND kind = 'START'",
+            escape(definition_key)
+        );
+        execute_sql(&self.db_id, None, &sql)
+            .await
+            .map_err(|e| StoreError::Backend(format!("删除 Start 消息订阅失败: {e}")))?;
+        Ok(())
+    }
+
+    // ============================ 异步 Job（P1）============================
+
+    async fn upsert_async_job(&self, job: &AsyncJob) -> StoreResult<()> {
+        let (sql, params) = mapping::upsert_async_job(job);
+        execute_sql_with_params(&self.db_id, None, &sql, params)
+            .await
+            .map_err(|e| StoreError::Backend(format!("写入异步作业失败: {e}")))?;
+        Ok(())
+    }
+
+    async fn acquire_async_jobs(
+        &self,
+        worker_id: &str,
+        topic_filter: Option<&str>,
+        lock_secs: i64,
+        limit: usize,
+    ) -> StoreResult<Vec<AsyncJob>> {
+        // SKIP LOCKED 集群安全抢占：内层 SELECT ... FOR UPDATE SKIP LOCKED 只锁本 worker
+        // 能拿到的行（跳过其它事务已持有的），外层 UPDATE 打上 locked_by/lock_expires_at 并
+        // RETURNING 回被锁定的作业。两个 worker 并发调用不会拿到同一批行——这是不重复执行的根基。
+        let now = chrono::Utc::now();
+        let lock_expires = now + chrono::Duration::seconds(lock_secs);
+        // A7 topic 隔离：None → topic IS NULL（进程内）；Some(t) → topic = $4（外部 worker）。
+        let mut params: Vec<DataValue> = vec![
+            DataValue::String(worker_id.to_string()),
+            DataValue::DateTime(lock_expires),
+            DataValue::DateTime(now),
+        ];
+        let topic_clause = match topic_filter {
+            None => "topic IS NULL".to_string(),
+            Some(t) => {
+                params.push(DataValue::String(t.to_string()));
+                "topic = $4".to_string()
+            }
+        };
+        let sql = format!(
+            "UPDATE cmx_flow_async_job SET locked_by = $1, lock_expires_at = $2 \
+             WHERE id IN ( \
+                SELECT id FROM cmx_flow_async_job \
+                WHERE (locked_by IS NULL OR lock_expires_at <= $3) AND {topic_clause} \
+                ORDER BY created_at ASC \
+                LIMIT {} \
+                FOR UPDATE SKIP LOCKED \
+             ) \
+             RETURNING id, instance_id, token_id, node_bpmn_id, delegate_key, topic, max_retries, \
+                       retries, retry_backoff_seconds, locked_by, lock_expires_at, created_at",
+            limit.min(1000)
+        );
+        let ds = query_sql_with_params(
+            &self.db_id,
+            None,
+            &sql,
+            SqlParams::DataValues(params),
+            "flow_acquire_async",
+        )
+        .await
+        .map_err(|e| StoreError::Backend(format!("抢占异步作业失败: {e}")))?;
+        mapping::rows_to_async_jobs(&ds)
+    }
+
+    async fn complete_async_job(
+        &self,
+        job_id: &str,
+        _result_variables: Option<serde_json::Value>,
+    ) -> StoreResult<Option<(String, String)>> {
+        // 删除作业并 RETURNING 其令牌坐标——引擎据此把令牌转 Active 继续推进。
+        // 结果变量由引擎在 complete_async_job 里 merge 进实例变量，不落本表（本表无变量列）。
+        let sql = "DELETE FROM cmx_flow_async_job WHERE id = $1 RETURNING instance_id, token_id"
+            .to_string();
+        let params = SqlParams::DataValues(vec![DataValue::String(job_id.to_string())]);
+        let ds = query_sql_with_params(&self.db_id, None, &sql, params, "flow_complete_async")
+            .await
+            .map_err(|e| StoreError::Backend(format!("完成异步作业失败: {e}")))?;
+        Ok(mapping::first_instance_token_pair(&ds))
+    }
+
+    async fn fail_async_job(&self, job_id: &str, _error: &str) -> StoreResult<bool> {
+        // 失败：retries-1 并释放锁（其它 worker 可重抢）；RETURNING 新 retries 判是否耗尽。
+        let sql = "UPDATE cmx_flow_async_job \
+                   SET retries = retries - 1, locked_by = NULL, lock_expires_at = NULL \
+                   WHERE id = $1 RETURNING retries"
+            .to_string();
+        let params = SqlParams::DataValues(vec![DataValue::String(job_id.to_string())]);
+        let ds = query_sql_with_params(&self.db_id, None, &sql, params, "flow_fail_async")
+            .await
+            .map_err(|e| StoreError::Backend(format!("标记异步作业失败: {e}")))?;
+        match mapping::first_retries(&ds) {
+            // 不存在（已被完成/删除）：视为无重试余地。
+            None => Ok(false),
+            Some(r) if r <= 0 => {
+                // 重试耗尽 → 删除（P1：删除即死信；后续 P2 可改为转独立死信表）。
+                let del = "DELETE FROM cmx_flow_async_job WHERE id = $1".to_string();
+                let dp = SqlParams::DataValues(vec![DataValue::String(job_id.to_string())]);
+                execute_sql_with_params(&self.db_id, None, &del, dp)
+                    .await
+                    .map_err(|e| StoreError::Backend(format!("删除耗尽异步作业失败: {e}")))?;
+                Ok(false)
+            }
+            Some(_) => Ok(true),
+        }
+    }
+
+    async fn delete_async_jobs_by_instance(&self, instance_id: &str) -> StoreResult<()> {
+        let sql = format!(
+            "DELETE FROM cmx_flow_async_job WHERE instance_id = '{}'",
+            escape(instance_id)
+        );
+        execute_sql(&self.db_id, None, &sql)
+            .await
+            .map_err(|e| StoreError::Backend(format!("批量删除实例异步作业失败: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_async_job(&self, job_id: &str) -> StoreResult<Option<AsyncJob>> {
+        let sql = format!(
+            "SELECT id, instance_id, token_id, node_bpmn_id, delegate_key, topic, max_retries, \
+                    retries, retry_backoff_seconds, locked_by, lock_expires_at, created_at \
+             FROM cmx_flow_async_job WHERE id = '{}'",
+            escape(job_id)
+        );
+        let ds = query_sql(&self.db_id, None, &sql, "flow_get_async")
+            .await
+            .map_err(|e| StoreError::Backend(format!("查询异步作业失败: {e}")))?;
+        Ok(mapping::rows_to_async_jobs(&ds)?.into_iter().next())
+    }
+
+    // ============================ 死信队列（P2）============================
+
+    async fn upsert_dead_letter_job(&self, job: &DeadLetterJob) -> StoreResult<()> {
+        let (sql, params) = mapping::upsert_dead_letter_job(job);
+        execute_sql_with_params(&self.db_id, None, &sql, params)
+            .await
+            .map_err(|e| StoreError::Backend(format!("写入死信作业失败: {e}")))?;
+        Ok(())
+    }
+
+    async fn list_dead_letter_jobs(&self, limit: usize) -> StoreResult<Vec<DeadLetterJob>> {
+        let sql = format!(
+            "SELECT id, instance_id, token_id, node_bpmn_id, delegate_key, max_retries, \
+                    error, original_created_at, dead_lettered_at, tenant_id \
+             FROM cmx_flow_deadletter_job \
+             ORDER BY dead_lettered_at DESC LIMIT {}",
+            limit.min(1000)
+        );
+        let ds = query_sql(&self.db_id, None, &sql, "flow_deadletter_list")
+            .await
+            .map_err(|e| StoreError::Backend(format!("查询死信作业失败: {e}")))?;
+        mapping::rows_to_dead_letter_jobs(&ds)
+    }
+
+    async fn get_dead_letter_job(&self, job_id: &str) -> StoreResult<Option<DeadLetterJob>> {
+        let sql = format!(
+            "SELECT id, instance_id, token_id, node_bpmn_id, delegate_key, max_retries, \
+                    error, original_created_at, dead_lettered_at, tenant_id \
+             FROM cmx_flow_deadletter_job WHERE id = '{}'",
+            escape(job_id)
+        );
+        let ds = query_sql(&self.db_id, None, &sql, "flow_deadletter_get")
+            .await
+            .map_err(|e| StoreError::Backend(format!("查询死信作业失败: {e}")))?;
+        Ok(mapping::rows_to_dead_letter_jobs(&ds)?.into_iter().next())
+    }
+
+    async fn delete_dead_letter_job(&self, job_id: &str) -> StoreResult<()> {
+        let sql = format!(
+            "DELETE FROM cmx_flow_deadletter_job WHERE id = '{}'",
+            escape(job_id)
+        );
+        execute_sql(&self.db_id, None, &sql)
+            .await
+            .map_err(|e| StoreError::Backend(format!("删除死信作业失败: {e}")))?;
+        Ok(())
+    }
+
+    // ============================ 活动历史（A6）============================
+
+    async fn upsert_hi_activity(&self, activity: &ActivityRecord) -> StoreResult<()> {
+        let (sql, params) = mapping::upsert_hi_activity(activity);
+        execute_sql_with_params(&self.db_id, None, &sql, params)
+            .await
+            .map_err(|e| StoreError::Backend(format!("写入活动历史失败: {e}")))?;
+        Ok(())
+    }
+
+    async fn list_activities_by_instance(
+        &self,
+        instance_id: &str,
+    ) -> StoreResult<Vec<ActivityRecord>> {
+        let sql = format!(
+            "SELECT id, instance_id, token_id, activity_bpmn_id, activity_name, activity_type, \
+                    entered_at, exited_at, duration_ms, assignee, tenant_id \
+             FROM cmx_flow_hi_activity WHERE instance_id = '{}' \
+             ORDER BY entered_at ASC, exited_at ASC",
+            escape(instance_id)
+        );
+        let ds = query_sql(&self.db_id, None, &sql, "flow_hi_activity")
+            .await
+            .map_err(|e| StoreError::Backend(format!("查询活动历史失败: {e}")))?;
+        mapping::rows_to_activities(&ds)
     }
 }
 

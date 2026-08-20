@@ -60,7 +60,7 @@ struct RiskDelegate;
 
 #[async_trait::async_trait]
 impl JavaDelegate for RiskDelegate {
-    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), String> {
+    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), cmx_flow_engine::DelegateError> {
         let amount = ctx
             .variables
             .get("amount")
@@ -312,15 +312,19 @@ async fn seed_demo_iam() {
         // 绑定表建在 cmx 库（与 cmx_org 同库，PgSubflowRouter 指向 IAM_DB_ID）。
         "CREATE TABLE IF NOT EXISTS cmx_flow_subflow_binding (id VARCHAR(64) PRIMARY KEY, called_key VARCHAR(128) NOT NULL, org_id VARCHAR(64), target_definition_key VARCHAR(128) NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, remark VARCHAR(500), created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())".to_string(),
         "CREATE INDEX IF NOT EXISTS idx_cmx_flow_subflow_binding_key ON cmx_flow_subflow_binding (called_key)".to_string(),
+        // RD0/RD2：补维度列（幂等，与主 DDL 一致），否则下方带 dim_key/dim_value 的 INSERT 会失败。
+        "ALTER TABLE cmx_flow_subflow_binding ADD COLUMN IF NOT EXISTS dim_key VARCHAR(64) NOT NULL DEFAULT 'org'".to_string(),
+        "ALTER TABLE cmx_flow_subflow_binding ADD COLUMN IF NOT EXISTS dim_value VARCHAR(128)".to_string(),
         // 组织树：df_root 总部 → df_bj 北京(挂总部下) / df_sh 上海(挂总部下)。path 物化路径。
         "INSERT INTO cmx_org (id, code, name, parent_id, path, archived) VALUES ('df_root','df_root','演示总部',NULL,'/df_root',0) ON CONFLICT (id) DO UPDATE SET path='/df_root', archived=0".to_string(),
         "INSERT INTO cmx_org (id, code, name, parent_id, path, archived) VALUES ('df_bj','df_bj','北京分公司','df_root','/df_root/df_bj',0) ON CONFLICT (id) DO UPDATE SET path='/df_root/df_bj', archived=0".to_string(),
         "INSERT INTO cmx_org (id, code, name, parent_id, path, archived) VALUES ('df_sh','df_sh','上海分公司','df_root','/df_root/df_sh',0) ON CONFLICT (id) DO UPDATE SET path='/df_root/df_sh', archived=0".to_string(),
         // 子流程绑定：总部 fin_review→总部三级(fin_review_hq)；上海精确绑→分公司单签(fin_review_branch)；
         // 北京不绑（跑时应沿 path 继承总部）；默认兜底→总部三级。
-        "INSERT INTO cmx_flow_subflow_binding (id, called_key, org_id, target_definition_key, enabled, created_at, updated_at) VALUES ('df_sb_hq','fin_review','df_root','fin_review_hq',TRUE,now(),now()) ON CONFLICT (id) DO UPDATE SET target_definition_key='fin_review_hq', enabled=TRUE".to_string(),
-        "INSERT INTO cmx_flow_subflow_binding (id, called_key, org_id, target_definition_key, enabled, created_at, updated_at) VALUES ('df_sb_sh','fin_review','df_sh','fin_review_branch',TRUE,now(),now()) ON CONFLICT (id) DO UPDATE SET target_definition_key='fin_review_branch', enabled=TRUE".to_string(),
-        "INSERT INTO cmx_flow_subflow_binding (id, called_key, org_id, target_definition_key, enabled, created_at, updated_at) VALUES ('df_sb_def','fin_review',NULL,'fin_review_hq',TRUE,now(),now()) ON CONFLICT (id) DO UPDATE SET target_definition_key='fin_review_hq', enabled=TRUE".to_string(),
+        // RD0/RD2：绑定维度用 (dim_key='org', dim_value=组织id)；org_id 列保留镜像。
+        "INSERT INTO cmx_flow_subflow_binding (id, called_key, org_id, dim_key, dim_value, target_definition_key, enabled, created_at, updated_at) VALUES ('df_sb_hq','fin_review','df_root','org','df_root','fin_review_hq',TRUE,now(),now()) ON CONFLICT (id) DO UPDATE SET dim_key='org', dim_value='df_root', target_definition_key='fin_review_hq', enabled=TRUE".to_string(),
+        "INSERT INTO cmx_flow_subflow_binding (id, called_key, org_id, dim_key, dim_value, target_definition_key, enabled, created_at, updated_at) VALUES ('df_sb_sh','fin_review','df_sh','org','df_sh','fin_review_branch',TRUE,now(),now()) ON CONFLICT (id) DO UPDATE SET dim_key='org', dim_value='df_sh', target_definition_key='fin_review_branch', enabled=TRUE".to_string(),
+        "INSERT INTO cmx_flow_subflow_binding (id, called_key, org_id, dim_key, dim_value, target_definition_key, enabled, created_at, updated_at) VALUES ('df_sb_def','fin_review',NULL,'org',NULL,'fin_review_hq',TRUE,now(),now()) ON CONFLICT (id) DO UPDATE SET dim_key='org', dim_value=NULL, target_definition_key='fin_review_hq', enabled=TRUE".to_string(),
     ];
     for sql in stmts {
         if let Err(e) = execute_sql(IAM_DB_ID, None, &sql).await {
@@ -470,12 +474,20 @@ fn node_multi_instance(kind: &NodeKind) -> Value {
     Value::Null
 }
 
-/// 节点若为边界定时器事件，返回其宿主/时长/中断性摘要（供前端画徽章）。
+/// 节点若为边界定时器事件，返回其宿主/定时器规格/中断性摘要（供前端画徽章）。
 fn node_boundary_timer(kind: &NodeKind) -> Value {
     if let NodeKind::BoundaryTimerEvent(bt) = kind {
+        let timer = match &bt.spec {
+            cmx_flow_model::TimerSpec::Duration { seconds } => json!({ "kind": "duration", "seconds": seconds }),
+            cmx_flow_model::TimerSpec::Date { at } => json!({ "kind": "date", "at": at.to_rfc3339() }),
+            cmx_flow_model::TimerSpec::Cycle { interval_seconds, repeats } => {
+                json!({ "kind": "cycle", "intervalSeconds": interval_seconds, "repeats": repeats })
+            }
+            cmx_flow_model::TimerSpec::Expr { expr, cyclic } => json!({ "kind": "expr", "expr": expr, "cyclic": cyclic }),
+        };
         return json!({
             "attachedTo": bt.attached_to_bpmn_id,
-            "seconds": bt.duration.seconds,
+            "timer": timer,
             "cancelActivity": bt.cancel_activity,
         });
     }
@@ -1027,6 +1039,12 @@ fn node_kind_str(k: &NodeKind) -> &'static str {
         NodeKind::CallActivity(_) => "callActivity",
         NodeKind::SubProcess => "subProcess",
         NodeKind::MessageCatchEvent(_) => "messageCatchEvent",
+        NodeKind::IntermediateTimerCatchEvent(_) => "intermediateTimerCatchEvent",
+        NodeKind::MessageStartEvent(_) => "messageStartEvent",
+        NodeKind::EventBasedGateway => "eventBasedGateway",
+        NodeKind::BoundaryErrorEvent(_) => "boundaryErrorEvent",
+        NodeKind::EventSubProcess => "eventSubProcess",
+        NodeKind::ErrorStartEvent(_) => "errorStartEvent",
     }
 }
 
@@ -1061,6 +1079,9 @@ fn token_state_str(s: cmx_flow_model::TokenState) -> &'static str {
         Joining => "JOINING",
         WaitingSubflow => "WAITING_SUBFLOW",
         WaitingMessage => "WAITING_MESSAGE",
+        WaitingTimer => "WAITING_TIMER",
+        WaitingAsync => "WAITING_ASYNC",
+        WaitingEventGateway => "WAITING_EVENT_GATEWAY",
         Incident => "INCIDENT",
         Ended => "ENDED",
     }

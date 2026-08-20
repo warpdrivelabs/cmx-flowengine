@@ -19,7 +19,9 @@
 
 use cmx_database_pg::{DbConfig, DbType};
 use cmx_flow_app::openapi::flow_openapi;
-use cmx_flow_app::{FLOW_DB_ID, IAM_DB_ID, flow_routes, flow_routes_v1, spawn_timer_poller};
+use cmx_flow_app::{
+    FLOW_DB_ID, IAM_DB_ID, flow_routes, flow_routes_v1, spawn_async_job_poller, spawn_timer_poller,
+};
 use cmx_web_chassis::{BannerSpec, ChassisConfig, ServiceSpec, run};
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -213,6 +215,10 @@ async fn main() -> cmx_web_chassis::Result<()> {
             Box::pin(async {
                 if let Err(e) = spawn_timer_poller().await {
                     tracing::warn!(error = %e, "流程引擎初始化失败（DB/schema 不可用？端点将返错）");
+                }
+                // P1：起异步 Job 执行器（SKIP LOCKED 集群安全）。非致命，与定时器 poller 同处理。
+                if let Err(e) = spawn_async_job_poller().await {
+                    tracing::warn!(error = %e, "异步 Job 执行器启动失败（DB/schema 不可用？异步服务任务不会推进）");
                 }
                 Ok(())
             })

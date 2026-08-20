@@ -585,6 +585,10 @@ pub struct StartReq {
     business_key: Option<String>,
     #[serde(default)]
     org_id: Option<String>,
+    /// 路由维度上下文（RD3）：`dim_key → dim_value`，各挂载点按 cmx:dimKey 取对应维度值路由。
+    /// 缺省空；只传 orgId 等价 `{"org": orgId}`（引擎在实例构造时补投影）。
+    #[serde(default)]
+    dimensions: std::collections::BTreeMap<String, String>,
     /// 通用变量对象（首选）。
     #[serde(default)]
     variables: Value,
@@ -653,7 +657,7 @@ pub async fn start_instance(
 
     let result = rt
         .engine
-        .start_process_org(&def_key, vars, biz_key.clone(), req.org_id.clone())
+        .start_process_dims(&def_key, vars, biz_key.clone(), req.org_id.clone(), req.dimensions.clone())
         .await
         .map_err(engine_err)?;
 
@@ -1386,6 +1390,68 @@ pub async fn retry_incident(
     load_view(&rt, &instance_id).await
 }
 
+// ————————————————————— 实例迁移（A9）—————————————————————
+
+#[derive(Deserialize)]
+pub struct MigrateReq {
+    /// 目标流程定义 key。
+    target_definition_key: String,
+    /// 活动节点映射：源节点 bpmn_id → 目标节点 bpmn_id。
+    #[serde(default)]
+    activity_mappings: std::collections::BTreeMap<String, String>,
+}
+
+fn migrate_plan(req: MigrateReq) -> cmx_flow_engine::MigrationPlan {
+    cmx_flow_engine::MigrationPlan {
+        target_definition_key: req.target_definition_key,
+        activity_mappings: req.activity_mappings,
+    }
+}
+
+fn migration_validation_json(v: &cmx_flow_engine::MigrationValidation) -> Value {
+    let vios: Vec<Value> = v
+        .violations
+        .iter()
+        .map(|vi| {
+            json!({
+                "code": format!("{:?}", vi.code),
+                "nodeBpmnId": vi.node_bpmn_id,
+                "message": vi.message,
+            })
+        })
+        .collect();
+    json!({ "ok": v.ok, "violations": vios })
+}
+
+/// 校验迁移计划（A9 干运行）：`POST /instances/{id}/migrate/validate`。返回违规明细，不改数据。
+pub async fn validate_migration(
+    Path(instance_id): Path<String>,
+    Json(req): Json<MigrateReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let plan = migrate_plan(req);
+    let v = rt
+        .engine
+        .validate_migration(&instance_id, &plan)
+        .await
+        .map_err(engine_err)?;
+    Ok(Json(ApiResp::ok(migration_validation_json(&v))))
+}
+
+/// 执行实例迁移（A9）：`POST /instances/{id}/migrate`。校验通过则重写令牌位置 + 改定义指向。
+pub async fn migrate_instance(
+    Path(instance_id): Path<String>,
+    Json(req): Json<MigrateReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let plan = migrate_plan(req);
+    rt.engine
+        .migrate_instance(&instance_id, &plan)
+        .await
+        .map_err(engine_err)?;
+    load_view(&rt, &instance_id).await
+}
+
 
 pub async fn delegate_task(
     Path(task_id): Path<String>,
@@ -1766,6 +1832,261 @@ pub async fn trigger_timers(
     )))
 }
 
+// ————————————————————— 外部 worker：异步 Job 执行器（P1）—————————————————————
+
+#[derive(Deserialize)]
+pub struct AcquireAsyncReq {
+    /// worker 唯一标识（锁持有者；崩溃后锁到期可被他人重抢）。
+    worker_id: String,
+    /// A7 外部 Worker 主题过滤：省略/null = 取进程内作业（topic 为空）；给定 = 取该 topic 外部作业。
+    #[serde(default)]
+    topic: Option<String>,
+    /// 锁定时长秒数（缺省 60）。delegate 应远快于此；超时未回调则作业可被重抢。
+    #[serde(default = "default_lock_secs")]
+    lock_secs: i64,
+    /// 单次最多抢占多少个（缺省 10）。
+    #[serde(default = "default_acquire_limit")]
+    limit: usize,
+}
+fn default_lock_secs() -> i64 {
+    60
+}
+fn default_acquire_limit() -> usize {
+    10
+}
+
+/// 外部 worker 抢占一批异步作业（P1/A7）：`POST /async-jobs/acquire`。
+///
+/// SKIP LOCKED 集群安全：多 worker 并发抢占拿到互不相交的作业集。`topic` 省略 = 进程内作业，
+/// 给定 = 该 topic 外部作业。返回每个作业的令牌坐标 + delegate/topic + 实例变量快照。
+pub async fn acquire_async_jobs(
+    Json(req): Json<AcquireAsyncReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let jobs = rt
+        .engine
+        .acquire_async_jobs(&req.worker_id, req.topic.as_deref(), req.lock_secs, req.limit)
+        .await
+        .map_err(engine_err)?;
+    // 附上每个作业宿主实例的当前变量快照，省 worker 再拉一次实例。
+    let mut items: Vec<Value> = Vec::with_capacity(jobs.len());
+    for j in &jobs {
+        let variables = rt
+            .engine
+            .store()
+            .load_snapshot(&j.instance_id)
+            .await
+            .ok()
+            .map(|s| s.instance.variables.to_json())
+            .unwrap_or(Value::Null);
+        items.push(json!({
+            "id": j.id,
+            "instanceId": j.instance_id,
+            "tokenId": j.token_id,
+            "nodeBpmnId": j.node_bpmn_id,
+            "delegateKey": j.delegate_key,
+            "topic": j.topic,
+            "retries": j.retries,
+            "maxRetries": j.max_retries,
+            "lockExpiresAt": j.lock_expires_at.map(|t| t.to_rfc3339()),
+            "variables": variables,
+        }));
+    }
+    Ok(Json(ApiResp::ok(
+        json!({ "acquiredCount": jobs.len(), "jobs": items }),
+    )))
+}
+
+/// A7 外部 Worker 按 topic 拉取作业：`POST /external-worker/jobs/acquire`。
+///
+/// 与 `/async-jobs/acquire` 同实现，但**要求 topic 非空**（外部 worker 语义必须指定主题）。
+/// 语义清晰的专用端点——外部集成方按 `flowable:type="external-worker"` 的 topic 订阅拉取。
+pub async fn acquire_external_worker_jobs(
+    Json(req): Json<AcquireAsyncReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let topic = match req.topic.as_deref().filter(|s| !s.is_empty()) {
+        Some(t) => t.to_string(),
+        None => return Err(FlowError::business("external-worker 拉取必须指定 topic")),
+    };
+    let rt = flow().await?;
+    let jobs = rt
+        .engine
+        .acquire_async_jobs(&req.worker_id, Some(&topic), req.lock_secs, req.limit)
+        .await
+        .map_err(engine_err)?;
+    let mut items: Vec<Value> = Vec::with_capacity(jobs.len());
+    for j in &jobs {
+        let variables = rt
+            .engine
+            .store()
+            .load_snapshot(&j.instance_id)
+            .await
+            .ok()
+            .map(|s| s.instance.variables.to_json())
+            .unwrap_or(Value::Null);
+        items.push(json!({
+            "id": j.id,
+            "instanceId": j.instance_id,
+            "tokenId": j.token_id,
+            "nodeBpmnId": j.node_bpmn_id,
+            "topic": j.topic,
+            "retries": j.retries,
+            "maxRetries": j.max_retries,
+            "lockExpiresAt": j.lock_expires_at.map(|t| t.to_rfc3339()),
+            "variables": variables,
+        }));
+    }
+    Ok(Json(ApiResp::ok(
+        json!({ "topic": topic, "acquiredCount": jobs.len(), "jobs": items }),
+    )))
+}
+
+#[derive(Deserialize)]
+pub struct CompleteAsyncReq {
+    /// worker 执行 delegate 后写回的变量（合并进实例变量）。缺省不写回。
+    #[serde(default)]
+    variables: Value,
+}
+
+/// 外部 worker 完成一个异步作业（P1）：`POST /async-jobs/{id}/complete`。
+/// 引擎删作业、合并变量、把令牌从 WaitingAsync 转 Active 沿出边推进。
+pub async fn complete_async_job(
+    Path(job_id): Path<String>,
+    Json(req): Json<CompleteAsyncReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let vars = if req.variables.is_null() {
+        Variables::new()
+    } else {
+        Variables::from_json(req.variables.clone())
+    };
+    let result = rt
+        .engine
+        .complete_async_job(&job_id, vars)
+        .await
+        .map_err(engine_err)?;
+    match result {
+        // 作业存在并已推进 → 回宿主实例最新视图（与其它办理端点一致）。
+        Some(exec) => load_view(&rt, &exec.instance_id).await,
+        // 作业不存在（已完成/已死信）→ 幂等成功。
+        None => Ok(Json(ApiResp::ok(
+            json!({ "completed": false, "reason": "作业不存在或已处理" }),
+        ))),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct FailAsyncReq {
+    /// 失败原因（记入 incident；供运维台展示）。
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// 外部 worker 标记一个异步作业失败（P1）：`POST /async-jobs/{id}/fail`。
+/// 重试次数 -1 并释放锁（可被重抢）；耗尽则令牌转 Incident（可经 retry-incident 重发）。
+/// 返回 `retryable`：true = 仍可重试，false = 已耗尽死信。
+pub async fn fail_async_job(
+    Path(job_id): Path<String>,
+    Json(req): Json<FailAsyncReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let error = req.error.as_deref().unwrap_or("外部 worker 未提供失败原因");
+    let retryable = rt
+        .engine
+        .fail_async_job(&job_id, error)
+        .await
+        .map_err(engine_err)?;
+    Ok(Json(ApiResp::ok(json!({ "retryable": retryable }))))
+}
+
+// ————————————————————— 死信队列（P2）—————————————————————
+
+/// 列出死信作业（P2 运维台）：`GET /dead-letter-jobs`。
+pub async fn list_dead_letter_jobs() -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let jobs = rt
+        .engine
+        .list_dead_letter_jobs(200)
+        .await
+        .map_err(engine_err)?;
+    let items: Vec<Value> = jobs
+        .iter()
+        .map(|j| {
+            json!({
+                "id": j.id,
+                "instanceId": j.instance_id,
+                "tokenId": j.token_id,
+                "nodeBpmnId": j.node_bpmn_id,
+                "delegateKey": j.delegate_key,
+                "maxRetries": j.max_retries,
+                "error": j.error,
+                "originalCreatedAt": j.original_created_at.to_rfc3339(),
+                "deadLetteredAt": j.dead_lettered_at.to_rfc3339(),
+            })
+        })
+        .collect();
+    Ok(Json(ApiResp::ok(
+        json!({ "count": jobs.len(), "jobs": items }),
+    )))
+}
+
+/// 重投一条死信作业（P2）：`POST /dead-letter-jobs/{id}/retry`。
+/// 重建 AsyncJob + 令牌回 WaitingAsync + 删死信行；worker 下一轮重抢执行。
+pub async fn retry_dead_letter_job(Path(job_id): Path<String>) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let retried = rt
+        .engine
+        .retry_dead_letter_job(&job_id)
+        .await
+        .map_err(engine_err)?;
+    Ok(Json(ApiResp::ok(json!({ "retried": retried }))))
+}
+
+/// 丢弃一条死信作业（P2）：`DELETE /dead-letter-jobs/{id}`。令牌保持 Incident。
+pub async fn discard_dead_letter_job(Path(job_id): Path<String>) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    rt.engine
+        .discard_dead_letter_job(&job_id)
+        .await
+        .map_err(engine_err)?;
+    Ok(Json(ApiResp::ok(json!({ "discarded": true }))))
+}
+
+// ————————————————————— 活动历史（A6）—————————————————————
+
+/// 某实例的活动历史（A6 运维台/SLA）：`GET /instances/{id}/activities`。
+/// 每条 = 令牌在一个节点的停留时段（enter/exit/duration + 类型/办理人），按进入时刻升序。
+pub async fn get_instance_activities(
+    Path(instance_id): Path<String>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let acts = rt
+        .engine
+        .store()
+        .list_activities_by_instance(&instance_id)
+        .await
+        .map_err(|e| FlowError::business(format!("查询活动历史失败: {e}")))?;
+    let items: Vec<Value> = acts
+        .iter()
+        .map(|a| {
+            json!({
+                "id": a.id,
+                "tokenId": a.token_id,
+                "activityBpmnId": a.activity_bpmn_id,
+                "activityName": a.activity_name,
+                "activityType": a.activity_type,
+                "enteredAt": a.entered_at.to_rfc3339(),
+                "exitedAt": a.exited_at.to_rfc3339(),
+                "durationMs": a.duration_ms,
+                "assignee": a.assignee,
+            })
+        })
+        .collect();
+    Ok(Json(ApiResp::ok(
+        json!({ "count": acts.len(), "activities": items }),
+    )))
+}
+
 /// 列出 IAM 库用户（id → 昵称/用户名），供前端把候选人 id 显示成友好名字。
 pub async fn list_users(
 ) -> Result<Json<ApiResp<Value>>> {
@@ -1842,9 +2163,9 @@ pub async fn mark_cc_read(
     Ok(Json(ApiResp::ok(json!({ "ok": ok }))))
 }
 
-// ————————————————————— 子流程组织路由（绑定管理） —————————————————————
+// ————————————————————— 子流程路由（绑定管理 + 维度） —————————————————————
 
-/// 组织树（设计器「按组织配置子流程」的组织选择器）。扁平表 + path，前端建树。
+/// 组织树（设计器组织维度选择器）。扁平表 + path，前端建树。保留（org 维度的快捷端点）。
 pub async fn list_orgs(
 ) -> Result<Json<ApiResp<Value>>> {
     let rt = flow().await?;
@@ -1863,7 +2184,48 @@ pub async fn list_orgs(
     Ok(Json(ApiResp::ok(json!({ "orgs": items }))))
 }
 
-/// 列某逻辑子流程 key 的全部组织绑定（含默认兜底），带组织名。
+/// 列可选路由维度（RD2）：内建「组织机构(org)」+ 运行时已注册的自分级维度字典。
+/// 前端维度选择器数据源；org 置顶（推荐默认，向后兼容）。
+pub async fn list_dimensions() -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let mut dims = vec![json!({
+        "dimKey": "org", "name": "组织机构", "selfHierarchy": true, "builtin": true,
+    })];
+    for d in rt.dimension_specs.iter() {
+        dims.push(json!({
+            "dimKey": d.dim_key, "name": d.name,
+            "selfHierarchy": d.self_hierarchy, "builtin": false,
+        }));
+    }
+    Ok(Json(ApiResp::ok(json!({ "dimensions": dims }))))
+}
+
+/// 列某维度字典的条目（RD2，维度条目选择器）。org → 组织树；其余 → 按注册的 DimSpec 直读。
+pub async fn list_dimension_entries(
+    Path(dim_key): Path<String>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let entries = if dim_key == "org" {
+        rt.binding_store.list_orgs().await.map_err(msg_err)?
+    } else {
+        let reg = rt
+            .dimension_specs
+            .iter()
+            .find(|d| d.dim_key == dim_key)
+            .ok_or_else(|| FlowError::business(format!("未注册的路由维度: {dim_key}")))?;
+        rt.binding_store
+            .list_dim_entries(&reg.spec, &reg.name_col, reg.parent_col.as_deref())
+            .await
+            .map_err(msg_err)?
+    };
+    let items: Vec<Value> = entries
+        .iter()
+        .map(|o| json!({ "id": o.id, "name": o.name, "parentId": o.parent_id, "path": o.path }))
+        .collect();
+    Ok(Json(ApiResp::ok(json!({ "dimKey": dim_key, "entries": items }))))
+}
+
+/// 列某逻辑子流程 key 的全部维度绑定（含默认兜底），带维度取值展示名。
 pub async fn list_subflow_bindings(
     Path(called_key): Path<String>,
 ) -> Result<Json<ApiResp<Value>>> {
@@ -1883,22 +2245,32 @@ fn binding_view(b: &cmx_flow_store_pg::SubflowBinding) -> Value {
     json!({
         "id": b.id,
         "calledKey": b.called_key,
-        "orgId": b.org_id,
-        "orgName": b.org_name,
+        "dimKey": b.dim_key,
+        "dimValue": b.dim_value,
+        "dimValueName": b.dim_value_name,
+        // 兼容旧前端：org 维度仍暴露 orgId/orgName 别名。
+        "orgId": if b.dim_key == "org" { b.dim_value.clone() } else { None },
+        "orgName": if b.dim_key == "org" { b.dim_value_name.clone() } else { None },
         "targetKey": b.target_definition_key,
         "enabled": b.enabled,
         "remark": b.remark,
-        "isDefault": b.org_id.is_none(),
+        "isDefault": b.dim_value.is_none(),
     })
 }
 
-/// upsert 绑定请求。orgId 为空/缺省 = 默认兜底绑定。
+/// upsert 绑定请求。dimValue 为空/缺省 = 该维度默认兜底绑定。兼容旧 orgId 字段。
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpsertBindingReq {
     /// 逻辑子流程 key（= callActivity cmx:calledKey）。
     called_key: String,
-    /// 组织 id（None/空 → 默认兜底绑定）。
+    /// 路由维度 key（缺省 "org"，向后兼容）。
+    #[serde(default)]
+    dim_key: Option<String>,
+    /// 维度取值（None/空 → 该维度默认兜底绑定）。
+    #[serde(default)]
+    dim_value: Option<String>,
+    /// 【兼容】旧字段：等价 dim_key="org" 时的 dim_value。
     #[serde(default)]
     org_id: Option<String>,
     /// 目标子流程定义 key。
@@ -1909,19 +2281,25 @@ pub struct UpsertBindingReq {
     remark: Option<String>,
 }
 
-/// upsert 一条组织绑定（同 called_key+org 视为一条）。id 由 called_key+org 派生（幂等）。
+/// upsert 一条维度绑定（同 called_key+dim_key+dim_value 视为一条）。id 派生自三元组（幂等）。
 pub async fn upsert_subflow_binding(
     Json(req): Json<UpsertBindingReq>,
 ) -> Result<Json<ApiResp<Value>>> {
     let rt = flow().await?;
-    let org = req.org_id.as_deref().filter(|s| !s.is_empty());
-    // 派生稳定 id：便于同 (key,org) 反复保存不产生多行（upsert 内也会先删同键旧行）。
-    let id = binding_id(&req.called_key, org);
+    let dim_key = req.dim_key.as_deref().filter(|s| !s.is_empty()).unwrap_or("org");
+    // 维度取值：优先 dimValue；缺省回退旧 orgId（仅 org 维度语义）。空串归一为 None（兜底）。
+    let dim_value = req
+        .dim_value
+        .as_deref()
+        .or(req.org_id.as_deref())
+        .filter(|s| !s.is_empty());
+    let id = binding_id(&req.called_key, dim_key, dim_value);
     rt.binding_store
         .upsert(
             &id,
             &req.called_key,
-            org,
+            dim_key,
+            dim_value,
             &req.target_key,
             req.enabled,
             req.remark.as_deref(),
@@ -1931,9 +2309,9 @@ pub async fn upsert_subflow_binding(
     Ok(Json(ApiResp::ok(json!({ "id": id }))))
 }
 
-/// 从 called_key + org 派生稳定绑定 id（非加密，仅去重定位用）。
-fn binding_id(called_key: &str, org: Option<&str>) -> String {
-    let raw = format!("{called_key}|{}", org.unwrap_or("__default__"));
+/// 从 called_key + dim_key + dim_value 派生稳定绑定 id（非加密，仅去重定位用）。
+fn binding_id(called_key: &str, dim_key: &str, dim_value: Option<&str>) -> String {
+    let raw = format!("{called_key}|{dim_key}|{}", dim_value.unwrap_or("__default__"));
     // 简单 FNV-1a，避免引 uuid/sha 依赖；碰撞面为同库同 key，可忽略。
     let mut h: u64 = 0xcbf29ce484222325;
     for byte in raw.as_bytes() {

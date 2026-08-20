@@ -77,7 +77,12 @@ pub struct MockSubflowRouter;
 
 #[async_trait]
 impl SubflowRouter for MockSubflowRouter {
-    async fn resolve(&self, called_key: &str, _org_id: Option<&str>) -> RouteResult<String> {
+    async fn resolve(
+        &self,
+        called_key: &str,
+        _dim_key: &str,
+        _dim_value: Option<&str>,
+    ) -> RouteResult<String> {
         // 逻辑 key 直接作为目标定义 key（demo 里 callActivity 常直接写目标 key）。
         Ok(called_key.to_string())
     }
@@ -89,7 +94,7 @@ pub struct MockDelegate;
 
 #[async_trait]
 impl JavaDelegate for MockDelegate {
-    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), String> {
+    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), cmx_flow_engine::DelegateError> {
         ctx.variables.set("mockDelegate", json!(true));
         Ok(())
     }
@@ -167,8 +172,8 @@ mod tests {
     #[tokio::test]
     async fn mock_router_echoes_key() {
         let r = MockSubflowRouter;
-        assert_eq!(r.resolve("fin_review", Some("d_bj")).await.unwrap(), "fin_review");
-        assert_eq!(r.resolve("fin_review", None).await.unwrap(), "fin_review");
+        assert_eq!(r.resolve("fin_review", "org", Some("d_bj")).await.unwrap(), "fin_review");
+        assert_eq!(r.resolve("fin_review", "org", None).await.unwrap(), "fin_review");
     }
 
     #[tokio::test]

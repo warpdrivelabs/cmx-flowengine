@@ -10,12 +10,83 @@
  * 不支持：周（nW）、月/年（nM 在 T 前的月歧义）、小数、负数——审批限时用不到，显式拒绝。
  */
 
+use chrono::{DateTime, Utc};
+
 use crate::error::{Error, Result};
 use crate::ir::TimerDuration;
 
 const SECS_PER_MINUTE: i64 = 60;
 const SECS_PER_HOUR: i64 = 3600;
 const SECS_PER_DAY: i64 = 86_400;
+
+/// 解析 BPMN `<timeDate>` 绝对时刻字符串为 UTC 时刻（A5）。
+///
+/// 接受 RFC3339 / ISO-8601 带时区（`2026-01-01T09:00:00Z`、`2026-01-01T09:00:00+08:00`）；
+/// 无时区的朴素时刻（`2026-01-01T09:00:00`）按 UTC 解释（审批场景截止时刻通常按服务时区，
+/// 这里统一 UTC，与引擎 `Clock` 一致）。
+pub fn parse_iso8601_datetime(input: &str) -> Result<DateTime<Utc>> {
+    let s = input.trim();
+    // 先试带时区的 RFC3339。
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+    // 退回朴素时刻（无时区）按 UTC。
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Ok(DateTime::from_naive_utc_and_offset(naive, Utc));
+    }
+    // 再退回只到分钟。
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M") {
+        return Ok(DateTime::from_naive_utc_and_offset(naive, Utc));
+    }
+    Err(Error::InvalidDefinition(format!(
+        "定时器时刻 '{input}' 非法：应为 ISO-8601 时刻（如 2026-01-01T09:00:00Z）"
+    )))
+}
+
+/// timeCycle 解析结果：重复次数 + 每次间隔秒数（A5）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CycleParts {
+    /// 重复次数（None = 无界 `R/PT..`；引擎按上限封顶）。
+    pub repeats: Option<u32>,
+    /// 每次间隔秒数。
+    pub interval_seconds: i64,
+}
+
+/// 解析 BPMN `<timeCycle>` 重复字符串（A5）。
+///
+/// 支持子集：`Rn/<duration>`（如 `R3/PT1H` = 每小时最多 3 次）与 `R/<duration>`（无界重复）。
+/// 不支持 Quartz cron 表达式（`0 0 9 * * ?`）——审批场景的周期提醒用 ISO-8601 重复足够，
+/// cron 留待需要时再补。至少要有一个 `R` 前缀 + 一段合法 duration。
+pub fn parse_iso8601_cycle(input: &str) -> Result<CycleParts> {
+    let s = input.trim();
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || !(bytes[0] == b'R' || bytes[0] == b'r') {
+        return Err(Error::InvalidDefinition(format!(
+            "定时器循环 '{input}' 非法：应以 'R' 开头（如 R3/PT1H 或 R/PT1H）"
+        )));
+    }
+    let slash = s.find('/').ok_or_else(|| {
+        Error::InvalidDefinition(format!(
+            "定时器循环 '{input}' 非法：缺少 '/' 分隔重复次数与时长"
+        ))
+    })?;
+    let repeat_part = &s[1..slash]; // 'R' 之后到 '/' 之前
+    let duration_part = &s[slash + 1..];
+    let repeats = if repeat_part.is_empty() {
+        None // R/PT.. 无界
+    } else {
+        Some(repeat_part.parse::<u32>().map_err(|_| {
+            Error::InvalidDefinition(format!(
+                "定时器循环 '{input}' 的重复次数 '{repeat_part}' 无法解析"
+            ))
+        })?)
+    };
+    let dur = parse_iso8601_duration(duration_part)?;
+    Ok(CycleParts {
+        repeats,
+        interval_seconds: dur.seconds,
+    })
+}
 
 /// 解析 ISO 8601 duration（相对时长）字符串为归一化秒数。
 ///

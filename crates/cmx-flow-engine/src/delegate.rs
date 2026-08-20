@@ -27,11 +27,74 @@ pub struct DelegateContext<'a> {
     pub variables: &'a mut Variables,
 }
 
+/// 委托执行的错误（A8）—— 区分「一般失败」与「类型化 BPMN 业务异常」。
+///
+/// - `Generic`：泛化失败（外部调用超时、空指针…）→ 引擎把令牌停 Incident，人工重试。
+///   既有 delegate 返回 `Err("...".into())` 经 `From<String>` 落此变体，**零行为改变**。
+/// - `Bpmn`：业务异常，带 `errorCode`（对齐 BPMN `bpmnError`）→ 引擎找宿主 serviceTask 上匹配
+///   该 code（或 catch-all）的错误边界事件（`boundaryEvent` + `errorEventDefinition`），命中则
+///   令牌改走错误处理分支（中断宿主）；无匹配边界则回退 Incident（与 Generic 同）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum DelegateError {
+    /// 泛化失败 → Incident。
+    Generic(String),
+    /// 类型化业务异常 → 错误边界路由。
+    Bpmn {
+        /// BPMN errorCode（与边界事件 errorRef/errorCode 精确匹配；边界无 code = catch-all）。
+        code: String,
+        /// 人类可读消息（记入 incident/日志）。
+        message: String,
+    },
+}
+
+impl DelegateError {
+    /// 便捷构造一个类型化 BPMN 业务异常。
+    pub fn bpmn(code: impl Into<String>, message: impl Into<String>) -> Self {
+        DelegateError::Bpmn {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+
+    /// 取展示消息（Generic 取原串，Bpmn 取 message）。
+    pub fn message(&self) -> &str {
+        match self {
+            DelegateError::Generic(m) => m,
+            DelegateError::Bpmn { message, .. } => message,
+        }
+    }
+}
+
+impl std::fmt::Display for DelegateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DelegateError::Generic(m) => write!(f, "{m}"),
+            DelegateError::Bpmn { code, message } => write!(f, "[{code}] {message}"),
+        }
+    }
+}
+
+/// 既有 delegate 的 `Err("...".into())` 无缝落 Generic（向后兼容，零改动）。
+impl From<String> for DelegateError {
+    fn from(s: String) -> Self {
+        DelegateError::Generic(s)
+    }
+}
+
+impl From<&str> for DelegateError {
+    fn from(s: &str) -> Self {
+        DelegateError::Generic(s.to_string())
+    }
+}
+
 /// 委托执行体契约（名字致敬 Flowable 的 JavaDelegate）。
 #[async_trait]
 pub trait JavaDelegate: Send + Sync {
-    /// 执行业务逻辑。返回 Err 会中断当前运行段并向上抛（M1 不做补偿/重试）。
-    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), String>;
+    /// 执行业务逻辑。返回：
+    /// - `Ok(())`：成功，令牌沿出边前进。
+    /// - `Err(DelegateError::Generic)`：一般失败 → Incident（人工重试）。既有 `Err("..".into())` 走这。
+    /// - `Err(DelegateError::Bpmn{code,..})`：业务异常 → 错误边界路由（A8）。
+    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), DelegateError>;
 }
 
 /// delegate 注册表：delegate 键 → 执行体。

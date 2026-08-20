@@ -96,8 +96,15 @@ pub const DDL_STATEMENTS: &[&str] = &[
         boundary_bpmn_id VARCHAR(128) NOT NULL,
         cancel_activity  BOOLEAN      NOT NULL DEFAULT TRUE,
         due_at           TIMESTAMPTZ  NOT NULL,
-        created_at       TIMESTAMPTZ  NOT NULL
+        created_at       TIMESTAMPTZ  NOT NULL,
+        kind                   VARCHAR(24) NOT NULL DEFAULT 'BOUNDARY',
+        cycle_interval_seconds BIGINT,
+        cycle_remaining        INTEGER
     )"#,
+    // 幂等补列：既有库（M2.5 建的表）升级到 A1/A5 时补上作业类型 + 周期列。
+    "ALTER TABLE cmx_flow_job ADD COLUMN IF NOT EXISTS kind VARCHAR(24) NOT NULL DEFAULT 'BOUNDARY'",
+    "ALTER TABLE cmx_flow_job ADD COLUMN IF NOT EXISTS cycle_interval_seconds BIGINT",
+    "ALTER TABLE cmx_flow_job ADD COLUMN IF NOT EXISTS cycle_remaining INTEGER",
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_job_instance ON cmx_flow_job (instance_id)",
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_job_due ON cmx_flow_job (due_at)",
     // —— 任务候选人池表（M4.1：多人候选待认领；随快照全删重插，与任务同生命周期） —— //
@@ -180,4 +187,85 @@ pub const DDL_STATEMENTS: &[&str] = &[
     )"#,
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_subflow_binding_key ON cmx_flow_subflow_binding (called_key)",
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_subflow_binding_org ON cmx_flow_subflow_binding (org_id)",
+    // —— RD0/RD2 路由维度泛化：绑定维度从写死 org_id 泛化为 (dim_key, dim_value) ——
+    // dim_key 默认 'org'（= 组织维度，向后兼容 M5.2）；dim_value 是原 org_id 的泛化（某维度字典的条目 id/code）。
+    "ALTER TABLE cmx_flow_subflow_binding ADD COLUMN IF NOT EXISTS dim_key   VARCHAR(64)  NOT NULL DEFAULT 'org'",
+    "ALTER TABLE cmx_flow_subflow_binding ADD COLUMN IF NOT EXISTS dim_value VARCHAR(128)",
+    // 老数据迁移：org_id → dim_value（dim_key 已由 DEFAULT 填 'org'）。幂等：仅迁尚未迁的行。
+    "UPDATE cmx_flow_subflow_binding SET dim_value = org_id WHERE dim_value IS NULL AND org_id IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_subflow_binding_dim ON cmx_flow_subflow_binding (called_key, dim_key, dim_value)",
+    // —— RD0/RD3 实例维度上下文：dim_key → dim_value 多维取值（org 维度仍可用 org_id 标量列兼容）——
+    "ALTER TABLE cmx_flow_instance ADD COLUMN IF NOT EXISTS dimensions JSONB",
+    // —— 消息订阅表（P3 消息等待持久化 + A2 消息启动索引；重启后订阅不丢） —— //
+    r#"CREATE TABLE IF NOT EXISTS cmx_flow_message_subscription (
+        id              VARCHAR(64)  PRIMARY KEY,
+        kind            VARCHAR(16)  NOT NULL,
+        message_name    VARCHAR(255) NOT NULL,
+        instance_id     VARCHAR(64),
+        token_id        VARCHAR(64),
+        node_bpmn_id    VARCHAR(128) NOT NULL,
+        correlation_var VARCHAR(128),
+        definition_key  VARCHAR(128),
+        tenant_id       VARCHAR(64)  NOT NULL DEFAULT 'default',
+        created_at      TIMESTAMPTZ  NOT NULL
+    )"#,
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_msg_sub_name_tenant ON cmx_flow_message_subscription (message_name, tenant_id, kind)",
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_msg_sub_instance ON cmx_flow_message_subscription (instance_id)",
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_msg_sub_def ON cmx_flow_message_subscription (definition_key, kind)",
+    // —— 异步服务任务作业表（P1：serviceTask flowable:async="true"；SKIP LOCKED 集群抢占） —— //
+    // 独立侧表，不随快照全删重插：worker 写的 locked_by/lock_expires_at 只能由 acquire/fail 改，
+    // 若混进 save_snapshot 的删+插循环，任一并发 save 都会抹掉锁 → 重复领取、delegate 二次执行。
+    r#"CREATE TABLE IF NOT EXISTS cmx_flow_async_job (
+        id                    VARCHAR(64)  PRIMARY KEY,
+        instance_id           VARCHAR(64)  NOT NULL,
+        token_id              VARCHAR(64)  NOT NULL,
+        node_bpmn_id          VARCHAR(128) NOT NULL,
+        delegate_key          VARCHAR(255) NOT NULL,
+        topic                 VARCHAR(128),
+        max_retries           INTEGER      NOT NULL DEFAULT 3,
+        retries               INTEGER      NOT NULL DEFAULT 3,
+        retry_backoff_seconds BIGINT,
+        locked_by             VARCHAR(128),
+        lock_expires_at       TIMESTAMPTZ,
+        created_at            TIMESTAMPTZ  NOT NULL
+    )"#,
+    // 幂等补列：既有库（P1 建的表）升级到 A7 时补上 topic 列（外部 worker 主题）。
+    "ALTER TABLE cmx_flow_async_job ADD COLUMN IF NOT EXISTS topic VARCHAR(128)",
+    // 抢占扫描索引：按可领取性（未锁/锁超期）+ 创建时序取队首。
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_async_job_acquire ON cmx_flow_async_job (locked_by, lock_expires_at, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_async_job_instance ON cmx_flow_async_job (instance_id)",
+    // A7：外部 worker 按 topic 拉取的扫描索引。
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_async_job_topic ON cmx_flow_async_job (topic, locked_by, lock_expires_at)",
+    // —— 死信作业表（P2：异步 Job 重试耗尽的托底；运维台可见可重投可删除） —— //
+    r#"CREATE TABLE IF NOT EXISTS cmx_flow_deadletter_job (
+        id                  VARCHAR(64)  PRIMARY KEY,
+        instance_id         VARCHAR(64)  NOT NULL,
+        token_id            VARCHAR(64)  NOT NULL,
+        node_bpmn_id        VARCHAR(128) NOT NULL,
+        delegate_key        VARCHAR(255) NOT NULL,
+        max_retries         INTEGER      NOT NULL DEFAULT 3,
+        error               TEXT         NOT NULL DEFAULT '',
+        original_created_at TIMESTAMPTZ  NOT NULL,
+        dead_lettered_at    TIMESTAMPTZ  NOT NULL,
+        tenant_id           VARCHAR(64)  NOT NULL DEFAULT 'default'
+    )"#,
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_deadletter_instance ON cmx_flow_deadletter_job (instance_id)",
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_deadletter_time ON cmx_flow_deadletter_job (dead_lettered_at)",
+    // —— 活动历史表（A6：节点级进出时段，驱动 SLA 看板/审计回放/时效分析） —— //
+    r#"CREATE TABLE IF NOT EXISTS cmx_flow_hi_activity (
+        id               VARCHAR(64)  PRIMARY KEY,
+        instance_id      VARCHAR(64)  NOT NULL,
+        token_id         VARCHAR(64)  NOT NULL,
+        activity_bpmn_id VARCHAR(128) NOT NULL,
+        activity_name    VARCHAR(255),
+        activity_type    VARCHAR(48)  NOT NULL,
+        entered_at       TIMESTAMPTZ  NOT NULL,
+        exited_at        TIMESTAMPTZ  NOT NULL,
+        duration_ms      BIGINT       NOT NULL DEFAULT 0,
+        assignee         VARCHAR(64),
+        tenant_id        VARCHAR(64)  NOT NULL DEFAULT 'default'
+    )"#,
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_hi_activity_instance ON cmx_flow_hi_activity (instance_id, entered_at)",
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_hi_activity_type ON cmx_flow_hi_activity (activity_type)",
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_hi_activity_assignee ON cmx_flow_hi_activity (assignee)",
 ];

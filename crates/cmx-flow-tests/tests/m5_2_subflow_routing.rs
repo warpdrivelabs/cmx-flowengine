@@ -34,9 +34,14 @@ impl FakeRouter {
 }
 #[async_trait]
 impl SubflowRouter for FakeRouter {
-    async fn resolve(&self, called_key: &str, org_id: Option<&str>) -> RouteResult<String> {
-        if let Some(org) = org_id
-            && let Some(t) = self.map.get(&format!("{called_key}@{org}"))
+    async fn resolve(
+        &self,
+        called_key: &str,
+        _dim_key: &str,
+        dim_value: Option<&str>,
+    ) -> RouteResult<String> {
+        if let Some(v) = dim_value
+            && let Some(t) = self.map.get(&format!("{called_key}@{v}"))
         {
             return Ok(t.clone());
         }
@@ -45,7 +50,8 @@ impl SubflowRouter for FakeRouter {
         }
         Err(RouteError::NoBinding {
             called_key: called_key.into(),
-            org: org_id.map(|s| s.into()),
+            dim_key: _dim_key.into(),
+            dim_value: dim_value.map(|s| s.into()),
         })
     }
 }

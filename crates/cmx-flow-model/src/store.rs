@@ -8,7 +8,7 @@
 
 use async_trait::async_trait;
 
-use crate::runtime::{CcSummary, DueJob, InstanceSnapshot, InstanceSummary};
+use crate::runtime::{CcSummary, DueJob, InstanceSnapshot, InstanceSummary, MessageSubscription};
 
 /// 持久化错误：跨实现的中立错误壳，实现方把自身错误转成字符串塞入。
 ///
@@ -90,4 +90,126 @@ pub trait RuntimeStore: Send + Sync {
         &self,
         parent_instance_id: &str,
     ) -> StoreResult<Vec<crate::runtime::ProcessInstance>>;
+
+    // ============================ 消息订阅（P3 + A2） ============================
+
+    /// 写入一条消息订阅记录（幂等：同 id 再写直接覆盖）。
+    ///
+    /// - `Catch` 类型：`WaitingMessage` 令牌到达时调用。
+    /// - `Start` 类型：流程定义发布/部署时调用（每个消息启动事件一条）。
+    async fn upsert_message_subscription(
+        &self,
+        sub: &MessageSubscription,
+    ) -> StoreResult<()>;
+
+    /// 按消息名 + 租户 + 可选相关键查找匹配的 `Catch` 订阅（P3）。
+    ///
+    /// 替代 `find_message_instance` 的 500 实例全量扫描：直接索引查询，O(1) 而非 O(n)。
+    /// 返回首个匹配记录（instance_id + token_id + correlation_var）；无命中返回 None。
+    async fn find_catch_subscription(
+        &self,
+        message_name: &str,
+        correlation_key: Option<&str>,
+        tenant_id: &str,
+    ) -> StoreResult<Option<MessageSubscription>>;
+
+    /// 按消息名 + 租户查找 `Start` 类型订阅（A2 消息启动）。
+    ///
+    /// 返回第一个匹配的已部署定义 definition_key；多个时按创建时间取最新（最后部署的胜出）。
+    async fn find_start_subscription(
+        &self,
+        message_name: &str,
+        tenant_id: &str,
+    ) -> StoreResult<Option<MessageSubscription>>;
+
+    /// 删除指定 id 的消息订阅（令牌离开 / 实例终止 / 撤部署时清理）。幂等，不存在视为成功。
+    async fn delete_message_subscription(&self, sub_id: &str) -> StoreResult<()>;
+
+    /// 删除某实例的全部消息订阅（实例取消/终止时批量清理）。幂等。
+    async fn delete_subscriptions_by_instance(&self, instance_id: &str) -> StoreResult<()>;
+
+    /// 删除某流程定义的全部 `Start` 类型消息订阅（撤部署/重部署时清理旧记录）。幂等。
+    async fn delete_start_subscriptions_by_def(&self, definition_key: &str) -> StoreResult<()>;
+
+    // ============================ 异步 Job（P1）============================
+
+    /// 写入或更新一个 AsyncJob（首次创建时 locked_by/lock_expires_at 为 None）。
+    async fn upsert_async_job(&self, job: &crate::runtime::AsyncJob) -> StoreResult<()>;
+
+    /// SKIP LOCKED 抢占：取最多 `limit` 个未锁定/锁已超期的 AsyncJob，
+    /// 更新 locked_by + lock_expires_at，返回被锁定的作业列表。
+    ///
+    /// `topic_filter`（A7 隔离进程内 vs 外部 worker）：
+    /// - `None` → 只取 `topic IS NULL` 的作业（进程内 poller，跑注册 delegate）；
+    /// - `Some(t)` → 只取 `topic = t` 的作业（外部 worker 按主题拉取）。
+    /// 这保证两类 worker 拿到互不相交的作业集，外部作业永不被进程内 poller 误领（无 delegate 会误杀）。
+    async fn acquire_async_jobs(
+        &self,
+        worker_id: &str,
+        topic_filter: Option<&str>,
+        lock_secs: i64,
+        limit: usize,
+    ) -> StoreResult<Vec<crate::runtime::AsyncJob>>;
+
+    /// 完成一个 AsyncJob：删除记录（或标记 done），并把对应令牌 instance 加载回调用者处理。
+    /// 返回 instance_id + token_id，引擎据此继续推进。
+    async fn complete_async_job(
+        &self,
+        job_id: &str,
+        result_variables: Option<serde_json::Value>,
+    ) -> StoreResult<Option<(String, String)>>;
+
+    /// 失败一个 AsyncJob：重试次数 -1；若 retries <= 0 则转死信（或删除）。
+    /// 返回是否仍有重试余地（true = 仍可重试，false = 已死信/删除）。
+    async fn fail_async_job(
+        &self,
+        job_id: &str,
+        error: &str,
+    ) -> StoreResult<bool>;
+
+    /// 删除某实例的全部 AsyncJob（实例取消/终止时清理）。幂等。
+    async fn delete_async_jobs_by_instance(&self, instance_id: &str) -> StoreResult<()>;
+
+    /// 按 id 读一个 AsyncJob（外部 worker 完成/失败前取令牌坐标；不存在返回 None）。
+    async fn get_async_job(
+        &self,
+        job_id: &str,
+    ) -> StoreResult<Option<crate::runtime::AsyncJob>>;
+
+    // ============================ 死信队列（P2）============================
+
+    /// 写入一条死信作业（幂等：同 id 覆盖）。async job 重试耗尽时调用。
+    async fn upsert_dead_letter_job(
+        &self,
+        job: &crate::runtime::DeadLetterJob,
+    ) -> StoreResult<()>;
+
+    /// 列出死信作业（运维台展示），按死信时刻倒序，最多 `limit` 条。
+    async fn list_dead_letter_jobs(
+        &self,
+        limit: usize,
+    ) -> StoreResult<Vec<crate::runtime::DeadLetterJob>>;
+
+    /// 按 id 读一条死信作业（重投前取原作业身份；不存在返回 None）。
+    async fn get_dead_letter_job(
+        &self,
+        job_id: &str,
+    ) -> StoreResult<Option<crate::runtime::DeadLetterJob>>;
+
+    /// 删除一条死信作业（重投成功后清理 / 运维放弃时删除）。幂等。
+    async fn delete_dead_letter_job(&self, job_id: &str) -> StoreResult<()>;
+
+    // ============================ 活动历史（A6）============================
+
+    /// 写入一条已闭合的活动历史记录（幂等：同 id 覆盖）。令牌离开节点时批量调用。
+    async fn upsert_hi_activity(
+        &self,
+        activity: &crate::runtime::ActivityRecord,
+    ) -> StoreResult<()>;
+
+    /// 列出某实例的活动历史（节点级审计/SLA），按进入时刻升序。
+    async fn list_activities_by_instance(
+        &self,
+        instance_id: &str,
+    ) -> StoreResult<Vec<crate::runtime::ActivityRecord>>;
 }

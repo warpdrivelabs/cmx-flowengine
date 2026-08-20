@@ -24,7 +24,7 @@ struct FlakyDelegate {
 
 #[async_trait::async_trait]
 impl JavaDelegate for FlakyDelegate {
-    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), String> {
+    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), cmx_flow_engine::DelegateError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let fixed = ctx
             .variables

@@ -45,8 +45,9 @@ async fn spawn_stub() -> String {
             post(|Json(body): Json<Value>| async move {
                 let called = body.get("calledKey").and_then(|v| v.as_str()).unwrap_or("");
                 if called == "fin_review" {
-                    let org = body.get("orgId").and_then(|v| v.as_str()).unwrap_or("hq");
-                    (StatusCode::OK, Json(json!({ "targetKey": format!("fin_review_{org}") })))
+                    // RD0：请求体 dimValue（原 orgId 的泛化）。
+                    let dv = body.get("dimValue").and_then(|v| v.as_str()).unwrap_or("hq");
+                    (StatusCode::OK, Json(json!({ "targetKey": format!("fin_review_{dv}") })))
                 } else {
                     (StatusCode::NOT_FOUND, Json(json!({ "msg": "无绑定" })))
                 }
@@ -119,10 +120,10 @@ async fn http_resolver_network_error_is_backend() {
 async fn http_router_resolves_and_missing_is_nobinding() {
     let base = spawn_stub().await;
     let r = HttpSubflowRouter::new(&base);
-    // 有解：带上 org。
-    assert_eq!(r.resolve("fin_review", Some("bj")).await.unwrap(), "fin_review_bj");
+    // 有解：带上 org 维度。
+    assert_eq!(r.resolve("fin_review", "org", Some("bj")).await.unwrap(), "fin_review_bj");
     // 无解：404 → NoBinding。
-    let err = r.resolve("unknown_key", Some("bj")).await.unwrap_err();
+    let err = r.resolve("unknown_key", "org", Some("bj")).await.unwrap_err();
     assert!(
         matches!(err, RouteError::NoBinding { ref called_key, .. } if called_key == "unknown_key"),
         "got {err:?}"

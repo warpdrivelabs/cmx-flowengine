@@ -74,16 +74,29 @@ fn node_multi_instance(kind: &NodeKind) -> Value {
     Value::Null
 }
 
-/// 节点若为边界定时器事件，返回其宿主/时长/中断性摘要。
+/// 节点若为边界定时器事件，返回其宿主/定时器规格/中断性摘要。
 fn node_boundary_timer(kind: &NodeKind) -> Value {
     if let NodeKind::BoundaryTimerEvent(bt) = kind {
         return json!({
             "attachedTo": bt.attached_to_bpmn_id,
-            "seconds": bt.duration.seconds,
+            "timer": timer_spec_view(&bt.spec),
             "cancelActivity": bt.cancel_activity,
         });
     }
     Value::Null
+}
+
+/// 定时器规格摘要（A4/A5）：相对时长/绝对时刻/循环/变量表达式，用于运维/设计器展示。
+fn timer_spec_view(spec: &cmx_flow_model::TimerSpec) -> Value {
+    use cmx_flow_model::TimerSpec;
+    match spec {
+        TimerSpec::Duration { seconds } => json!({ "kind": "duration", "seconds": seconds }),
+        TimerSpec::Date { at } => json!({ "kind": "date", "at": at.to_rfc3339() }),
+        TimerSpec::Cycle { interval_seconds, repeats } => {
+            json!({ "kind": "cycle", "intervalSeconds": interval_seconds, "repeats": repeats })
+        }
+        TimerSpec::Expr { expr, cyclic } => json!({ "kind": "expr", "expr": expr, "cyclic": cyclic }),
+    }
 }
 
 /// 详细实例视图：状态 + 变量 + 令牌当前位置 + 待办任务。
@@ -252,6 +265,12 @@ pub fn node_kind_str(k: &NodeKind) -> &'static str {
         NodeKind::CallActivity(_) => "callActivity",
         NodeKind::SubProcess => "subProcess",
         NodeKind::MessageCatchEvent(_) => "messageCatchEvent",
+        NodeKind::IntermediateTimerCatchEvent(_) => "intermediateTimerCatchEvent",
+        NodeKind::MessageStartEvent(_) => "messageStartEvent",
+        NodeKind::EventBasedGateway => "eventBasedGateway",
+        NodeKind::BoundaryErrorEvent(_) => "boundaryErrorEvent",
+        NodeKind::EventSubProcess => "eventSubProcess",
+        NodeKind::ErrorStartEvent(_) => "errorStartEvent",
     }
 }
 
@@ -283,6 +302,9 @@ fn token_state_str(s: TokenState) -> &'static str {
         TokenState::Joining => "JOINING",
         TokenState::WaitingSubflow => "WAITING_SUBFLOW",
         TokenState::WaitingMessage => "WAITING_MESSAGE",
+        TokenState::WaitingTimer => "WAITING_TIMER",
+        TokenState::WaitingAsync => "WAITING_ASYNC",
+        TokenState::WaitingEventGateway => "WAITING_EVENT_GATEWAY",
         TokenState::Incident => "INCIDENT",
         TokenState::Ended => "ENDED",
     }

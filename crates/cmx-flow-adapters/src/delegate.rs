@@ -30,7 +30,7 @@ impl HttpDelegate {
 
 #[async_trait]
 impl JavaDelegate for HttpDelegate {
-    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), String> {
+    async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), cmx_flow_engine::DelegateError> {
         // 请求体 = 当前全部实例变量（对象）；query 带节点/实例供外部细分。
         let body = ctx.variables.to_json();
         let resp = self
@@ -45,7 +45,7 @@ impl JavaDelegate for HttpDelegate {
         let status = resp.status();
         if !status.is_success() {
             let msg = resp.text().await.unwrap_or_default();
-            return Err(format!("外部 delegate 返回 {status}: {msg}"));
+            return Err(format!("外部 delegate 返回 {status}: {msg}").into());
         }
 
         let out: Value = resp

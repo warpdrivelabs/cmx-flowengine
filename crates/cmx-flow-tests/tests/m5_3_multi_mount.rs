@@ -315,15 +315,21 @@ impl FakeRouter {
 }
 #[async_trait]
 impl SubflowRouter for FakeRouter {
-    async fn resolve(&self, called_key: &str, org_id: Option<&str>) -> RouteResult<String> {
-        if let Some(org) = org_id
-            && let Some(t) = self.map.get(&format!("{called_key}@{org}"))
+    async fn resolve(
+        &self,
+        called_key: &str,
+        _dim_key: &str,
+        dim_value: Option<&str>,
+    ) -> RouteResult<String> {
+        if let Some(v) = dim_value
+            && let Some(t) = self.map.get(&format!("{called_key}@{v}"))
         {
             return Ok(t.clone());
         }
         Err(RouteError::NoBinding {
             called_key: called_key.into(),
-            org: org_id.map(|s| s.into()),
+            dim_key: _dim_key.into(),
+            dim_value: dim_value.map(|s| s.into()),
         })
     }
 }
@@ -441,4 +447,113 @@ async fn routed_multi_mount_resolves_two_types_by_org() {
         "挂载 A(tier1)@北京 → bj_tier1（与上海不同类型）"
     );
     assert!(!bja.contains_key("sh_tier1"), "北京实例不应出现上海子流程");
+}
+
+// ─────────────────── 模式四：同实例多挂载各按不同维度（RD3 新能力）───────────────────
+//
+// 用户诉求：同一主流程不同挂载点可用不同字典。挂载 A 按「组织(org)」、挂载 B 按「法人(legal_entity)」，
+// 一个实例同时携带两维度取值，各挂载点按自己的 cmx:dimKey 取对应维度值路由到不同子流程。
+// 这是 M5.3 之前做不到的（旧模型一实例只有一个 org 标量，所有挂载共用）。
+
+/// 维度感知假路由器：按 (called_key, dim_key, dim_value) 三元组精确映射。
+#[derive(Default)]
+struct DimRouter {
+    map: HashMap<String, String>, // "key@dim_key@dim_value" → target
+}
+impl DimRouter {
+    fn bind(mut self, key: &str, dim_key: &str, dim_value: &str, target: &str) -> Self {
+        self.map.insert(format!("{key}@{dim_key}@{dim_value}"), target.into());
+        self
+    }
+}
+#[async_trait]
+impl SubflowRouter for DimRouter {
+    async fn resolve(
+        &self,
+        called_key: &str,
+        dim_key: &str,
+        dim_value: Option<&str>,
+    ) -> RouteResult<String> {
+        if let Some(v) = dim_value
+            && let Some(t) = self.map.get(&format!("{called_key}@{dim_key}@{v}"))
+        {
+            return Ok(t.clone());
+        }
+        Err(RouteError::NoBinding {
+            called_key: called_key.into(),
+            dim_key: dim_key.into(),
+            dim_value: dim_value.map(|s| s.into()),
+        })
+    }
+}
+
+/// 主流程：start → callA(dimKey=org) → callB(dimKey=legal_entity) → end。两挂载点不同维度。
+const MULTI_DIM_MAIN: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:cmx="http://cmx/flow">
+  <process id="multi_dim_main" name="多维度多挂载主流程" isExecutable="true">
+    <startEvent id="start"/>
+    <sequenceFlow id="s0" sourceRef="start" targetRef="callA"/>
+    <callActivity id="callA" name="预算审批(按组织)" cmx:calledKey="budget" cmx:dimKey="org"/>
+    <sequenceFlow id="s1" sourceRef="callA" targetRef="callB"/>
+    <callActivity id="callB" name="合规审查(按法人)" cmx:calledKey="compliance" cmx:dimKey="legal_entity"/>
+    <sequenceFlow id="s2" sourceRef="callB" targetRef="done"/>
+    <endEvent id="done"/>
+  </process>
+</definitions>"#;
+
+#[tokio::test]
+async fn multi_mount_different_dimensions_per_mount() {
+    let store = InMemoryStore::new();
+    let mut engine = Engine::new(store.clone());
+    engine.deploy(compile(MULTI_DIM_MAIN).unwrap()).unwrap();
+    for (id, name, who) in [
+        ("budget_bj", "北京预算子流程", "bj_fin"),
+        ("compliance_cn", "中国区合规子流程", "cn_legal"),
+    ] {
+        engine.deploy(compile(&concrete_sub(id, name, who)).unwrap()).unwrap();
+    }
+
+    // 挂载 A 按 org 维度、挂载 B 按 legal_entity 维度，各自解析到不同子流程。
+    let router = DimRouter::default()
+        .bind("budget", "org", "df_bj", "budget_bj")
+        .bind("compliance", "legal_entity", "LE_CN", "compliance_cn");
+    engine.set_subflow_router(Arc::new(router));
+
+    // 发起：同一实例同时携带 org=df_bj 与 legal_entity=LE_CN 两个维度取值。
+    let mut dims = std::collections::BTreeMap::new();
+    dims.insert("org".to_string(), "df_bj".to_string());
+    dims.insert("legal_entity".to_string(), "LE_CN".to_string());
+    let started = engine
+        .start_process_dims("multi_dim_main", Variables::new(), Some("MD-1".into()), None, dims)
+        .await
+        .unwrap();
+    let mid = started.instance_id.clone();
+
+    // 挂载 A 按 org=df_bj 路由 → budget_bj。
+    let a = children_by_key(&store, &mid).await;
+    assert!(a.contains_key("budget_bj"), "挂载 A 按 org 维度 → budget_bj，实得 {:?}", a.keys().collect::<Vec<_>>());
+
+    // 办结 A → 主推进到挂载 B → 按 legal_entity=LE_CN 路由 → compliance_cn（不同维度！）。
+    let a_task = open_task(&store, &a["budget_bj"].id).await;
+    engine.complete_task(&a["budget_bj"].id, &a_task, Variables::new()).await.unwrap();
+
+    let b = children_by_key(&store, &mid).await;
+    assert!(
+        b.contains_key("compliance_cn"),
+        "挂载 B 按 legal_entity 维度 → compliance_cn（与挂载 A 走不同维度），实得 {:?}",
+        b.keys().collect::<Vec<_>>()
+    );
+    // 关键断言：同一实例、两挂载点、各按不同维度（org vs legal_entity）解析到不同子流程——诉求成立。
+    assert_eq!(b["budget_bj"].state, InstanceState::Completed);
+    assert_eq!(b["compliance_cn"].state, InstanceState::Active);
+
+    // 办结 B → 主流程完成。
+    let b_task = open_task(&store, &b["compliance_cn"].id).await;
+    engine.complete_task(&b["compliance_cn"].id, &b_task, Variables::new()).await.unwrap();
+    assert_eq!(
+        store.load_snapshot(&mid).await.unwrap().instance.state,
+        InstanceState::Completed,
+        "两挂载各按不同维度路由并跑完 → 主流程完成"
+    );
 }

@@ -12,6 +12,7 @@
  * + 带条件的 sequenceFlow。并行网关、边界事件、多实例留给 M2/M3。
  */
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -29,6 +30,12 @@ pub struct NodeId(pub usize);
 pub enum NodeKind {
     /// 开始事件：流程实例的唯一入口（M1 只支持无类型 none-start）。
     StartEvent,
+    /// 消息启动事件（A2，BPMN startEvent + messageEventDefinition）：外部系统投递消息触发启动流程。
+    ///
+    /// 与普通 `StartEvent` 的区别：不能通过常规 `start_process(key, vars)` 发起，只能经由
+    /// `start_by_message(message_name, vars)` 触发。引擎在 `deploy` 时扫描此节点并写入
+    /// `MessageSubscription(Start)` 索引，使外部消息可精确找到对应定义 key。
+    MessageStartEvent(MessageStart),
     /// 结束事件：消费令牌；当实例再无活动令牌时实例结束。
     EndEvent,
     /// 用户任务：**等待态**节点。令牌到此即挂起并落库，等待外部 complete。
@@ -50,6 +57,16 @@ pub enum NodeKind {
     ///   本引擎采用务实规则：本网关已到达(Joining)令牌 ≥1 且实例内**再无其它可能到达本网关的
     ///   非结束令牌**时放行（对无环审批流正确）。
     InclusiveGateway,
+    /// 事件网关（A10，BPMN eventBasedGateway）：「谁先到走谁」竞速网关。
+    ///
+    /// 令牌到达后**停住等待**（WaitingEventGateway）；引擎为所有出边后继节点注册竞争事件：
+    /// - 后继是 `IntermediateTimerCatchEvent` → 建 TimerJob（kind=IntermediateCatch）
+    /// - 后继是 `MessageCatchEvent` → 写 MessageSubscription(Catch)
+    ///
+    /// 第一个触发的事件胜出：令牌从网关节点前进到胜出后继节点，其余竞争事件全部取消
+    /// （撤销对应 TimerJob / 删除对应订阅）。审批场景「等审批 or 等超时，谁先到走谁」的
+    /// 标准建模。等待期间实例保持 Active，可被 cancel/withdraw 清理。
+    EventBasedGateway,
     /// 边界定时器事件（M2.5，BPMN boundaryEvent + timerEventDefinition）：
     /// 附着在某个 userTask 上，超时触发。它**不是**正常推进能到达的节点（无入边），
     /// 只有定时器到期时引擎把宿主令牌（中断型）或新令牌（非中断型）置于此节点，再沿其
@@ -71,6 +88,13 @@ pub enum NodeKind {
     /// 实例变量。审批矩阵剥离到表——「什么金额/部门 → 几级审批」不硬编码进流程图。
     /// 执行是同步的（决策纯函数、无 IO），不落等待态；求值完沿唯一出边继续（后续网关可用输出变量）。
     BusinessRuleTask(BusinessRule),
+    /// 中间定时捕获事件（A1，BPMN intermediateCatchEvent + timerEventDefinition）：
+    ///
+    /// 令牌到达时**挂起等待定时器到期**（WaitingTimer），引擎为其建一个 TimerJob，`trigger_due_timers`
+    /// 在到期后把令牌置 Active 并沿唯一出边前进。审批场景「等 N 天后自动推进/发提醒」的建模基石——
+    /// 与消息捕获（等外部回调）互补，一个等时间、一个等消息。TimerSpec 覆盖相对时长/绝对时刻/
+    /// 变量表达式（`${dueDate}` 动态截止日期）三类。
+    IntermediateTimerCatchEvent(TimerSpec),
     /// 嵌入式子流程（A5，BPMN subProcess）——**透传节点**（编译期扁平化）。
     ///
     /// 引擎的节点 arena 是平铺的，故嵌入子流程在编译期被「摊平」进父图：subProcess 本身是一个
@@ -85,6 +109,47 @@ pub enum NodeKind {
     /// 令牌 + 丢弃全部未办结任务**，实例立即 Completed。审批场景的「一票否决/否决即终止全流程」
     /// 标准建模——尤其配合并行会签/多分支：任一分支到达终止事件，整个实例收口。
     TerminateEndEvent,
+    /// 边界错误事件（A8，BPMN boundaryEvent + errorEventDefinition）：
+    ///
+    /// 附着在 serviceTask 上，捕获该任务抛出的类型化 BPMN 业务异常（`DelegateError::Bpmn{code}`）。
+    /// 与边界定时器同为「非正常推进可达」节点（无入边）：仅当宿主 serviceTask 抛出 errorCode 匹配
+    /// （或本边界为 catch-all，无 code）的错误时，引擎把宿主令牌中断改置于此节点，沿其唯一出边走
+    /// 错误处理分支（降级/补偿/转人工）。**恒中断型**（BPMN error boundary 语义即中断宿主）。
+    BoundaryErrorEvent(BoundaryError),
+    /// 事件子流程（A3，BPMN subProcess `triggeredByEvent="true"`）——**透传节点**（编译期扁平化）。
+    ///
+    /// 与普通 subProcess（A5）不同：事件子流程不在正常流程路径上（无入边），只由**事件触发**激活。
+    /// A3 最小版只支持**进程级、中断型、错误触发**：其内部 `startEvent` 带 `errorEventDefinition`
+    /// （见 [`NodeKind::ErrorStartEvent`]）。当主流程某 serviceTask 抛出匹配的 BPMN 错误且无边界事件
+    /// 捕获时，引擎中断主流程全部令牌，把新令牌置于该事件子流程的 ErrorStartEvent 沿内部流程处理。
+    /// 内部节点编译期提升进父 arena（复用 A5 扁平化），内部 endEvent 结束该处理分支。
+    EventSubProcess,
+    /// 错误启动事件（A3，事件子流程内 `startEvent` + `errorEventDefinition`）。
+    ///
+    /// 事件子流程的入口。不能经 `start_process` 发起，只在主流程抛出匹配 errorCode（或本事件为
+    /// catch-all，无 code）时由引擎激活。激活后令牌沿其唯一出边进入错误处理分支。
+    ErrorStartEvent(ErrorStart),
+}
+
+/// 错误启动事件的静态配置（A3，事件子流程内 startEvent + errorEventDefinition）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorStart {
+    /// 捕获的 errorCode（对齐 BPMN errorRef/errorCode）。`None` = catch-all（捕获任意 BPMN 错误）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    /// 所属事件子流程节点的 bpmn_id（编译期回填；供引擎/校验定位归属作用域）。
+    pub event_subprocess_bpmn_id: String,
+}
+
+/// 边界错误事件的静态配置（A8，来自 BPMN boundaryEvent + errorEventDefinition）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoundaryError {
+    /// 宿主节点 bpmn_id（attachedToRef 指向的 serviceTask）。
+    pub attached_to_bpmn_id: String,
+    /// 捕获的 errorCode（对齐 BPMN errorRef/errorCode）。`None` = catch-all（捕获任意 BPMN 错误）。
+    /// 匹配优先级：精确 code 匹配优先于 catch-all（引擎侧 `boundary_errors_on` 排序保证）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
 }
 
 /// 消息捕获事件的静态配置（A4，来自 BPMN intermediateCatchEvent + messageEventDefinition）。
@@ -94,6 +159,19 @@ pub struct MessageCatch {
     pub message_name: String,
     /// 相关键变量名：实例变量里承载相关键的键名（如 "orderId"）。外部 correlate 传相关键值，
     /// 引擎找到「该变量值 == 相关键」且停在本消息事件的实例令牌唤醒。空 = 仅按消息名 + 实例 id 唤醒。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_var: Option<String>,
+}
+
+/// 消息启动事件的静态配置（A2，来自 BPMN startEvent + messageEventDefinition）。
+///
+/// 与 `MessageCatch` 相似但作用于流程发起：引擎 `deploy` 时扫描此节点并写入
+/// `MessageSubscription(Start)` 索引，`start_by_message` 按消息名在索引中找到对应定义并发起实例。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageStart {
+    /// 消息名（与 MessageCatch 语义相同，用于 start_by_message 匹配）。
+    pub message_name: String,
+    /// 相关键变量名（可空；消息启动一般不需要相关键，但保留与捕获事件一致的扩展接口）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_var: Option<String>,
 }
@@ -114,6 +192,10 @@ pub struct CallActivity {
     /// 逻辑 key（M5.2 组织路由用；M5.1 恒为 None，走 called_element 写死）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub called_key: Option<String>,
+    /// 路由维度 key（RD0：= 某字典 dictCode，或内建 "org"）。None/"" → 默认 "org"（向后兼容，
+    /// 等价 M5.2 的组织路由）。仅 called_key 非空时有意义。来自 BPMN `cmx:dimKey`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dim_key: Option<String>,
     /// 输入变量映射（主 → 子，启动子实例时拷贝）。空 = 全量传递主实例变量。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_vars: Vec<VarMapping>,
@@ -136,8 +218,9 @@ pub struct VarMapping {
 pub struct BoundaryTimer {
     /// 宿主节点 bpmn_id（attachedToRef 指向的 userTask）。
     pub attached_to_bpmn_id: String,
-    /// 触发时长（相对宿主任务到达时刻）。
-    pub duration: TimerDuration,
+    /// 定时器定义（A4/A5）：相对时长 / 绝对时刻 / 循环 / 变量表达式。
+    /// 相对时长时等价于旧 `duration`；非中断型 + Cycle = 周期催办。
+    pub spec: TimerSpec,
     /// true = 中断型（cancelActivity）：超时中断宿主任务，令牌改走定时器出边。
     /// false = 非中断型：超时发一个旁路令牌（如催办），宿主任务不中断继续等。
     pub cancel_activity: bool,
@@ -145,11 +228,102 @@ pub struct BoundaryTimer {
 
 /// 归一化后的定时器时长（ISO 8601 duration 解析结果，统一到秒）。
 ///
-/// 只承载「相对时长」（timeDuration），不含绝对时刻（timeDate）与循环（timeCycle）。
+/// 只承载「相对时长」（timeDuration）。绝对时刻与循环由 [`TimerSpec`] 承载。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimerDuration {
     /// 总秒数（`PT1H30M` → 5400）。
     pub seconds: i64,
+}
+
+/// 定时器定义 —— 覆盖 BPMN 三类定时器 + 变量表达式（A4/A5）。
+///
+/// 对齐 BPMN `timerEventDefinition` 的三个子元素：
+/// - `<timeDuration>` → [`TimerSpec::Duration`]（相对时长，如 `PT24H`）
+/// - `<timeDate>` → [`TimerSpec::Date`]（绝对时刻，如 `2026-01-01T09:00:00Z`）
+/// - `<timeCycle>` → [`TimerSpec::Cycle`]（重复，如 `R3/PT1H` 每小时最多 3 次）
+///
+/// 任一子元素的文本若为 `${expr}` 包裹，则编译期不求值、存 [`TimerSpec::Expr`]，
+/// 运行期由引擎按实例变量求值（如截止日期从流程变量 `${dueDate}` 读取）。求值出的字符串
+/// 再按「像 duration 还是像 datetime」二次判定：ISO-8601 duration → 相对，RFC3339 → 绝对。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum TimerSpec {
+    /// 相对时长：到达时刻 + N 秒。
+    Duration {
+        /// 相对秒数。
+        seconds: i64,
+    },
+    /// 绝对时刻：直接在该 UTC 时刻触发（早于当前时刻则视为立即到期）。
+    Date {
+        /// 触发时刻（UTC）。
+        at: DateTime<Utc>,
+    },
+    /// 重复周期：每 `interval_seconds` 触发一次，最多 `repeats` 次（None = 无界，引擎按上限封顶）。
+    Cycle {
+        /// 每次间隔秒数。
+        interval_seconds: i64,
+        /// 剩余重复次数（None = 无界）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repeats: Option<u32>,
+    },
+    /// 变量表达式：运行期按实例变量求值成 duration 或 datetime 字符串再解析。
+    Expr {
+        /// 表达式源文本（含或不含 `${...}` 包裹）。
+        expr: String,
+        /// 是否周期表达式（求值出的字符串按 timeCycle 语义解析，含 `Rn/` 前缀）。
+        #[serde(default)]
+        cyclic: bool,
+    },
+}
+
+impl TimerSpec {
+    /// 把定时器定义在「令牌到达时刻 `now` + 实例变量 `vars`」下解析为 `(到期时刻, 剩余重复次数)`。
+    ///
+    /// - Duration → `now + seconds`，无重复。
+    /// - Date → 绝对时刻，无重复（早于 now 视为立即到期）。
+    /// - Cycle → `now + interval`，剩余次数 = repeats - 1（首次触发消耗一次）。
+    /// - Expr → 先按实例变量求值成字符串，再按 `cyclic` 走 cycle 解析，否则先试 duration 再试 datetime。
+    ///
+    /// 变量表达式让「截止日期从流程变量读取」（A4）成立：`${dueDate}` 求值出 `PT48H` 或
+    /// `2026-01-01T09:00:00Z` 都可。
+    pub fn resolve_due(
+        &self,
+        vars: &crate::variables::Variables,
+        now: DateTime<Utc>,
+    ) -> Result<(DateTime<Utc>, Option<u32>)> {
+        match self {
+            TimerSpec::Duration { seconds } => Ok((now + chrono::Duration::seconds(*seconds), None)),
+            TimerSpec::Date { at } => Ok((*at, None)),
+            TimerSpec::Cycle {
+                interval_seconds,
+                repeats,
+            } => Ok((
+                now + chrono::Duration::seconds(*interval_seconds),
+                repeats.map(|r| r.saturating_sub(1)),
+            )),
+            TimerSpec::Expr { expr, cyclic } => {
+                let s = crate::expr::eval_value(expr, vars)?;
+                let text = match &s {
+                    serde_json::Value::String(t) => t.clone(),
+                    other => other.to_string(),
+                };
+                let text = text.trim();
+                if *cyclic {
+                    let c = crate::duration::parse_iso8601_cycle(text)?;
+                    Ok((
+                        now + chrono::Duration::seconds(c.interval_seconds),
+                        c.repeats.map(|r| r.saturating_sub(1)),
+                    ))
+                } else if text.starts_with('P') || text.starts_with('p') {
+                    let d = crate::duration::parse_iso8601_duration(text)?;
+                    Ok((now + chrono::Duration::seconds(d.seconds), None))
+                } else {
+                    let at = crate::duration::parse_iso8601_datetime(text)?;
+                    Ok((at, None))
+                }
+            }
+        }
+    }
 }
 
 impl NodeKind {
@@ -160,6 +334,31 @@ impl NodeKind {
     /// 不需外部触发，在一次推进段内即可解除（当最后一个兄弟到达时）。
     pub fn is_wait_state(&self) -> bool {
         matches!(self, NodeKind::UserTask(_) | NodeKind::CallActivity(_))
+    }
+
+    /// 节点类型的稳定文本标识（活动历史 A6 / 视图层按类型聚合用）。
+    pub fn type_str(&self) -> &'static str {
+        match self {
+            NodeKind::StartEvent => "startEvent",
+            NodeKind::EndEvent => "endEvent",
+            NodeKind::TerminateEndEvent => "terminateEndEvent",
+            NodeKind::UserTask(_) => "userTask",
+            NodeKind::ServiceTask(_) => "serviceTask",
+            NodeKind::BusinessRuleTask(_) => "businessRuleTask",
+            NodeKind::ExclusiveGateway => "exclusiveGateway",
+            NodeKind::ParallelGateway => "parallelGateway",
+            NodeKind::InclusiveGateway => "inclusiveGateway",
+            NodeKind::BoundaryTimerEvent(_) => "boundaryTimerEvent",
+            NodeKind::CallActivity(_) => "callActivity",
+            NodeKind::SubProcess => "subProcess",
+            NodeKind::MessageCatchEvent(_) => "messageCatchEvent",
+            NodeKind::IntermediateTimerCatchEvent(_) => "intermediateTimerCatchEvent",
+            NodeKind::MessageStartEvent(_) => "messageStartEvent",
+            NodeKind::EventBasedGateway => "eventBasedGateway",
+            NodeKind::BoundaryErrorEvent(_) => "boundaryErrorEvent",
+            NodeKind::EventSubProcess => "eventSubProcess",
+            NodeKind::ErrorStartEvent(_) => "errorStartEvent",
+        }
     }
 }
 
@@ -262,6 +461,14 @@ pub struct ServiceTask {
     /// 对齐 Flowable 的 `flowable:delegateExpression` / `class` 思路，但 M1 收敛成
     /// 一个「注册表键」，不引入 EL 反射——Rust 侧用显式注册取代 Java 的类加载。
     pub delegate: String,
+    /// 是否异步执行（`flowable:async="true"`）。默认 false = 同步。
+    #[serde(default)]
+    pub is_async: bool,
+    /// 外部 Worker 主题（A7，`flowable:type="external-worker"` + `flowable:topic`）。
+    /// `Some` = 令牌到达时建一个带 topic 的外部作业停 WaitingAsync（不跑进程内 delegate），
+    /// 由外部多语言 worker 按 topic 拉取执行。隐含异步语义（无论 is_async 与否都异步等待）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_topic: Option<String>,
 }
 
 /// 一条节点（arena 元素）。
@@ -356,6 +563,50 @@ impl ProcessDefinition {
             .collect()
     }
 
+    /// 找出附着在指定宿主节点上的所有边界错误事件（A8）。
+    ///
+    /// 结果按「精确 code 匹配优先于 catch-all」排序：带 `error_code` 的排前，`None`（catch-all）排后。
+    /// 引擎据此对某个抛出的 errorCode 做「先精确后兜底」匹配（BPMN error boundary 语义）。
+    pub fn boundary_errors_on(&self, host_bpmn_id: &str) -> Vec<&FlowNode> {
+        let mut out: Vec<&FlowNode> = self
+            .nodes
+            .iter()
+            .filter(|n| match &n.kind {
+                NodeKind::BoundaryErrorEvent(be) => be.attached_to_bpmn_id == host_bpmn_id,
+                _ => false,
+            })
+            .collect();
+        // 精确 code（Some）优先于 catch-all（None）。
+        out.sort_by_key(|n| match &n.kind {
+            NodeKind::BoundaryErrorEvent(be) => be.error_code.is_none(),
+            _ => true,
+        });
+        out
+    }
+
+    /// 找一个匹配某 errorCode 的**错误启动事件**（A3，进程级事件子流程入口）。
+    ///
+    /// 遍历全体 ErrorStartEvent，返回首个「error_code == 抛出 code 或 catch-all(None)」的节点。
+    /// 精确 code 优先于 catch-all（同边界语义）。供引擎在**边界事件未命中后**兜底：把错误交给
+    /// 进程级错误事件子流程处理。无匹配返回 None。
+    pub fn error_event_subprocess_for(&self, thrown_code: &str) -> Option<&FlowNode> {
+        let mut candidates: Vec<&FlowNode> = self
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::ErrorStartEvent(_)))
+            .collect();
+        candidates.sort_by_key(|n| match &n.kind {
+            NodeKind::ErrorStartEvent(es) => es.error_code.is_none(),
+            _ => true,
+        });
+        candidates.into_iter().find(|n| match &n.kind {
+            NodeKind::ErrorStartEvent(es) => {
+                es.error_code.as_deref() == Some(thrown_code) || es.error_code.is_none()
+            }
+            _ => false,
+        })
+    }
+
     /// 编译后自检：结构完整性校验。
     ///
     /// 在 IR 层挡住非法定义，让引擎的推进循环可以假设「结构永远合法」。
@@ -363,9 +614,9 @@ impl ProcessDefinition {
         if self.nodes.is_empty() {
             return Err(Error::InvalidDefinition("流程没有任何节点".into()));
         }
-        // start 必须指向一个 StartEvent。
+        // start 必须指向一个 StartEvent（普通 或 消息启动 A2）。
         match &self.node(self.start).kind {
-            NodeKind::StartEvent => {}
+            NodeKind::StartEvent | NodeKind::MessageStartEvent(_) => {}
             other => {
                 return Err(Error::InvalidDefinition(format!(
                     "start 未指向 startEvent，实际为 {other:?}"

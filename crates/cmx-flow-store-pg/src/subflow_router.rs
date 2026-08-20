@@ -20,6 +20,42 @@ use cmx_flow_model::{RouteError, RouteResult, SubflowRouter};
 #[derive(Clone)]
 pub struct PgSubflowRouter {
     db_id: String,
+    /// 自分级维度字典规格注册表（RD1）：`dim_key → DimSpec`。用于「沿维度字典物化路径向上继承」。
+    /// `org` 维度内建（不必注册）；其余自分级 cf_* 字典由 app 层按 DCT 元数据注册进来。
+    /// 未注册的维度 = 平级字典，只走精确 + 兜底（无继承）。
+    dim_specs: std::collections::HashMap<String, DimSpec>,
+}
+
+/// 一个自分级路由维度的物理规格（RD1）——把 M5.2 写死的 cmx_org/path/'/' 参数化。
+#[derive(Clone, Debug)]
+pub struct DimSpec {
+    /// 维度字典物理表名（如 `cmx_org` / `cf_legal_entity`）。仅允许白名单形态（见 [`is_safe_table`]）。
+    pub table: String,
+    /// 条目主键列（org=`id`；cf_* 视 pk 为 `id` 或 `code`）。
+    pub id_col: String,
+    /// 物化路径列（org=`path`；cf_*=`full_path`）。
+    pub path_col: String,
+    /// 路径分隔符（org=`/`；cf_*=`.`）——继承前缀匹配追加它修边界（`/a` 不再错配 `/ab`）。
+    pub delim: String,
+}
+
+impl DimSpec {
+    /// 内建组织维度规格（cmx_org / id / path / '/'）——保住 M5.2 行为。
+    pub fn org() -> Self {
+        Self {
+            table: "cmx_org".into(),
+            id_col: "id".into(),
+            path_col: "path".into(),
+            delim: "/".into(),
+        }
+    }
+}
+
+/// 表/列名白名单：仅允许 `cmx_org` 或 `cf_*`/一般标识符（防注入面扩大——虽来自受信 dictMeta）。
+fn is_safe_ident(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 63
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 impl PgSubflowRouter {
@@ -27,7 +63,23 @@ impl PgSubflowRouter {
     pub fn new(db_id: impl Into<String>) -> Self {
         Self {
             db_id: db_id.into(),
+            dim_specs: std::collections::HashMap::new(),
         }
+    }
+
+    /// 注册一个自分级维度字典的物理规格（RD1，app 层按 DCT 元数据调用）。
+    /// `org` 内建，无需注册；重复注册以最后一次为准。规格里表/列名非法则忽略（保守跳继承）。
+    pub fn register_dim(&mut self, dim_key: impl Into<String>, spec: DimSpec) -> &mut Self {
+        self.dim_specs.insert(dim_key.into(), spec);
+        self
+    }
+
+    /// 取某维度的规格：org 内建；其余查注册表。None = 平级/未注册（无继承层）。
+    fn dim_spec(&self, dim_key: &str) -> Option<DimSpec> {
+        if dim_key == cmx_flow_model::DIM_ORG {
+            return Some(DimSpec::org());
+        }
+        self.dim_specs.get(dim_key).cloned()
     }
 
     /// 执行一条只取首行 target_definition_key 的查询；无行 → None。
@@ -56,41 +108,61 @@ fn esc(s: &str) -> String {
 
 #[async_trait]
 impl SubflowRouter for PgSubflowRouter {
-    async fn resolve(&self, called_key: &str, org_id: Option<&str>) -> RouteResult<String> {
+    async fn resolve(
+        &self,
+        called_key: &str,
+        dim_key: &str,
+        dim_value: Option<&str>,
+    ) -> RouteResult<String> {
         let k = esc(called_key);
+        let dk = esc(dim_key);
 
-        // 有组织：先精确，再沿 path 向上继承。
-        if let Some(org) = org_id {
-            let o = esc(org);
-            // 1) 精确：本组织的启用绑定。
+        // 有维度取值：先精确，再（若该维度是自分级字典）沿其物化路径向上继承。
+        if let Some(dv) = dim_value {
+            let v = esc(dv);
+            // 1) 精确：本维度取值的启用绑定。
             let exact = format!(
                 "SELECT target_definition_key FROM cmx_flow_subflow_binding \
-                 WHERE called_key = '{k}' AND org_id = '{o}' AND enabled = TRUE LIMIT 1"
+                 WHERE called_key = '{k}' AND dim_key = '{dk}' AND dim_value = '{v}' AND enabled = TRUE LIMIT 1"
             );
             if let Some(t) = self.query_one_target(&exact, "subflow_exact").await? {
                 return Ok(t);
             }
-            // 2) 继承：本组织的所有祖先（含自身）里，谁绑了本 key，取 path 最长（最近）。
-            //    cmx_org 的 path 为物化路径，祖先的 path 是本组织 path 的前缀。
-            let inherited = format!(
-                "SELECT b.target_definition_key \
-                 FROM cmx_flow_subflow_binding b \
-                 JOIN cmx_org anc ON anc.id = b.org_id \
-                 JOIN cmx_org self_org ON self_org.id = '{o}' \
-                 WHERE b.called_key = '{k}' AND b.enabled = TRUE \
-                   AND self_org.path IS NOT NULL AND anc.path IS NOT NULL \
-                   AND self_org.path LIKE anc.path || '%' \
-                 ORDER BY length(anc.path) DESC LIMIT 1"
-            );
-            if let Some(t) = self.query_one_target(&inherited, "subflow_inherit").await? {
-                return Ok(t);
+            // 2) 继承（RD1）：该维度是自分级字典时，沿其物化路径向上找最近祖先的绑定（path 最长=最近）。
+            //    把 M5.2 写死的 cmx_org/path 参数化为 DimSpec{table,id_col,path_col,delim}；
+            //    平级/未注册维度无 spec → 天然跳过继承（无「上级」概念，非缺陷）。
+            if let Some(spec) = self.dim_spec(dim_key) {
+                // 白名单校验表/列名（受信 dictMeta，仍防御注入面扩大）；非法则跳继承。
+                if is_safe_ident(&spec.table)
+                    && is_safe_ident(&spec.id_col)
+                    && is_safe_ident(&spec.path_col)
+                {
+                    let (tbl, idc, pc) = (&spec.table, &spec.id_col, &spec.path_col);
+                    let d = esc(&spec.delim);
+                    // 追加分隔符修边界 bug：`self.path LIKE anc.path || delim || '%'`，
+                    // 使 `/a` 不再错配 `/ab`（祖先自身用 self=anc 的等值覆盖）。
+                    let inherited = format!(
+                        "SELECT b.target_definition_key \
+                         FROM cmx_flow_subflow_binding b \
+                         JOIN \"{tbl}\" anc  ON anc.\"{idc}\" = b.dim_value \
+                         JOIN \"{tbl}\" self_e ON self_e.\"{idc}\" = '{v}' \
+                         WHERE b.called_key = '{k}' AND b.dim_key = '{dk}' AND b.enabled = TRUE \
+                           AND self_e.\"{pc}\" IS NOT NULL AND anc.\"{pc}\" IS NOT NULL \
+                           AND (self_e.\"{pc}\" = anc.\"{pc}\" \
+                                OR self_e.\"{pc}\" LIKE anc.\"{pc}\" || '{d}' || '%') \
+                         ORDER BY length(anc.\"{pc}\") DESC LIMIT 1"
+                    );
+                    if let Some(t) = self.query_one_target(&inherited, "subflow_inherit").await? {
+                        return Ok(t);
+                    }
+                }
             }
         }
 
-        // 3) 兜底：org_id IS NULL 的默认绑定。
+        // 3) 兜底：dim_value IS NULL 的默认绑定。
         let default = format!(
             "SELECT target_definition_key FROM cmx_flow_subflow_binding \
-             WHERE called_key = '{k}' AND org_id IS NULL AND enabled = TRUE LIMIT 1"
+             WHERE called_key = '{k}' AND dim_key = '{dk}' AND dim_value IS NULL AND enabled = TRUE LIMIT 1"
         );
         if let Some(t) = self.query_one_target(&default, "subflow_default").await? {
             return Ok(t);
@@ -98,7 +170,8 @@ impl SubflowRouter for PgSubflowRouter {
 
         Err(RouteError::NoBinding {
             called_key: called_key.to_string(),
-            org: org_id.map(|s| s.to_string()),
+            dim_key: dim_key.to_string(),
+            dim_value: dim_value.map(|s| s.to_string()),
         })
     }
 }
@@ -111,17 +184,19 @@ impl SubflowRouter for PgSubflowRouter {
 // 组织名，前端不必再查一次。
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 一条子流程组织绑定（设计态视图，含组织名便于展示）。
+/// 一条子流程路由绑定（设计态视图，含维度取值展示名便于展示）。
 #[derive(Debug, Clone)]
 pub struct SubflowBinding {
     /// 绑定行 id。
     pub id: String,
     /// 逻辑子流程 key（= callActivity 的 cmx:calledKey）。
     pub called_key: String,
-    /// 组织 id（None = 默认兜底绑定）。
-    pub org_id: Option<String>,
-    /// 组织名（JOIN cmx_org 得，兜底绑定为 None）。
-    pub org_name: Option<String>,
+    /// 路由维度 key（"org" / 某字典 dictCode）。
+    pub dim_key: String,
+    /// 维度取值（None = 默认兜底绑定）。RD0：org 维度即组织 id。
+    pub dim_value: Option<String>,
+    /// 维度取值展示名（org 维度 JOIN cmx_org 得组织名；兜底绑定为 None）。
+    pub dim_value_name: Option<String>,
     /// 目标子流程定义 key。
     pub target_definition_key: String,
     /// 是否启用。
@@ -154,34 +229,39 @@ impl PgSubflowBindingStore {
     }
 
     /// 建表（幂等）。生产库（primary/IAM）不由引擎 ensure_schema 覆盖，故管理面自带 DDL 兜底。
+    /// RD2：补 dim_key/dim_value 维度列（与主 DDL ddl.rs 一致），老 org_id 数据迁移到 dim_value。
     pub async fn ensure_schema(&self) -> Result<(), String> {
-        let ddl = "CREATE TABLE IF NOT EXISTS cmx_flow_subflow_binding (\
-            id VARCHAR(64) PRIMARY KEY, called_key VARCHAR(128) NOT NULL, org_id VARCHAR(64), \
-            target_definition_key VARCHAR(128) NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, \
-            remark VARCHAR(500), created_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now())";
-        execute_sql(&self.db_id, None, ddl)
-            .await
-            .map_err(|e| format!("建绑定表失败: {e}"))?;
-        execute_sql(
-            &self.db_id,
-            None,
+        let stmts = [
+            "CREATE TABLE IF NOT EXISTS cmx_flow_subflow_binding (\
+                id VARCHAR(64) PRIMARY KEY, called_key VARCHAR(128) NOT NULL, org_id VARCHAR(64), \
+                target_definition_key VARCHAR(128) NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, \
+                remark VARCHAR(500), created_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
             "CREATE INDEX IF NOT EXISTS idx_cmx_flow_subflow_binding_key ON cmx_flow_subflow_binding (called_key)",
-        )
-        .await
-        .map_err(|e| format!("建绑定索引失败: {e}"))?;
+            "ALTER TABLE cmx_flow_subflow_binding ADD COLUMN IF NOT EXISTS dim_key VARCHAR(64) NOT NULL DEFAULT 'org'",
+            "ALTER TABLE cmx_flow_subflow_binding ADD COLUMN IF NOT EXISTS dim_value VARCHAR(128)",
+            "UPDATE cmx_flow_subflow_binding SET dim_value = org_id WHERE dim_value IS NULL AND org_id IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS idx_cmx_flow_subflow_binding_dim ON cmx_flow_subflow_binding (called_key, dim_key, dim_value)",
+        ];
+        for ddl in stmts {
+            execute_sql(&self.db_id, None, ddl)
+                .await
+                .map_err(|e| format!("建绑定表失败: {e}"))?;
+        }
         Ok(())
     }
 
-    /// 列某逻辑 key 的全部绑定（带组织名，兜底绑定排最后）。
+    /// 列某逻辑 key 的全部绑定（org 维度带组织名，兜底绑定排最后）。
+    /// RD2：返回 dim_key/dim_value；org 维度 LEFT JOIN cmx_org 带出组织名，其余维度展示名先等于 dim_value
+    /// （app 层可用 DimensionCatalog 二次补名）。
     pub async fn list_by_key(&self, called_key: &str) -> Result<Vec<SubflowBinding>, String> {
         let sql = format!(
-            "SELECT b.id, b.called_key, b.org_id, o.name AS org_name, \
+            "SELECT b.id, b.called_key, b.dim_key, b.dim_value, o.name AS dim_value_name, \
                     b.target_definition_key, b.enabled, b.remark \
              FROM cmx_flow_subflow_binding b \
-             LEFT JOIN cmx_org o ON o.id = b.org_id \
+             LEFT JOIN cmx_org o ON b.dim_key = 'org' AND o.id = b.dim_value \
              WHERE b.called_key = '{}' \
-             ORDER BY (b.org_id IS NULL), o.path NULLS FIRST",
+             ORDER BY b.dim_key, (b.dim_value IS NULL), b.dim_value NULLS FIRST",
             esc(called_key)
         );
         let ds = query_sql(&self.db_id, None, &sql, "subflow_binding_list")
@@ -200,14 +280,20 @@ impl PgSubflowBindingStore {
         };
         Ok(ds
             .iter()
-            .map(|row| SubflowBinding {
-                id: gs(row, "id").unwrap_or_default(),
-                called_key: gs(row, "called_key").unwrap_or_default(),
-                org_id: gs(row, "org_id"),
-                org_name: gs(row, "org_name"),
-                target_definition_key: gs(row, "target_definition_key").unwrap_or_default(),
-                enabled: gb(row, "enabled"),
-                remark: gs(row, "remark"),
+            .map(|row| {
+                let dim_value = gs(row, "dim_value");
+                // 展示名：org 维度用 JOIN 出的组织名；其余维度退化为取值本身（app 层可再补）。
+                let dim_value_name = gs(row, "dim_value_name").or_else(|| dim_value.clone());
+                SubflowBinding {
+                    id: gs(row, "id").unwrap_or_default(),
+                    called_key: gs(row, "called_key").unwrap_or_default(),
+                    dim_key: gs(row, "dim_key").unwrap_or_else(|| "org".into()),
+                    dim_value,
+                    dim_value_name,
+                    target_definition_key: gs(row, "target_definition_key").unwrap_or_default(),
+                    enabled: gb(row, "enabled"),
+                    remark: gs(row, "remark"),
+                }
             })
             .collect())
     }
@@ -234,50 +320,59 @@ impl PgSubflowBindingStore {
         Ok(out)
     }
 
-    /// upsert 一条绑定：同 (called_key, org_id) 视为同一绑定（改目标/启用/备注）。
-    /// org_id 为 None 表示默认兜底绑定。返回绑定 id。
+    /// upsert 一条绑定：同 (called_key, dim_key, dim_value) 视为同一绑定（改目标/启用/备注）。
+    /// dim_value 为 None 表示该维度的默认兜底绑定。org 维度同时镜像写 org_id 列（兼容）。
     #[allow(clippy::too_many_arguments)]
     pub async fn upsert(
         &self,
         id: &str,
         called_key: &str,
-        org_id: Option<&str>,
+        dim_key: &str,
+        dim_value: Option<&str>,
         target_definition_key: &str,
         enabled: bool,
         remark: Option<&str>,
     ) -> Result<(), String> {
-        // 先删同 (called_key, org_id) 的旧绑定（org_id NULL 要特判），再插——避免同组织多条。
-        let del = match org_id {
-            Some(o) => format!(
-                "DELETE FROM cmx_flow_subflow_binding WHERE called_key = '{}' AND org_id = '{}'",
+        // 先删同 (called_key, dim_key, dim_value) 的旧绑定（dim_value NULL 要特判），再插——避免同维度取值多条。
+        let del = match dim_value {
+            Some(v) => format!(
+                "DELETE FROM cmx_flow_subflow_binding WHERE called_key = '{}' AND dim_key = '{}' AND dim_value = '{}'",
                 esc(called_key),
-                esc(o)
+                esc(dim_key),
+                esc(v)
             ),
             None => format!(
-                "DELETE FROM cmx_flow_subflow_binding WHERE called_key = '{}' AND org_id IS NULL",
-                esc(called_key)
+                "DELETE FROM cmx_flow_subflow_binding WHERE called_key = '{}' AND dim_key = '{}' AND dim_value IS NULL",
+                esc(called_key),
+                esc(dim_key)
             ),
         };
         execute_sql(&self.db_id, None, &del)
             .await
             .map_err(|e| format!("清理旧绑定失败: {e}"))?;
 
+        // org 维度镜像写 org_id 列（兼容老读路径 / 回滚）；其余维度 org_id 为 NULL。
+        let org_mirror = if dim_key == cmx_flow_model::DIM_ORG {
+            dim_value
+        } else {
+            None
+        };
         let sql = "INSERT INTO cmx_flow_subflow_binding \
-            (id, called_key, org_id, target_definition_key, enabled, remark, created_at, updated_at) \
-            VALUES ($1, $2, $3, $4, $5, $6, now(), now())";
+            (id, called_key, dim_key, dim_value, org_id, target_definition_key, enabled, remark, created_at, updated_at) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())";
+        let opt = |o: Option<&str>| match o {
+            Some(s) => DataValue::String(s.to_string()),
+            None => DataValue::Null,
+        };
         let params = SqlParams::DataValues(vec![
             DataValue::String(id.to_string()),
             DataValue::String(called_key.to_string()),
-            match org_id {
-                Some(o) => DataValue::String(o.to_string()),
-                None => DataValue::Null,
-            },
+            DataValue::String(dim_key.to_string()),
+            opt(dim_value),
+            opt(org_mirror),
             DataValue::String(target_definition_key.to_string()),
             DataValue::Bool(enabled),
-            match remark {
-                Some(r) => DataValue::String(r.to_string()),
-                None => DataValue::Null,
-            },
+            opt(remark),
         ]);
         execute_sql_with_params(&self.db_id, None, sql, params)
             .await
@@ -307,6 +402,55 @@ impl PgSubflowBindingStore {
             match row.get_by_name(schema, c) {
                 Some(DataValue::String(s)) => Some(s.clone()),
                 Some(DataValue::ShortStr(s)) | Some(DataValue::LongStr(s)) => Some(s.to_string()),
+                _ => None,
+            }
+        };
+        Ok(ds
+            .iter()
+            .map(|row| OrgNode {
+                id: gs(row, "id").unwrap_or_default(),
+                name: gs(row, "name").unwrap_or_default(),
+                parent_id: gs(row, "parent_id"),
+                path: gs(row, "path"),
+            })
+            .collect())
+    }
+
+    /// 列某维度字典的条目（RD2，设计器维度条目选择器用）。org 维度走 [`Self::list_orgs`]；
+    /// 其余自分级 cf_* 字典按 [`DimSpec`] 直读（接法①：同库 SQL）。表/列名白名单校验防注入。
+    /// 返回 [`OrgNode`] 复用其 {id,name,parent_id,path} 结构（name 取 label/name/code 首个可得列）。
+    pub async fn list_dim_entries(
+        &self,
+        spec: &DimSpec,
+        name_col: &str,
+        parent_col: Option<&str>,
+    ) -> Result<Vec<OrgNode>, String> {
+        if !is_safe_ident(&spec.table)
+            || !is_safe_ident(&spec.id_col)
+            || !is_safe_ident(&spec.path_col)
+            || !is_safe_ident(name_col)
+            || parent_col.map(|p| !is_safe_ident(p)).unwrap_or(false)
+        {
+            return Err(format!("维度字典 {} 表/列名非法（白名单拒绝）", spec.table));
+        }
+        let (tbl, idc, pc) = (&spec.table, &spec.id_col, &spec.path_col);
+        let parent_sel = match parent_col {
+            Some(p) => format!("\"{p}\" AS parent_id"),
+            None => "NULL AS parent_id".to_string(),
+        };
+        let sql = format!(
+            "SELECT \"{idc}\" AS id, \"{name_col}\" AS name, {parent_sel}, \"{pc}\" AS path \
+             FROM \"{tbl}\" ORDER BY \"{pc}\""
+        );
+        let ds = query_sql(&self.db_id, None, &sql, "subflow_dim_entries")
+            .await
+            .map_err(|e| format!("查询维度字典条目失败: {e}"))?;
+        let schema = ds.schema.as_ref();
+        let gs = |row: &cmx_core::model::data::dataset::Row, c: &str| -> Option<String> {
+            match row.get_by_name(schema, c) {
+                Some(DataValue::String(s)) => Some(s.clone()),
+                Some(DataValue::ShortStr(s)) | Some(DataValue::LongStr(s)) => Some(s.to_string()),
+                Some(DataValue::Int(n)) => Some(n.to_string()),
                 _ => None,
             }
         };

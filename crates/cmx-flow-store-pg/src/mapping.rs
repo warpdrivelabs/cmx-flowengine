@@ -12,9 +12,10 @@ use cmx_core::model::cell::{DataValue, SqlTypeMarker};
 use cmx_core::model::data::dataset::DataSet;
 use cmx_database_pg::SqlParams;
 use cmx_flow_model::{
-    CandidateKind, CcRecord, CcSummary, DueJob, InstanceState, InstanceSummary, MiScope,
-    ProcessInstance, StoreError, StoreResult, Task, TaskCandidate, TaskDelegation, TimerJob, Token,
-    TokenState, Variables,
+    ActivityRecord, AsyncJob, CandidateKind, CcRecord, CcSummary, DeadLetterJob, DueJob,
+    InstanceState, InstanceSummary, MessageSubscription, MessageSubscriptionKind, MiScope,
+    ProcessInstance, StoreError, StoreResult, Task, TaskCandidate, TaskDelegation, TimerJob,
+    TimerJobKind, Token, TokenState, Variables,
 };
 use serde_json::Value as JsonValue;
 
@@ -49,6 +50,9 @@ pub fn token_state_str(s: TokenState) -> &'static str {
         TokenState::Joining => "JOINING",
         TokenState::WaitingSubflow => "WAITING_SUBFLOW",
         TokenState::WaitingMessage => "WAITING_MESSAGE",
+        TokenState::WaitingTimer => "WAITING_TIMER",
+        TokenState::WaitingAsync => "WAITING_ASYNC",
+        TokenState::WaitingEventGateway => "WAITING_EVENT_GATEWAY",
         TokenState::Incident => "INCIDENT",
         TokenState::Ended => "ENDED",
     }
@@ -62,6 +66,9 @@ fn parse_token_state(s: &str) -> StoreResult<TokenState> {
         "JOINING" => Ok(TokenState::Joining),
         "WAITING_SUBFLOW" => Ok(TokenState::WaitingSubflow),
         "WAITING_MESSAGE" => Ok(TokenState::WaitingMessage),
+        "WAITING_TIMER" => Ok(TokenState::WaitingTimer),
+        "WAITING_ASYNC" => Ok(TokenState::WaitingAsync),
+        "WAITING_EVENT_GATEWAY" => Ok(TokenState::WaitingEventGateway),
         "INCIDENT" => Ok(TokenState::Incident),
         "ENDED" => Ok(TokenState::Ended),
         other => Err(StoreError::Backend(format!("未知令牌状态: {other}"))),
@@ -127,8 +134,8 @@ fn opt_json(v: &Option<JsonValue>) -> DataValue {
 pub fn insert_instance(inst: &ProcessInstance) -> (String, SqlParams) {
     let sql = "INSERT INTO cmx_flow_instance \
         (id, definition_key, business_key, state, variables, created_at, updated_at, ended_at, \
-         org_id, parent_instance_id, parent_token_id, parent_node_bpmn_id) \
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
+         org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id) \
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"
         .to_string();
     let params = vec![
         DataValue::String(inst.id.clone()),
@@ -140,11 +147,21 @@ pub fn insert_instance(inst: &ProcessInstance) -> (String, SqlParams) {
         DataValue::DateTime(inst.updated_at),
         opt_ts(&inst.ended_at),
         opt_text(&inst.org_id),
+        dimensions_param(&inst.dimensions),
         opt_text(&inst.parent_instance_id),
         opt_text(&inst.parent_token_id),
         opt_text(&inst.parent_node_bpmn_id),
     ];
     (sql, SqlParams::DataValues(params))
+}
+
+/// 维度上下文 → jsonb 参数（RD3）。空 map → NULL（列可空，省存储）。
+fn dimensions_param(dims: &std::collections::BTreeMap<String, String>) -> DataValue {
+    if dims.is_empty() {
+        DataValue::Null
+    } else {
+        DataValue::Json(serde_json::to_string(dims).unwrap_or_else(|_| "{}".into()))
+    }
 }
 
 /// 实例 UPDATE（按 id）。父子/组织列在创建后不变，此处不重复更新，仅更新易变列。
@@ -234,12 +251,22 @@ pub fn insert_mi_scope(scope: &MiScope) -> (String, SqlParams) {
     (sql, SqlParams::DataValues(params))
 }
 
-/// 定时器作业 INSERT（M2.5）。due_at 是 NOT NULL TIMESTAMPTZ，直接绑 DateTime。
+/// 定时器作业 INSERT（M2.5 + A1/A5）。due_at 是 NOT NULL TIMESTAMPTZ，直接绑 DateTime。
+/// kind（边界/中间捕获）+ cycle_interval_seconds/cycle_remaining（周期定时器）随作业持久化。
 pub fn insert_job(job: &TimerJob) -> (String, SqlParams) {
     let sql = "INSERT INTO cmx_flow_job \
-        (id, instance_id, token_id, boundary_bpmn_id, cancel_activity, due_at, created_at) \
-        VALUES ($1, $2, $3, $4, $5, $6, $7)"
+        (id, instance_id, token_id, boundary_bpmn_id, cancel_activity, due_at, created_at, \
+         kind, cycle_interval_seconds, cycle_remaining) \
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
         .to_string();
+    let cycle_interval: DataValue = match job.cycle_interval_seconds {
+        Some(v) => DataValue::Int(v),
+        None => DataValue::NullTyped(SqlTypeMarker::Int),
+    };
+    let cycle_remaining: DataValue = match job.cycle_remaining {
+        Some(v) => DataValue::Int(v as i64),
+        None => DataValue::NullTyped(SqlTypeMarker::Int),
+    };
     let params = vec![
         DataValue::String(job.id.clone()),
         DataValue::String(job.instance_id.clone()),
@@ -248,8 +275,19 @@ pub fn insert_job(job: &TimerJob) -> (String, SqlParams) {
         DataValue::Bool(job.cancel_activity),
         DataValue::DateTime(job.due_at),
         DataValue::DateTime(job.created_at),
+        DataValue::String(timer_job_kind_str(job.kind).to_string()),
+        cycle_interval,
+        cycle_remaining,
     ];
     (sql, SqlParams::DataValues(params))
+}
+
+/// TimerJobKind → 存储文本。
+fn timer_job_kind_str(k: TimerJobKind) -> &'static str {
+    match k {
+        TimerJobKind::Boundary => "BOUNDARY",
+        TimerJobKind::IntermediateCatch => "INTERMEDIATE_CATCH",
+    }
 }
 
 /// 任务候选人 INSERT（M4.1）。
@@ -396,6 +434,8 @@ pub fn row_to_instance(ds: &DataSet) -> StoreResult<Option<ProcessInstance>> {
         updated_at,
         ended_at,
         org_id: get_opt_string(row, schema, "org_id"),
+        // RD0：默认空；RD3 起读 dimensions jsonb 列。
+        dimensions: get_dimensions(row, schema),
         parent_instance_id: get_opt_string(row, schema, "parent_instance_id"),
         parent_token_id: get_opt_string(row, schema, "parent_token_id"),
         parent_node_bpmn_id: get_opt_string(row, schema, "parent_node_bpmn_id"),
@@ -417,6 +457,7 @@ pub fn rows_to_instances(ds: &DataSet) -> StoreResult<Vec<ProcessInstance>> {
             updated_at: get_ts(row, schema, "updated_at")?,
             ended_at: get_opt_ts(row, schema, "ended_at"),
             org_id: get_opt_string(row, schema, "org_id"),
+            dimensions: get_dimensions(row, schema),
             parent_instance_id: get_opt_string(row, schema, "parent_instance_id"),
             parent_token_id: get_opt_string(row, schema, "parent_token_id"),
             parent_node_bpmn_id: get_opt_string(row, schema, "parent_node_bpmn_id"),
@@ -494,11 +535,16 @@ pub fn rows_to_mi_scopes(ds: &DataSet) -> StoreResult<Vec<MiScope>> {
     Ok(out)
 }
 
-/// DataSet → 定时器作业列表（M2.5）。
+/// DataSet → 定时器作业列表（M2.5 + A1/A5）。kind 缺列（老库未补列）回退 Boundary；
+/// cycle_* 缺失/NULL 回退 None（非周期），保证既有库平滑升级。
 pub fn rows_to_jobs(ds: &DataSet) -> StoreResult<Vec<TimerJob>> {
     let schema = ds.schema.as_ref();
     let mut out = Vec::with_capacity(ds.row_count());
     for row in ds.iter() {
+        let kind = match get_opt_string(row, schema, "kind").as_deref() {
+            Some("INTERMEDIATE_CATCH") => TimerJobKind::IntermediateCatch,
+            _ => TimerJobKind::Boundary,
+        };
         out.push(TimerJob {
             id: get_string(row, schema, "id")?,
             instance_id: get_string(row, schema, "instance_id")?,
@@ -507,6 +553,9 @@ pub fn rows_to_jobs(ds: &DataSet) -> StoreResult<Vec<TimerJob>> {
             cancel_activity: get_bool(row, schema, "cancel_activity"),
             due_at: get_ts(row, schema, "due_at")?,
             created_at: get_ts(row, schema, "created_at")?,
+            kind,
+            cycle_interval_seconds: get_opt_i64(row, schema, "cycle_interval_seconds"),
+            cycle_remaining: get_opt_i64(row, schema, "cycle_remaining").map(|v| v as u32),
         });
     }
     Ok(out)
@@ -654,6 +703,14 @@ fn get_i64(row: &Row, schema: &Schema, col: &str) -> i64 {
     }
 }
 
+/// 取可空整数列（列缺失 / NULL / 非整数 → None）。周期定时器 cycle_* 列用（可空）。
+fn get_opt_i64(row: &Row, schema: &Schema, col: &str) -> Option<i64> {
+    match row.get_by_name(schema, col) {
+        Some(DataValue::Int(v)) => Some(*v),
+        _ => None,
+    }
+}
+
 fn get_ts(row: &Row, schema: &Schema, col: &str) -> StoreResult<DateTime<Utc>> {
     match row.get_by_name(schema, col) {
         Some(DataValue::DateTime(dt)) => Ok(*dt),
@@ -668,6 +725,242 @@ fn get_opt_ts(row: &Row, schema: &Schema, col: &str) -> Option<DateTime<Utc>> {
         Some(DataValue::DateTime(dt)) => Some(*dt),
         _ => None,
     }
+}
+
+// ============================ 消息订阅（P3 + A2） ============================
+
+/// 消息订阅 UPSERT（幂等，同 id 再写覆盖）。
+pub fn upsert_message_subscription(sub: &MessageSubscription) -> (String, SqlParams) {
+    let sql = "INSERT INTO cmx_flow_message_subscription \
+        (id, kind, message_name, instance_id, token_id, node_bpmn_id, \
+         correlation_var, definition_key, tenant_id, created_at) \
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+        ON CONFLICT (id) DO UPDATE SET \
+          kind = EXCLUDED.kind, message_name = EXCLUDED.message_name, \
+          instance_id = EXCLUDED.instance_id, token_id = EXCLUDED.token_id, \
+          node_bpmn_id = EXCLUDED.node_bpmn_id, correlation_var = EXCLUDED.correlation_var, \
+          definition_key = EXCLUDED.definition_key, tenant_id = EXCLUDED.tenant_id"
+        .to_string();
+    let kind_str = match sub.kind {
+        MessageSubscriptionKind::Catch => "CATCH",
+        MessageSubscriptionKind::Start => "START",
+    };
+    let params = vec![
+        DataValue::String(sub.id.clone()),
+        DataValue::String(kind_str.to_string()),
+        DataValue::String(sub.message_name.clone()),
+        opt_text(&sub.instance_id),
+        opt_text(&sub.token_id),
+        DataValue::String(sub.node_bpmn_id.clone()),
+        opt_text(&sub.correlation_var),
+        opt_text(&sub.definition_key),
+        DataValue::String(sub.tenant_id.clone()),
+        DataValue::DateTime(sub.created_at),
+    ];
+    (sql, SqlParams::DataValues(params))
+}
+
+/// DataSet → 消息订阅列表。
+pub fn rows_to_message_subscriptions(ds: &DataSet) -> StoreResult<Vec<MessageSubscription>> {
+    let schema = ds.schema.as_ref();
+    let mut out = Vec::with_capacity(ds.row_count());
+    for row in ds.iter() {
+        let kind = match get_opt_string(row, schema, "kind").as_deref() {
+            Some("START") => MessageSubscriptionKind::Start,
+            _ => MessageSubscriptionKind::Catch,
+        };
+        out.push(MessageSubscription {
+            id: get_string(row, schema, "id")?,
+            kind,
+            message_name: get_string(row, schema, "message_name")?,
+            instance_id: get_opt_string(row, schema, "instance_id"),
+            token_id: get_opt_string(row, schema, "token_id"),
+            node_bpmn_id: get_string(row, schema, "node_bpmn_id")?,
+            correlation_var: get_opt_string(row, schema, "correlation_var"),
+            definition_key: get_opt_string(row, schema, "definition_key"),
+            tenant_id: get_string(row, schema, "tenant_id")?,
+            created_at: get_ts(row, schema, "created_at")?,
+        });
+    }
+    Ok(out)
+}
+
+// ============================ 异步 Job（P1） ============================
+
+/// AsyncJob 写入 —— ON CONFLICT DO NOTHING（幂等首存）。
+///
+/// 引擎的 flush 只在作业首次创建时写；此后锁列（locked_by/lock_expires_at）与 retries
+/// 只由 acquire/fail 改。用 DO NOTHING 而非 DO UPDATE，避免某次无关的 flush（载入既有
+/// 作业后重存）把 worker 刚抢占的锁抹掉 → 造成重复领取、delegate 二次执行。
+pub fn upsert_async_job(job: &AsyncJob) -> (String, SqlParams) {
+    let sql = "INSERT INTO cmx_flow_async_job \
+        (id, instance_id, token_id, node_bpmn_id, delegate_key, topic, max_retries, retries, \
+         retry_backoff_seconds, locked_by, lock_expires_at, created_at) \
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+        ON CONFLICT (id) DO NOTHING"
+        .to_string();
+    let params = vec![
+        DataValue::String(job.id.clone()),
+        DataValue::String(job.instance_id.clone()),
+        DataValue::String(job.token_id.clone()),
+        DataValue::String(job.node_bpmn_id.clone()),
+        DataValue::String(job.delegate_key.clone()),
+        opt_text(&job.topic),
+        DataValue::Int(job.max_retries as i64),
+        DataValue::Int(job.retries as i64),
+        match job.retry_backoff_seconds {
+            Some(v) => DataValue::Int(v),
+            None => DataValue::NullTyped(SqlTypeMarker::Int),
+        },
+        opt_text(&job.locked_by),
+        opt_ts(&job.lock_expires_at),
+        DataValue::DateTime(job.created_at),
+    ];
+    (sql, SqlParams::DataValues(params))
+}
+
+/// DataSet → AsyncJob 列表。
+pub fn rows_to_async_jobs(ds: &DataSet) -> StoreResult<Vec<AsyncJob>> {
+    let schema = ds.schema.as_ref();
+    let mut out = Vec::with_capacity(ds.row_count());
+    for row in ds.iter() {
+        out.push(AsyncJob {
+            id: get_string(row, schema, "id")?,
+            instance_id: get_string(row, schema, "instance_id")?,
+            token_id: get_string(row, schema, "token_id")?,
+            node_bpmn_id: get_string(row, schema, "node_bpmn_id")?,
+            delegate_key: get_string(row, schema, "delegate_key")?,
+            topic: get_opt_string(row, schema, "topic"),
+            max_retries: get_i64(row, schema, "max_retries") as i32,
+            retries: get_i64(row, schema, "retries") as i32,
+            retry_backoff_seconds: get_opt_i64(row, schema, "retry_backoff_seconds"),
+            locked_by: get_opt_string(row, schema, "locked_by"),
+            lock_expires_at: get_opt_ts(row, schema, "lock_expires_at"),
+            created_at: get_ts(row, schema, "created_at")?,
+        });
+    }
+    Ok(out)
+}
+
+/// `DELETE ... RETURNING instance_id, token_id` 首行 → (instance_id, token_id)。无行返回 None。
+pub fn first_instance_token_pair(ds: &DataSet) -> Option<(String, String)> {
+    let schema = ds.schema.as_ref();
+    let row = ds.iter().next()?;
+    let iid = match row.get_by_name(schema, "instance_id") {
+        Some(DataValue::String(s)) => s.clone(),
+        _ => return None,
+    };
+    let tid = match row.get_by_name(schema, "token_id") {
+        Some(DataValue::String(s)) => s.clone(),
+        _ => return None,
+    };
+    Some((iid, tid))
+}
+
+/// `UPDATE ... RETURNING retries` 首行 → 新的 retries 值。无行（作业不存在）返回 None。
+pub fn first_retries(ds: &DataSet) -> Option<i64> {
+    let schema = ds.schema.as_ref();
+    let row = ds.iter().next()?;
+    match row.get_by_name(schema, "retries") {
+        Some(DataValue::Int(v)) => Some(*v),
+        _ => None,
+    }
+}
+
+// ============================ 死信队列（P2） ============================
+
+/// DeadLetterJob 写入 —— ON CONFLICT DO UPDATE（幂等；同 id 覆盖失败原因/时刻）。
+pub fn upsert_dead_letter_job(job: &DeadLetterJob) -> (String, SqlParams) {
+    let sql = "INSERT INTO cmx_flow_deadletter_job \
+        (id, instance_id, token_id, node_bpmn_id, delegate_key, max_retries, error, \
+         original_created_at, dead_lettered_at, tenant_id) \
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+        ON CONFLICT (id) DO UPDATE SET \
+          error = EXCLUDED.error, dead_lettered_at = EXCLUDED.dead_lettered_at, \
+          max_retries = EXCLUDED.max_retries"
+        .to_string();
+    let params = vec![
+        DataValue::String(job.id.clone()),
+        DataValue::String(job.instance_id.clone()),
+        DataValue::String(job.token_id.clone()),
+        DataValue::String(job.node_bpmn_id.clone()),
+        DataValue::String(job.delegate_key.clone()),
+        DataValue::Int(job.max_retries as i64),
+        DataValue::String(job.error.clone()),
+        DataValue::DateTime(job.original_created_at),
+        DataValue::DateTime(job.dead_lettered_at),
+        DataValue::String(job.tenant_id.clone()),
+    ];
+    (sql, SqlParams::DataValues(params))
+}
+
+/// DataSet → DeadLetterJob 列表。
+pub fn rows_to_dead_letter_jobs(ds: &DataSet) -> StoreResult<Vec<DeadLetterJob>> {
+    let schema = ds.schema.as_ref();
+    let mut out = Vec::with_capacity(ds.row_count());
+    for row in ds.iter() {
+        out.push(DeadLetterJob {
+            id: get_string(row, schema, "id")?,
+            instance_id: get_string(row, schema, "instance_id")?,
+            token_id: get_string(row, schema, "token_id")?,
+            node_bpmn_id: get_string(row, schema, "node_bpmn_id")?,
+            delegate_key: get_string(row, schema, "delegate_key")?,
+            max_retries: get_i64(row, schema, "max_retries") as i32,
+            error: get_opt_string(row, schema, "error").unwrap_or_default(),
+            original_created_at: get_ts(row, schema, "original_created_at")?,
+            dead_lettered_at: get_ts(row, schema, "dead_lettered_at")?,
+            tenant_id: get_string(row, schema, "tenant_id")?,
+        });
+    }
+    Ok(out)
+}
+
+// ============================ 活动历史（A6） ============================
+
+/// ActivityRecord 写入 —— ON CONFLICT DO NOTHING（幂等；活动一旦闭合即不可变）。
+pub fn upsert_hi_activity(activity: &ActivityRecord) -> (String, SqlParams) {
+    let sql = "INSERT INTO cmx_flow_hi_activity \
+        (id, instance_id, token_id, activity_bpmn_id, activity_name, activity_type, \
+         entered_at, exited_at, duration_ms, assignee, tenant_id) \
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+        ON CONFLICT (id) DO NOTHING"
+        .to_string();
+    let params = vec![
+        DataValue::String(activity.id.clone()),
+        DataValue::String(activity.instance_id.clone()),
+        DataValue::String(activity.token_id.clone()),
+        DataValue::String(activity.activity_bpmn_id.clone()),
+        opt_text(&activity.activity_name),
+        DataValue::String(activity.activity_type.clone()),
+        DataValue::DateTime(activity.entered_at),
+        DataValue::DateTime(activity.exited_at),
+        DataValue::Int(activity.duration_ms),
+        opt_text(&activity.assignee),
+        DataValue::String(activity.tenant_id.clone()),
+    ];
+    (sql, SqlParams::DataValues(params))
+}
+
+/// DataSet → ActivityRecord 列表。
+pub fn rows_to_activities(ds: &DataSet) -> StoreResult<Vec<ActivityRecord>> {
+    let schema = ds.schema.as_ref();
+    let mut out = Vec::with_capacity(ds.row_count());
+    for row in ds.iter() {
+        out.push(ActivityRecord {
+            id: get_string(row, schema, "id")?,
+            instance_id: get_string(row, schema, "instance_id")?,
+            token_id: get_string(row, schema, "token_id")?,
+            activity_bpmn_id: get_string(row, schema, "activity_bpmn_id")?,
+            activity_name: get_opt_string(row, schema, "activity_name"),
+            activity_type: get_string(row, schema, "activity_type")?,
+            entered_at: get_ts(row, schema, "entered_at")?,
+            exited_at: get_ts(row, schema, "exited_at")?,
+            duration_ms: get_i64(row, schema, "duration_ms"),
+            assignee: get_opt_string(row, schema, "assignee"),
+            tenant_id: get_string(row, schema, "tenant_id")?,
+        });
+    }
+    Ok(out)
 }
 
 /// 可空 jsonb 列 → Option<serde_json::Value>。NULL / 解析失败回退 None。
@@ -694,4 +987,13 @@ fn get_variables(row: &Row, schema: &Schema, col: &str) -> StoreResult<Variables
         }
         _ => Ok(Variables::new()),
     }
+}
+
+/// 读维度上下文 jsonb（RD0/RD3）。列缺失（未 SELECT / 未建列）或解析失败 → 空 map（宽容，不报错）。
+fn get_dimensions(row: &Row, schema: &Schema) -> std::collections::BTreeMap<String, String> {
+    let raw = match row.get_by_name(schema, "dimensions") {
+        Some(DataValue::Json(s)) | Some(DataValue::String(s)) => s.clone(),
+        _ => return Default::default(),
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
 }

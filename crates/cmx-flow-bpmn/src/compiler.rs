@@ -16,9 +16,11 @@
 use std::collections::HashMap;
 
 use cmx_flow_model::{
-    BoundaryTimer, BusinessRule, CallActivity, CandidateKind, CandidateRef, FlowNode, MessageCatch,
-    MultiInstance, NodeId, NodeKind, ProcessDefinition, SequenceFlow, ServiceTask, UserTask,
-    VarMapping, candidate::parse_candidate_expr, duration::parse_iso8601_duration,
+    BoundaryError, BoundaryTimer, BusinessRule, CallActivity, CandidateKind, CandidateRef,
+    ErrorStart, FlowNode, MessageCatch, MessageStart, MultiInstance, NodeId, NodeKind,
+    ProcessDefinition, SequenceFlow, ServiceTask, TimerSpec, UserTask, VarMapping,
+    candidate::parse_candidate_expr,
+    duration::{parse_iso8601_cycle, parse_iso8601_datetime, parse_iso8601_duration},
 };
 use roxmltree::{Document, Node};
 
@@ -40,7 +42,7 @@ pub fn compile(xml: &str) -> Result<ProcessDefinition> {
     // —— Pass 1：建节点 + 索引（递归进嵌入 subProcess，A5 扁平化） —— //
     let mut nodes: Vec<FlowNode> = Vec::new();
     let mut index: HashMap<String, NodeId> = HashMap::new();
-    collect_nodes(&process, &mut nodes, &mut index)?;
+    collect_nodes(&process, &mut nodes, &mut index, None)?;
 
     // —— Pass 2：解析 sequenceFlow，挂出边（递归进 subProcess） —— //
     collect_flows(&process, &process, &mut nodes, &index)?;
@@ -48,10 +50,10 @@ pub fn compile(xml: &str) -> Result<ProcessDefinition> {
     // —— Pass 3：嵌入 subProcess 合成接线（透传入口 + 内部 endEvent 接子流程出口，A5） —— //
     wire_subprocesses(&process, &mut nodes, &index)?;
 
-    // —— 定位唯一 startEvent —— //
+    // —— 定位唯一 startEvent（普通 或 消息启动 A2） —— //
     let start = nodes
         .iter()
-        .find(|n| matches!(n.kind, NodeKind::StartEvent))
+        .find(|n| matches!(n.kind, NodeKind::StartEvent | NodeKind::MessageStartEvent(_)))
         .map(|n| n.id)
         .ok_or_else(|| Error::MissingElement("流程缺少 startEvent".into()))?;
 
@@ -75,15 +77,21 @@ pub fn compile(xml: &str) -> Result<ProcessDefinition> {
 }
 
 /// 递归建节点。scope 是 process 或 subProcess 元素；其活动类子元素建成节点，遇 subProcess 递归。
+/// `event_sp`：若非 None，表示当前 scope 是事件子流程（A3），其内部 startEvent 建成 ErrorStartEvent。
 fn collect_nodes(
     scope: &Node,
     nodes: &mut Vec<FlowNode>,
     index: &mut HashMap<String, NodeId>,
+    event_sp: Option<&str>,
 ) -> Result<()> {
     for child in scope.children().filter(Node::is_element) {
         let local = child.tag_name().name();
         let kind = match local {
-            "startEvent" => Some(NodeKind::StartEvent),
+            "startEvent" => Some(match event_sp {
+                // A3：事件子流程内的 startEvent 须带 errorEventDefinition → ErrorStartEvent。
+                Some(sp_bpmn) => parse_error_start_event(&child, sp_bpmn)?,
+                None => parse_start_event(&child),
+            }),
             "endEvent" => Some(if has_terminate_definition(&child) {
                 NodeKind::TerminateEndEvent
             } else {
@@ -95,10 +103,12 @@ fn collect_nodes(
             "exclusiveGateway" => Some(NodeKind::ExclusiveGateway),
             "parallelGateway" => Some(NodeKind::ParallelGateway),
             "inclusiveGateway" => Some(NodeKind::InclusiveGateway),
+            "eventBasedGateway" => Some(NodeKind::EventBasedGateway),
             "boundaryEvent" => parse_boundary_event(&child)?,
             "intermediateCatchEvent" => parse_intermediate_catch(&child)?,
             "callActivity" => Some(NodeKind::CallActivity(parse_call_activity(&child)?)),
-            // 嵌入子流程（A5）：本身建成透传节点，其内部节点递归提升进同一 arena。
+            // 子流程：triggeredByEvent="true" → 事件子流程（A3，透传节点，不接主流程入边）；
+            // 否则普通嵌入子流程（A5，透传节点）。两者内部节点均递归提升进同一 arena。
             // 块级边界事件需嵌套作用域，本轮不支持——显式挡回。
             "subProcess" => {
                 if scope_has_boundary_on(scope, child.attribute("id").unwrap_or("")) {
@@ -107,7 +117,11 @@ fn collect_nodes(
                         child.attribute("id")
                     )));
                 }
-                Some(NodeKind::SubProcess)
+                if is_triggered_by_event(&child) {
+                    Some(NodeKind::EventSubProcess)
+                } else {
+                    Some(NodeKind::SubProcess)
+                }
             }
             "sequenceFlow" => None,
             _ => {
@@ -122,7 +136,8 @@ fn collect_nodes(
         };
 
         if let Some(kind) = kind {
-            let is_subprocess = matches!(kind, NodeKind::SubProcess);
+            let is_plain_subprocess = matches!(kind, NodeKind::SubProcess);
+            let is_event_subprocess = matches!(kind, NodeKind::EventSubProcess);
             let bpmn_id = child
                 .attribute("id")
                 .ok_or_else(|| Error::MissingElement(format!("<{local}> 缺少 id")))?
@@ -131,14 +146,17 @@ fn collect_nodes(
             index.insert(bpmn_id.clone(), node_id);
             nodes.push(FlowNode {
                 id: node_id,
-                bpmn_id,
+                bpmn_id: bpmn_id.clone(),
                 name: child.attribute("name").map(|s| s.to_string()),
                 kind,
                 incoming_count: 0,
                 outgoing: Vec::new(),
             });
-            if is_subprocess {
-                collect_nodes(&child, nodes, index)?;
+            if is_plain_subprocess {
+                collect_nodes(&child, nodes, index, None)?;
+            } else if is_event_subprocess {
+                // 递归时把本事件子流程 bpmn_id 作为上下文，令其内部 startEvent 建成 ErrorStartEvent。
+                collect_nodes(&child, nodes, index, Some(&bpmn_id))?;
             }
         }
     }
@@ -209,6 +227,14 @@ fn wire_subprocesses(
         let sp_id = *index
             .get(&sp_bpmn)
             .ok_or_else(|| Error::DanglingReference(format!("subProcess {sp_bpmn} 无对应节点")))?;
+
+        // A3 事件子流程：不接主流程入边（EventSubProcess 节点无 outgoing 透传）；仅递归处理其内部。
+        // 其内部 ErrorStartEvent 由 collect_flows 挂好出边到处理分支；内部 endEvent 保持 EndEvent
+        // （中断型事件子流程处理完即结束该分支，不回主流程）。引擎激活时直接把令牌置于 ErrorStartEvent。
+        if is_triggered_by_event(&child) {
+            wire_subprocesses(&child, nodes, index)?;
+            continue;
+        }
 
         let inner_start = child
             .children()
@@ -416,18 +442,134 @@ fn parse_var_schema(process: &Node) -> Result<Option<cmx_flow_model::VarSchema>>
     Ok(Some(schema))
 }
 
-/// 解析 intermediateCatchEvent：仅支持 messageEventDefinition（A4 消息中间捕获）。
+/// 从 `timerEventDefinition` 子元素解析出 [`TimerSpec`]（A4/A5，边界与中间捕获共用）。
 ///
-/// 消息名取 `messageEventDefinition` 的 `messageRef` 或本事件的 `cmx:message`/`name` 属性；
-/// 相关键变量取 `cmx:correlationVar` 属性（可空）。非消息类型（timer/signal 等）显式报不支持。
+/// 读三个子元素之一：`<timeDuration>`（相对时长）/ `<timeDate>`（绝对时刻）/ `<timeCycle>`（循环）。
+/// 任一文本若为 `${expr}` 包裹（含 `${`），则不在编译期解析，存 `TimerSpec::Expr` 交运行期按
+/// 实例变量求值——这让「截止日期从流程变量读取」（A4）成立。三者都缺则报错。
+fn parse_timer_spec(timer_def: &Node, ctx_id: Option<&str>) -> Result<TimerSpec> {
+    if let Some(text) = child_text(timer_def, "timeDuration") {
+        let t = text.trim();
+        if t.contains("${") {
+            return Ok(TimerSpec::Expr {
+                expr: t.to_string(),
+                cyclic: false,
+            });
+        }
+        let d = parse_iso8601_duration(t)
+            .map_err(|e| Error::Unsupported(format!("定时器 timeDuration 解析失败: {e}")))?;
+        return Ok(TimerSpec::Duration { seconds: d.seconds });
+    }
+    if let Some(text) = child_text(timer_def, "timeDate") {
+        let t = text.trim();
+        if t.contains("${") {
+            return Ok(TimerSpec::Expr {
+                expr: t.to_string(),
+                cyclic: false,
+            });
+        }
+        let at = parse_iso8601_datetime(t)
+            .map_err(|e| Error::Unsupported(format!("定时器 timeDate 解析失败: {e}")))?;
+        return Ok(TimerSpec::Date { at });
+    }
+    if let Some(text) = child_text(timer_def, "timeCycle") {
+        let t = text.trim();
+        if t.contains("${") {
+            return Ok(TimerSpec::Expr {
+                expr: t.to_string(),
+                cyclic: true,
+            });
+        }
+        let c = parse_iso8601_cycle(t)
+            .map_err(|e| Error::Unsupported(format!("定时器 timeCycle 解析失败: {e}")))?;
+        return Ok(TimerSpec::Cycle {
+            interval_seconds: c.interval_seconds,
+            repeats: c.repeats,
+        });
+    }
+    Err(Error::Unsupported(format!(
+        "timerEventDefinition (ctx={ctx_id:?}) 需含 <timeDuration> / <timeDate> / <timeCycle> 之一"
+    )))
+}
+
+/// subProcess 是否为事件子流程（A3）：`triggeredByEvent="true"`。
+fn is_triggered_by_event(node: &Node) -> bool {
+    node.attribute("triggeredByEvent") == Some("true")
+}
+
+/// 解析事件子流程内的 startEvent（A3）：须带 `errorEventDefinition` → ErrorStartEvent。
+/// errorRef/errorCode 缺省 = catch-all。非错误类型（message/timer/signal 起）本轮不支持，显式报错。
+fn parse_error_start_event(node: &Node, event_sp_bpmn: &str) -> Result<NodeKind> {
+    let err_def = node
+        .children()
+        .filter(Node::is_element)
+        .find(|n| n.tag_name().name() == "errorEventDefinition");
+    let Some(err_def) = err_def else {
+        return Err(Error::Unsupported(format!(
+            "事件子流程 {event_sp_bpmn} 内 startEvent (id={:?}) 缺 errorEventDefinition，A3 仅支持错误触发",
+            node.attribute("id")
+        )));
+    };
+    let error_code = local_attr(&err_def, "errorRef")
+        .or_else(|| local_attr(&err_def, "errorCode"))
+        .or_else(|| local_attr(node, "errorCode"))
+        .filter(|s| !s.is_empty());
+    Ok(NodeKind::ErrorStartEvent(ErrorStart {
+        error_code,
+        event_subprocess_bpmn_id: event_sp_bpmn.to_string(),
+    }))
+}
+
+/// 解析 startEvent：普通无类型 → `StartEvent`；带 messageEventDefinition → `MessageStartEvent`（A2）。
+///
+/// 消息名取 `messageEventDefinition.messageRef` 或事件 `cmx:message`/`name`/`id`。
+/// 相关键变量取 `cmx:correlationVar`（可空，消息启动场景一般不需要相关键）。
+/// 其它 start 类型（timer/signal/error 等）目前不支持，显式报 Unsupported 而非静默忽略。
+fn parse_start_event(node: &Node) -> NodeKind {
+    let has_message = node
+        .children()
+        .filter(Node::is_element)
+        .any(|n| n.tag_name().name() == "messageEventDefinition");
+    if !has_message {
+        return NodeKind::StartEvent;
+    }
+    // 消息名：优先 messageEventDefinition.messageRef，退回事件属性/id。
+    let msg_ref = node
+        .children()
+        .filter(Node::is_element)
+        .find(|n| n.tag_name().name() == "messageEventDefinition")
+        .and_then(|n| local_attr(&n, "messageRef"));
+    let message_name = msg_ref
+        .or_else(|| local_attr(node, "message"))
+        .or_else(|| node.attribute("name").map(|s| s.to_string()))
+        .unwrap_or_else(|| node.attribute("id").unwrap_or("message_start").to_string());
+    let correlation_var = local_attr(node, "correlationVar").filter(|s| !s.is_empty());
+    NodeKind::MessageStartEvent(MessageStart {
+        message_name,
+        correlation_var,
+    })
+}
+/// timerEventDefinition（A1 中间定时捕获）。
+///
+/// 定时器分支：读 `timerEventDefinition` → [`TimerSpec`]（相对/绝对/循环/变量表达式），
+/// 建 [`NodeKind::IntermediateTimerCatchEvent`]。令牌到达即挂 WaitingTimer，到期沿唯一出边前进。
 fn parse_intermediate_catch(node: &Node) -> Result<Option<NodeKind>> {
+    // 定时器中间捕获（A1）优先判定。
+    if let Some(timer_def) = node
+        .children()
+        .filter(Node::is_element)
+        .find(|n| n.tag_name().name() == "timerEventDefinition")
+    {
+        let spec = parse_timer_spec(&timer_def, node.attribute("id"))?;
+        return Ok(Some(NodeKind::IntermediateTimerCatchEvent(spec)));
+    }
     let has_message = node
         .children()
         .filter(Node::is_element)
         .any(|n| n.tag_name().name() == "messageEventDefinition");
     if !has_message {
         return Err(Error::Unsupported(format!(
-            "intermediateCatchEvent (id={:?}) 仅支持 messageEventDefinition（A4），其它类型待补",
+            "intermediateCatchEvent (id={:?}) 仅支持 messageEventDefinition（A4）或 timerEventDefinition（A1），其它类型待补",
             node.attribute("id")
         )));
     }
@@ -461,28 +603,39 @@ fn parse_boundary_event(node: &Node) -> Result<Option<NodeKind>> {
         ))
     })?;
 
+    // 错误边界事件（A8，boundaryEvent + errorEventDefinition）优先判定。
+    if let Some(err_def) = node
+        .children()
+        .filter(Node::is_element)
+        .find(|n| n.tag_name().name() == "errorEventDefinition")
+    {
+        // errorCode：优先 errorEventDefinition.errorRef，退回 errorCode 属性 / 事件 cmx:errorCode。
+        // 缺省（全无）= catch-all（捕获任意 BPMN 错误）。
+        let error_code = local_attr(&err_def, "errorRef")
+            .or_else(|| local_attr(&err_def, "errorCode"))
+            .or_else(|| local_attr(node, "errorCode"))
+            .filter(|s| !s.is_empty());
+        return Ok(Some(NodeKind::BoundaryErrorEvent(BoundaryError {
+            attached_to_bpmn_id: attached_to,
+            error_code,
+        })));
+    }
+
     // 找 timerEventDefinition 子元素。
     let timer_def = node
         .children()
         .filter(Node::is_element)
         .find(|n| n.tag_name().name() == "timerEventDefinition");
     let Some(timer_def) = timer_def else {
-        // 非定时器边界事件（error/message/signal 等）——M2.5 不支持，显式报错。
+        // 非定时器/错误边界事件（message/signal 等）——本轮不支持，显式报错。
         return Err(Error::Unsupported(format!(
-            "boundaryEvent (id={:?}) 非定时器类型，M2.5 仅支持 timerEventDefinition",
+            "boundaryEvent (id={:?}) 类型不支持，当前仅 timerEventDefinition（M2.5）/ errorEventDefinition（A8）",
             node.attribute("id")
         )));
     };
 
-    // 取 timeDuration 子元素文本（M2.5 只支持相对时长；timeDate/timeCycle 不支持）。
-    let duration_text = child_text(&timer_def, "timeDuration").ok_or_else(|| {
-        Error::Unsupported(format!(
-            "boundaryEvent (id={:?}) 的定时器仅支持 <timeDuration>（相对时长），未找到",
-            node.attribute("id")
-        ))
-    })?;
-    let duration = parse_iso8601_duration(&duration_text)
-        .map_err(|e| Error::Unsupported(format!("边界定时器时长解析失败: {e}")))?;
+    // 定时器定义（A4/A5）：timeDuration / timeDate / timeCycle / ${expr}，边界与中间捕获共用解析。
+    let spec = parse_timer_spec(&timer_def, node.attribute("id"))?;
 
     // cancelActivity 缺省为 true（BPMN 默认中断型）。
     let cancel_activity = node
@@ -493,7 +646,7 @@ fn parse_boundary_event(node: &Node) -> Result<Option<NodeKind>> {
 
     Ok(Some(NodeKind::BoundaryTimerEvent(BoundaryTimer {
         attached_to_bpmn_id: attached_to,
-        duration,
+        spec,
         cancel_activity,
     })))
 }
@@ -506,6 +659,8 @@ fn parse_boundary_event(node: &Node) -> Result<Option<NodeKind>> {
 fn parse_call_activity(node: &Node) -> Result<CallActivity> {
     let called_element = local_attr(node, "calledElement").unwrap_or_default();
     let called_key = local_attr(node, "calledKey");
+    // RD0：路由维度（cmx:dimKey）。None → 引擎按 "org" 缺省（向后兼容 M5.2 组织路由）。
+    let dim_key = local_attr(node, "dimKey");
     // 二者至少有一个：M5.1 通常给 calledElement；M5.2 给 calledKey。
     if called_element.is_empty() && called_key.is_none() {
         return Err(Error::MissingElement(format!(
@@ -530,6 +685,7 @@ fn parse_call_activity(node: &Node) -> Result<CallActivity> {
     Ok(CallActivity {
         called_element,
         called_key,
+        dim_key,
         input_vars,
         output_vars,
     })
@@ -612,13 +768,40 @@ fn child_text(parent: &Node, local_name: &str) -> Option<String> {
 /// 依次尝试：flowable/camunda 的 `delegateExpression`、`class`，再退回自定义 `delegate`。
 /// 三者都无则报「不支持」——serviceTask 必须能定位执行体，否则引擎无从执行。
 fn parse_service_task(node: &Node) -> Result<NodeKind> {
+    let is_async = local_attr(node, "async")
+        .or_else(|| local_attr(node, "flowable:async"))
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
+    // A7 外部 Worker：flowable:type="external-worker" + flowable:topic。
+    // 须在 delegate 解析前判定——否则 `type` 属性会被当成 delegate 键（"external-worker"）。
+    let type_attr = local_attr(node, "type");
+    if type_attr.as_deref() == Some("external-worker") {
+        let topic = local_attr(node, "topic")
+            .or_else(|| local_attr(node, "flowable:topic"))
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                Error::Unsupported(format!(
+                    "serviceTask (id={:?}) type=external-worker 但缺 topic",
+                    node.attribute("id")
+                ))
+            })?;
+        return Ok(NodeKind::ServiceTask(ServiceTask {
+            delegate: String::new(),
+            is_async: true, // 外部 worker 天然异步等待
+            external_topic: Some(topic),
+        }));
+    }
+
     let delegate = local_attr(node, "delegateExpression")
         .or_else(|| local_attr(node, "class"))
         .or_else(|| local_attr(node, "delegate"))
-        .or_else(|| local_attr(node, "type"));
+        .or(type_attr);
     match delegate {
         Some(d) => Ok(NodeKind::ServiceTask(ServiceTask {
             delegate: normalize_delegate(&d),
+            is_async,
+            external_topic: None,
         })),
         None => Err(Error::Unsupported(format!(
             "serviceTask (id={:?}) 未指定 delegate/class/delegateExpression",
