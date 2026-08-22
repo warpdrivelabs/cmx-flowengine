@@ -23,9 +23,10 @@ cmx-web-chassis = { workspace = true }
 cmx-web-monitor = { workspace = true }
 # tokio-postgres DB 层（注册数据源）
 cmx-database-pg = { workspace = true }
-# 基础服务库：pg 数据源注册原语 + **统一 ConfigManager 装配**（init_config_manager，与 portal 同一套）。
-# config-manager feature 拉入 cmx-utils（ConfigManager），使 flow 与 portal/report/mdm 走同一配置制度。
-cmx-service-base = { workspace = true, features = ["config-manager"] }
+# 基础服务库：pg 数据源注册原语 + **统一基础设施装配**（init_infra/shutdown_infra，与 portal 同一套）。
+# config-manager feature 拉入 cmx-utils（ConfigManager）；registry-config feature 拉入注册/配置中心
+# （Nacos 自注册 + 实例缓存 + 30s 同步，开关默认全关，见 .env 的 Nacos 可选块）。
+cmx-service-base = { workspace = true, features = ["config-manager", "registry-config"] }
 
 # Web 框架（Router 类型；服务栈由 chassis 提供）
 axum = { workspace = true }
