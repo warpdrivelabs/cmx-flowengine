@@ -1,0 +1,121 @@
+{
+  "defKey": "collab_be_7080",
+  "total": 19,
+  "pass": 19,
+  "results": [
+    {
+      "id": "A1-join-roster",
+      "ok": true,
+      "desc": "join s1 → SSE presence roster 含 s1(user=u_alice)",
+      "detail": "user=u_alice sel=a1 color=#008300"
+    },
+    {
+      "id": "A2-two-sessions",
+      "ok": true,
+      "desc": "第二 session join → roster 含两人",
+      "detail": "roster=[s1:u_alice, s2:u_bob]"
+    },
+    {
+      "id": "A3-select-update",
+      "ok": true,
+      "desc": "s1 改选中 en1 → roster 反映新 selection",
+      "detail": "selection=en1"
+    },
+    {
+      "id": "A4-heartbeat-selupdate",
+      "ok": true,
+      "desc": "心跳携新 selection → 广播更新（保活+选中同步）",
+      "detail": "ok"
+    },
+    {
+      "id": "A5-leave",
+      "ok": true,
+      "desc": "s2 leave → roster 只剩 s1",
+      "detail": "roster=[s1]"
+    },
+    {
+      "id": "B1-defkey-isolation",
+      "ok": true,
+      "desc": "DK 的 presence 不泄漏给 DK2 订阅者（按 defKey 过滤）",
+      "detail": "隔离正确"
+    },
+    {
+      "id": "B2-event-shape",
+      "ok": true,
+      "desc": "presence 事件字段完整（tenant/defKey 顶层 + roster 项 sessionId/user/color）",
+      "detail": "tenant=default defKey=collab_be_7080 p0.color=#008300"
+    },
+    {
+      "id": "C1-save-ok",
+      "ok": true,
+      "desc": "正确 base 保存 → Saved(conflict:false) + updatedAt 推进",
+      "detail": "conflict=false new=12:42:51"
+    },
+    {
+      "id": "C2-stale-conflict",
+      "ok": true,
+      "desc": "过期 base 保存 → Conflict(conflict:true) + currentUpdatedAt",
+      "detail": "conflict=true current=12:42:51 by=u_alice"
+    },
+    {
+      "id": "C3-null-base-force",
+      "ok": true,
+      "desc": "base=null → 无条件 Saved（向后兼容单人路径）",
+      "detail": "conflict=false"
+    },
+    {
+      "id": "C4-draft-saved-sse",
+      "ok": true,
+      "desc": "成功保存 → SSE draft.saved 事件(含 updatedAt+user)",
+      "detail": "user=u_alice at=12:42:51"
+    },
+    {
+      "id": "D1-monotonic-seq",
+      "ok": true,
+      "desc": "op 连发 → 服务端盖单调递增 seq",
+      "detail": "seqs=[1,2,3]"
+    },
+    {
+      "id": "D2-seq-isolation",
+      "ok": true,
+      "desc": "op seq 按 defKey 独立计数（DK2 独立序列）",
+      "detail": "DK末=3 DK2=1"
+    },
+    {
+      "id": "D3-op-sse-broadcast",
+      "ok": true,
+      "desc": "op 广播 SSE op 事件(payload seq/origin/op/elementId/props 完整)",
+      "detail": "seq=4 origin=s1 el=a1 name=最终名"
+    },
+    {
+      "id": "D4-origin-echo-guard",
+      "ok": true,
+      "desc": "op 事件带 origin=发送方 sessionId（echo-guard 依据）",
+      "detail": "origin=s1"
+    },
+    {
+      "id": "D5-prop-delete-null",
+      "ok": true,
+      "desc": "op props 支持 null（远端据此删属性）",
+      "detail": "null 透传"
+    },
+    {
+      "id": "E1-body-user-fallback",
+      "ok": true,
+      "desc": "无 X-User → body.user 兜底定 actor",
+      "detail": "user=body_user"
+    },
+    {
+      "id": "E2-stable-color",
+      "ok": true,
+      "desc": "同 user 跨事件派生同一稳定色",
+      "detail": "u_alice 色集=#008300"
+    },
+    {
+      "id": "E3-cvd-palette",
+      "ok": true,
+      "desc": "presence 色取自 CVD-安全 8 色板",
+      "detail": "色∈板=true"
+    }
+  ]
+}

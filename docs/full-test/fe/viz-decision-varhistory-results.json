@@ -1,0 +1,34 @@
+[
+  {
+    "id": "D0-list-load",
+    "ok": true
+  },
+  {
+    "id": "D1-grid-render",
+    "ok": true
+  },
+  {
+    "id": "D2-simulate",
+    "ok": true
+  },
+  {
+    "id": "O0-inst-list",
+    "ok": true
+  },
+  {
+    "id": "O1-token-viz",
+    "ok": true
+  },
+  {
+    "id": "O2-var-history",
+    "ok": true
+  },
+  {
+    "id": "O2b-derived-badge",
+    "ok": true
+  },
+  {
+    "id": "Z-noerr",
+    "ok": true
+  }
+]

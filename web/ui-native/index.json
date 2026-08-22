@@ -32,9 +32,16 @@
     {
       "id": "portal.flow.ops-console",
       "name": "流程运维台",
-      "details": "native_pages 四区流程实例运维台（H4）：explorer 实例列表(异常高亮)、content 详情(令牌位置/任务/变量)+干预工具条(重试异常/改变量/取消)、property 异常明细+流转台账。数据源 /api/flow/instances/*，消费 H2 incident。",
+      "details": "native_pages 四区流程实例运维台（H4）：explorer 实例列表(异常高亮)、content 详情(令牌位置/任务/变量)+干预工具条(重试异常/改变量/取消)、property 异常明细+流转台账+变量历史(含引擎派生 decision/subflow)。数据源 /api/flow/instances/*，消费 H2 incident；content 经 /api/flow/v1/events(SSE) 实时刷新令牌位置。",
       "sourceType": "js",
       "relPath": "flow/ops-console.js"
+    },
+    {
+      "id": "portal.flow.decision-viewer",
+      "name": "决策表查看器",
+      "details": "native_pages 三区决策表只读查看器（Next②）：explorer 已落库决策表列表(命中策略/规则数)、content 决策表网格(输入列|输出列 逐行规则+命中策略徽标)、property 内联试算(facts JSON→命中规则高亮+输出)。数据源 /api/flow/decisions(列表/{key}/evaluate)；编辑归 cmx-rulesengine，此为流程侧运维视图。",
+      "sourceType": "js",
+      "relPath": "flow/decision-viewer.js"
     },
     {
       "id": "portal.flow.form-binding-admin",

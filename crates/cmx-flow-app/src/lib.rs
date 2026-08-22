@@ -72,7 +72,8 @@ where
             .route("/design/presence/join", post(collab::presence_join))
             .route("/design/presence/heartbeat", post(collab::presence_heartbeat))
             .route("/design/presence/select", post(collab::presence_select))
-            .route("/design/presence/leave", post(collab::presence_leave)),
+            .route("/design/presence/leave", post(collab::presence_leave))
+            .route("/design/op", post(collab::presence_op)),
     )
 }
 
@@ -237,7 +238,7 @@ where
         .route("/conditions/functions", get(conditions::functions))
         // —— A3：决策表（注册 + 试算，businessRuleTask 引用） ——
         .route("/decisions", post(decisions::register_decision).get(decisions::list_decisions))
-        .route("/decisions/{key}", delete(decisions::delete_decision))
+        .route("/decisions/{key}", delete(decisions::delete_decision).get(decisions::get_decision))
         .route("/decisions/evaluate", post(decisions::evaluate_decision))
         // —— 内建身份主数据（P0-c：仅 local 模式可写；external 只读/闲置） ——
         .route("/identity/mode", get(identity::get_mode))

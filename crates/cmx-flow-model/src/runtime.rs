@@ -386,6 +386,11 @@ pub struct InstanceSnapshot {
     /// `upsert_hi_activity`。与 pending_subs 同构——推进段内暂存，落库后即弃，不参与快照序列化。
     #[serde(skip)]
     pub pending_activities: Vec<ActivityRecord>,
+    /// 本次推进段引擎派生的变量变更（决策输出 / 子流程回填）。**不持久化**（serde skip）：
+    /// `businessRuleTask` merge 决策输出、`callActivity` 回填子流程输出时追加到此，调用方在
+    /// `save_snapshot` 后批量 `record_var_changes`。与 pending_activities 同构——段内暂存、落库后即弃。
+    #[serde(skip)]
+    pub pending_var_changes: Vec<VarChangeRecord>,
 }
 
 impl InstanceSnapshot {
@@ -563,6 +568,35 @@ pub struct ActivityRecord {
     pub assignee: Option<String>,
     /// 租户 id（多租户隔离；单租户 "default"）。
     pub tenant_id: String,
+}
+
+/// 引擎派生的变量变更记录（决策输出 / 子流程回填）。
+///
+/// 与 app 层 `VarChange`（捕获「调用方送入」的 start/complete/set-variables 三路径）互补：本记录
+/// 捕获**引擎内部**对实例变量的派生写入——`businessRuleTask` 决策表输出 merge、`callActivity`
+/// 子流程 output 回填。与 [`ActivityRecord`] 同构：推进段内 `snapshot.pending_var_changes` 暂存，
+/// `save_snapshot` 后经 `RuntimeStore::record_var_changes` 批量落库（`serde(skip)` 不参与快照）。
+///
+/// old/new 存 JSON 文本（与 app 层 `VarChange` 列同构，读出后前端统一渲染）；`by` 恒为 `system`
+/// （引擎派生非人工），`source` 区分 `decision` / `subflow`。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VarChangeRecord {
+    /// 所属实例 id。
+    pub instance_id: String,
+    /// 变量名。
+    pub var_name: String,
+    /// 变更前值（JSON 文本；无则 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_value: Option<String>,
+    /// 变更后值（JSON 文本；删除则 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_value: Option<String>,
+    /// 来源路径：`decision`（决策表输出）| `subflow`（子流程回填）。
+    pub source: String,
+    /// 产生变更的节点 bpmnId（businessRuleTask / callActivity）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_bpmn_id: Option<String>,
 }
 
 /// 死信作业（P2）：异步 Job 重试耗尽后的托底记录 —— 失败不丢，运维台可见可重试可删除。

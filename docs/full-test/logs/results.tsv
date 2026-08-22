@@ -27,7 +27,7 @@ DSN-mi_dyn_role-key	PASS	deploy key=mi_dyn_role	exp=mi_dyn_role	act=mi_dyn_role
 DSN-mi_dyn_role-hot	PASS	发布热装载生效	exp=true	act=true
 DSN-neg-nostart	PASS	无start事件→valid=false	exp=false	act=false
 DSN-neg-xml	PASS	非法XML→valid=false	exp=false	act=false
-DSN-ver-bump	PASS	重复发布版本递增(��86)	exp=true	act=true
+DSN-ver-bump	PASS	重复发布版本递增(��94)	exp=true	act=true
 DSN-ver-activate	PASS	激活历史版本v1 code=0	exp=0	act=0
 S2-rolepool-cand	PASS	role(finance)→池[u_fin1,u_fin2,u_fin3]	exp=["u_fin1","u_fin2","u_fin3"]	act=["u_fin1","u_fin2","u_fin3"]
 S2-rolepool-claim	PASS	u_fin2认领后assignee=u_fin2	exp=u_fin2	act=u_fin2

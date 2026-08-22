@@ -1,0 +1,18 @@
+{
+  "total": 2,
+  "pass": 2,
+  "results": [
+    {
+      "id": "T1-both-present",
+      "ok": true,
+      "desc": "两 session join → roster=2",
+      "detail": "[alive,ghost]"
+    },
+    {
+      "id": "T2-ghost-swept",
+      "ok": true,
+      "desc": "停心跳超 TTL → ghost 被 sweep，alive 保留",
+      "detail": "[alive]"
+    }
+  ]
+}

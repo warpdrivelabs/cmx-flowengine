@@ -1,12 +1,18 @@
-//! 设计器协同 M1 —— 感知层（presence）+ 草稿保存通知。
+//! 设计器协同 M1（感知 + 防冲突）+ M2（对象级属性合并）。
 //!
 //! 与 [`crate::events`]（生命周期 `FlowEvent` 闭合 enum）解耦：本模块自持一条独立的进程内
 //! `tokio::broadcast` 通道 + 自由 JSON payload，只服务**设计态协同**（谁在线 / 谁选中哪个节点 /
-//! 草稿被谁保存了）。SSE 按 `(tenant, defKey)` 过滤——补上 events.rs 只按 tenant 过滤的缺口，
-//! 使「只有同一草稿的编辑者互相收到对方的在场/选中」。
+//! 草稿被谁保存了 / 谁改了哪个节点的属性）。SSE 按 `(tenant, defKey)` 过滤——补上 events.rs 只按
+//! tenant 过滤的缺口，使「只有同一草稿的编辑者互相收到对方的在场/选中/编辑」。
 //!
-//! presence 为**进程内内存态**（`Mutex<HashMap>`）+ **sweep-on-build**（构 roster 时剔除超 TTL 的
-//! 会话，免后台任务）。多副本部署不共享（对齐 flow SSE 现状 + 报表单实例假设，M1 已知限制）。
+//! - **M1 感知**：presence 为**进程内内存态**（`Mutex<HashMap>`）+ **sweep-on-build**（构 roster 时
+//!   剔除超 TTL 的会话，免后台任务）。远端选中高亮。
+//! - **M1 防冲突**：草稿保存乐观锁（`updated_at` 当 etag，冲突走 `draft.saved` 通知 + 前端确认框）。
+//! - **M2 对象级合并**：一端改节点属性即经 `/design/op` 广播 `op` 事件，服务端盖 per-(tenant,defKey)
+//!   单调 seq；另一端就地 `updateProperties` 合并（对象级 LWW：同元素同属性只应用更大 seq）。结构级
+//!   增删/移动留 M3。
+//!
+//! 多副本部署不共享（对齐 flow SSE 现状 + 报表单实例假设，已知限制）。
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -66,6 +72,27 @@ pub fn publish_draft_saved(def_key: &str, user: Option<String>, updated_at: &str
         payload: json!({ "updatedAt": updated_at }),
         at: now_rfc3339(),
     });
+}
+
+// ───────────────────────── op-log 序列（M2 对象级合并） ─────────────────────────
+//
+// M2 = 对象级实时合并：一端改节点属性（bpmn-js updateProperties）即广播一条 `op`，另一端在
+// 画布上就地 applyProperties（echo-guard 防回声）。为让多端「同键后写覆盖先写」有稳定判据，
+// 每条 op 由服务端盖一个 **per-(tenant,defKey) 单调递增 seq**——接收端只应用 seq 更大的同元素同属性
+// 变更（对象级 LWW，对齐报表 B 档 op_log 的 last-writer 语义）。进程内计数器，与 presence 同为
+// 单实例假设（多副本不共享，M2 已知限制）。结构级增删/移动留 M3，本轮只做属性合并。
+
+/// (tenant, defKey) → 下一个 op seq。
+type SeqMap = HashMap<(String, String), u64>;
+static OP_SEQ: OnceLock<Mutex<SeqMap>> = OnceLock::new();
+fn op_seq() -> &'static Mutex<SeqMap> {
+    OP_SEQ.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn next_seq(tenant: &str, def_key: &str) -> u64 {
+    let mut m = op_seq().lock().unwrap();
+    let e = m.entry((tenant.to_string(), def_key.to_string())).or_insert(0);
+    *e += 1;
+    *e
 }
 
 // ───────────────────────── presence 内存注册表 ─────────────────────────
@@ -293,4 +320,47 @@ pub async fn presence_leave(Json(req): Json<PresenceReq>) -> Result<Json<ApiResp
     }
     broadcast_roster(&tenant, &req.def_key);
     Ok(Json(ApiResp::ok(json!({ "ok": true }))))
+}
+
+// ───────────────────────── op 中继端点（M2 对象级合并） ─────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpReq {
+    def_key: String,
+    session_id: String,
+    /// op 类型：目前只 `updateProperties`（对象级属性合并）。
+    op: String,
+    /// 目标元素 bpmn id。
+    element_id: String,
+    /// 属性增量 { propName: value|null }（null=删除该属性）。自由 JSON，前端 bpmn-js 直接 apply。
+    #[serde(default)]
+    props: Value,
+    #[serde(default)]
+    user: Option<String>,
+}
+
+/// `POST /flow/v1/design/op` —— 中继一条对象级编辑操作（M2）。
+///
+/// 服务端盖 per-(tenant,defKey) 单调 seq 后广播（kind=`op`）；同 defKey 的其它编辑者据 seq 做
+/// 对象级 LWW 合并（只应用更新的 seq）。origin sessionId 随事件下发，发起端据此忽略自己的回声。
+pub async fn presence_op(Json(req): Json<OpReq>) -> Result<Json<ApiResp<Value>>> {
+    let tenant = current_tenant();
+    let seq = next_seq(&tenant, &req.def_key);
+    let user = actor(&req.user);
+    publish(CollabEvent {
+        kind: "op".into(),
+        tenant: tenant.clone(),
+        def_key: req.def_key.clone(),
+        user: Some(user),
+        payload: json!({
+            "seq": seq,
+            "origin": req.session_id,
+            "op": req.op,
+            "elementId": req.element_id,
+            "props": req.props,
+        }),
+        at: now_rfc3339(),
+    });
+    Ok(Json(ApiResp::ok(json!({ "ok": true, "seq": seq }))))
 }
