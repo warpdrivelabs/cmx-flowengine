@@ -16,7 +16,10 @@ use serde_json::{Value, json};
 
 use crate::resp::{ApiResp, FlowError, Result};
 
-use cmx_flow_engine::{RuntimeStore, Variables};
+use cmx_flow_engine::{
+    AssigneeResolver, CandidateKind, CandidateRef, ResolveContext, RuntimeStore, Variables,
+};
+use cmx_flow_store_pg::{PgIamAssigneeResolver, PgSubflowRouter};
 
 use crate::engine::{FlowRuntime, current_iam_db_id, flow};
 use crate::views::{definition_view, instance_state_str, instance_view, summary_view};
@@ -252,6 +255,9 @@ pub struct SaveDraftReq {
     bpmn_xml: String,
     #[serde(default)]
     updated_by: Option<String>,
+    /// 协同 M1 乐观锁：载入草稿时的 updatedAt（RFC3339）。当前草稿更新时间已推进则返回冲突不覆盖。
+    #[serde(default)]
+    base_updated_at: Option<String>,
 }
 
 /// 设计器：存草稿（先试编译挡回非法 BPMN）。
@@ -259,25 +265,48 @@ pub async fn save_definition_draft(
     Json(req): Json<SaveDraftReq>,
 ) -> Result<Json<ApiResp<Value>>> {
     let rt = flow().await?;
-    let rec = rt
+    let actor = req
+        .updated_by
+        .clone()
+        .or_else(crate::tenant::current_user)
+        .filter(|s| !s.is_empty());
+    let outcome = rt
         .def_svc
-        .save_draft(
+        .save_draft_checked(
             &req.name,
             req.domain,
             req.application,
             req.module,
             req.category,
             &req.bpmn_xml,
-            req.updated_by,
+            actor.clone(),
+            req.base_updated_at,
         )
         .await
         .map_err(def_err)?;
-    Ok(Json(ApiResp::ok(json!({
-        "key": rec.key,
-        "name": rec.name,
-        "state": rec.state.as_str(),
-        "activeVersion": rec.active_version,
-    }))))
+    match outcome {
+        cmx_flow_def::SaveDraftOutcome::Saved(rec) => {
+            let updated_at = rec.updated_at.to_rfc3339();
+            // 协同 M1：通知同草稿其他编辑者（谁存了 + 新时间戳，供「载入最新」）。
+            crate::collab::publish_draft_saved(&rec.key, actor, &updated_at);
+            Ok(Json(ApiResp::ok(json!({
+                "key": rec.key,
+                "name": rec.name,
+                "state": rec.state.as_str(),
+                "activeVersion": rec.active_version,
+                "updatedAt": updated_at,
+                "conflict": false,
+            }))))
+        }
+        cmx_flow_def::SaveDraftOutcome::Conflict {
+            current_updated_at,
+            updated_by,
+        } => Ok(Json(ApiResp::ok(json!({
+            "conflict": true,
+            "currentUpdatedAt": current_updated_at,
+            "updatedBy": updated_by,
+        })))),
+    }
 }
 
 /// 设计器「校验」：只试编译 BPMN（真跑 compile + check_topology），**不落库**。
@@ -655,11 +684,31 @@ pub async fn start_instance(
         .clone()
         .or_else(|| req.applicant.as_ref().map(|a| format!("CR-{a}")));
 
+    // 变量历史：发起初值（vars 随即被 start 消费，先留一份 JSON）。
+    let init_vars_json = vars.to_json();
     let result = rt
         .engine
         .start_process_dims(&def_key, vars, biz_key.clone(), req.org_id.clone(), req.dimensions.clone())
         .await
         .map_err(engine_err)?;
+
+    // 变量历史：发起初值全部记为新增（old 空；by=发起人；source=start）。失败非致命。
+    {
+        let by = init_vars_json
+            .get("initiator")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(crate::tenant::current_user);
+        let vh = diff_var_changes(
+            &result.instance_id,
+            &init_vars_json,
+            &Variables::from_json(json!({})),
+            "start",
+            None,
+            by.as_deref(),
+        );
+        record_var_history(&rt, &vh).await;
+    }
 
     // F1：若带 bizLink，回写单据↔实例关联；失败即取消实例（无孤儿），对客户端表现为发起失败。
     if let Some(link) = &req.biz_link {
@@ -860,6 +909,130 @@ pub async fn get_instance_variables(
         .await
         .map_err(|e| msg_err(format!("载入实例失败: {e}")))?;
     Ok(Json(ApiResp::ok(snap.instance.variables.to_json())))
+}
+
+#[derive(Deserialize)]
+pub struct VarHistoryQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// GET /instances/{id}/variables/history —— 变量变更历史（时间正序）。
+pub async fn get_instance_var_history(
+    Path(id): Path<String>,
+    Query(q): Query<VarHistoryQuery>,
+) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let limit = q.limit.unwrap_or(500).min(5000);
+    let entries = rt
+        .var_history_store
+        .list_by_instance(&id, limit)
+        .await
+        .map_err(msg_err)?;
+    let items: Vec<Value> = entries
+        .into_iter()
+        .map(|e| {
+            json!({
+                "varName": e.var_name,
+                "oldValue": e.old_value,
+                "newValue": e.new_value,
+                "source": e.source,
+                "nodeBpmnId": e.node_bpmn_id,
+                "changedBy": e.changed_by,
+                "changedAt": e.changed_at,
+            })
+        })
+        .collect();
+    Ok(Json(ApiResp::ok(
+        json!({ "instanceId": id, "total": items.len(), "history": items }),
+    )))
+}
+
+#[derive(Deserialize)]
+pub struct SweepReq {
+    #[serde(default)]
+    days: Option<i64>,
+}
+
+/// POST /admin/var-history/sweep —— TTL 归档：删除 days 天前的变量历史（默认 90 天）。
+pub async fn sweep_var_history(Json(req): Json<SweepReq>) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let days = req.days.unwrap_or(90);
+    let deleted = rt
+        .var_history_store
+        .sweep_older_than_days(days)
+        .await
+        .map_err(msg_err)?;
+    Ok(Json(ApiResp::ok(json!({ "days": days, "deleted": deleted }))))
+}
+
+// ───────────────────── 身份 / 维度回连端点（⑤ + RD5 服务端） ─────────────────────
+//
+// 独立部署的 flow-server（无 IAM 库访问）经 HttpAssigneeResolver / HttpDimensionResolver 回连一个
+// **有 IAM 访问的提供方**做身份/维度解析。本组端点就是那个提供方：本 flow-server（连着 IAM 库）把
+// 既有 PgIamAssigneeResolver / PgSubflowRouter.ancestors 的解析能力经 HTTP 暴露，契约与两个 Http*
+// 客户端逐字节对齐（POST /identity/resolve → {userIds}；GET /dimensions/ancestors → {ancestors}）。
+// 平台若要 `/api/iam/flow-identity/*` 前缀，反代到这两个端点即可（同一契约）。
+
+#[derive(Deserialize)]
+pub struct IdentityResolveReq {
+    /// 候选类型（USER/ROLE/POSITION/ORG/ORG_LEADER/INITIATOR/INITIATOR_LEADER）。
+    kind: String,
+    /// 候选值（user_id / role code / position code / org id；关系型可空）。
+    #[serde(default)]
+    value: String,
+    /// 解析上下文：发起人（orgLeader/initiator 类关系型解析用）。
+    #[serde(default)]
+    initiator: Option<String>,
+    #[serde(default, rename = "orgId")]
+    org_id: Option<String>,
+}
+
+/// POST /identity/resolve —— 回连身份解析（镜像 AssigneeResolver）。{kind,value,ctx} → {userIds}。
+/// **返回裸 JSON**（`{userIds:[..]}`，无 {code,msg,data} 信封）——契约对齐 HttpAssigneeResolver 期望的
+/// 外部身份服务响应体，故不能用 ApiResp 包裹。
+pub async fn resolve_identity(Json(req): Json<IdentityResolveReq>) -> Result<Json<Value>> {
+    let _rt = flow().await?;
+    let kind: CandidateKind = serde_json::from_value(json!(req.kind))
+        .map_err(|_| FlowError::business(format!("未知候选类型: {}", req.kind)))?;
+    let candidate = CandidateRef {
+        kind,
+        value: req.value.clone(),
+    };
+    let ctx = ResolveContext {
+        initiator: req.initiator.clone(),
+        org_id: req.org_id.clone(),
+    };
+    let resolver = PgIamAssigneeResolver::new(current_iam_db_id());
+    let user_ids = resolver
+        .resolve_with(&candidate, &ctx)
+        .await
+        .map_err(|e| msg_err(format!("身份解析失败: {e}")))?;
+    Ok(Json(json!({ "userIds": user_ids })))
+}
+
+#[derive(Deserialize)]
+pub struct DimAncestorsQuery {
+    #[serde(rename = "dimKey", default)]
+    dim_key: Option<String>,
+    #[serde(rename = "dimValue", default)]
+    dim_value: String,
+}
+
+/// GET /dimensions/ancestors?dimKey&dimValue —— 回连维度层级（RD5）。返回祖先链（由近及远）。
+/// **返回裸 JSON**（`{ancestors:[..]}`，无信封）——契约对齐 HttpDimensionResolver 期望。
+pub async fn get_dimension_ancestors(Query(q): Query<DimAncestorsQuery>) -> Result<Json<Value>> {
+    let rt = flow().await?;
+    let dim_key = q.dim_key.clone().unwrap_or_else(|| "org".to_string());
+    let mut router = PgSubflowRouter::new(current_iam_db_id());
+    for d in rt.dimension_specs.iter() {
+        router.register_dim(d.dim_key.clone(), d.spec.clone());
+    }
+    let anc = router
+        .ancestors(&dim_key, &q.dim_value)
+        .await
+        .map_err(|e| msg_err(format!("维度祖先解析失败: {e}")))?;
+    Ok(Json(json!({ "ancestors": anc })))
 }
 
 /// 正向：实例 → 绑的业务单据。
@@ -1084,10 +1257,32 @@ pub async fn complete_task(
     let node_bpmn_id = crate::biz_link::task_node_bpmn_id(&rt, &req.instance_id, &task_id)
         .await
         .unwrap_or_default();
+    // 变量历史：办结前取旧值（办理携带的变量 req.variables 相对旧值算变更）。
+    let old_vars = rt
+        .engine
+        .store()
+        .load_snapshot(&req.instance_id)
+        .await
+        .map(|s| s.instance.variables)
+        .unwrap_or_else(|_| Variables::from_json(json!({})));
     rt.engine
         .complete_task(&req.instance_id, &task_id, vars)
         .await
         .map_err(engine_err)?;
+    // 变量历史：办理携带的变量变更（不含 comment/decision 留痕，那走意见表）。
+    let vh = diff_var_changes(
+        &req.instance_id,
+        &req.variables,
+        &old_vars,
+        "complete",
+        if node_bpmn_id.is_empty() {
+            None
+        } else {
+            Some(node_bpmn_id.as_str())
+        },
+        operator.as_deref(),
+    );
+    record_var_history(&rt, &vh).await;
     // F3：意见留痕（有意见/决策/办理人才记）。失败仅告警，不影响办结结果。
     if req.comment.is_some() || req.decision.is_some() || operator.is_some() {
         let _ = crate::biz_link::insert_task_comment(
@@ -1300,16 +1495,75 @@ pub struct SetVarsReq {
 }
 
 /// 运维干预：改实例变量（H4）——修数据后可再 retry-incident。
+/// 变量历史：从「送入的变量对象」相对旧值算出变更条目（未变的 key 跳过，避免噪声）。
+fn diff_var_changes(
+    instance_id: &str,
+    incoming: &Value,
+    old: &Variables,
+    source: &str,
+    node: Option<&str>,
+    by: Option<&str>,
+) -> Vec<cmx_flow_store_pg::VarChange> {
+    let mut out = Vec::new();
+    if let Value::Object(m) = incoming {
+        for (k, v) in m {
+            let old_v = old.get(k).map(|x| x.to_string());
+            let new_v = Some(v.to_string());
+            if old_v == new_v {
+                continue;
+            }
+            out.push(cmx_flow_store_pg::VarChange {
+                instance_id: instance_id.to_string(),
+                var_name: k.clone(),
+                old_value: old_v,
+                new_value: new_v,
+                source: source.to_string(),
+                node_bpmn_id: node.map(str::to_string),
+                changed_by: by.map(str::to_string),
+            });
+        }
+    }
+    out
+}
+
+/// 记录变量历史（fire-and-forget，非致命：失败仅告警，不阻断主流程）。
+async fn record_var_history(rt: &FlowRuntime, changes: &[cmx_flow_store_pg::VarChange]) {
+    if changes.is_empty() {
+        return;
+    }
+    if let Err(e) = rt.var_history_store.record(changes).await {
+        tracing::warn!(error = %e, "记录变量历史失败");
+    }
+}
+
 pub async fn set_instance_variables(
     Path(instance_id): Path<String>,
     Json(req): Json<SetVarsReq>,
 ) -> Result<Json<ApiResp<Value>>> {
     let rt = flow().await?;
     let vars = Variables::from_json(req.variables.clone());
+    // 变量历史：改动前取旧值 + 当前节点上下文。
+    let (old, node) = match rt.engine.store().load_snapshot(&instance_id).await {
+        Ok(s) => (
+            s.instance.variables.clone(),
+            s.tokens.first().map(|t| t.node_bpmn_id.clone()),
+        ),
+        Err(_) => (Variables::from_json(json!({})), None),
+    };
     rt.engine
         .set_variables(&instance_id, vars)
         .await
         .map_err(engine_err)?;
+    let by = crate::tenant::current_user();
+    let changes = diff_var_changes(
+        &instance_id,
+        &req.variables,
+        &old,
+        "set-variables",
+        node.as_deref(),
+        by.as_deref(),
+    );
+    record_var_history(&rt, &changes).await;
     load_view(&rt, &instance_id).await
 }
 

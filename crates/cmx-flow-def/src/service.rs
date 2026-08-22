@@ -20,6 +20,17 @@ use crate::{
     VersionRecord, validate_bpmn,
 };
 
+/// [`DefinitionService::save_draft_checked`] 的结果：保存成功 或 乐观锁冲突。
+pub enum SaveDraftOutcome {
+    /// 已落库（返回新记录）。
+    Saved(DefinitionRecord),
+    /// 草稿在你的 base 之后被他人改过——未落库，附当前状态供前端提示「覆盖 / 载入最新」。
+    Conflict {
+        current_updated_at: String,
+        updated_by: Option<String>,
+    },
+}
+
 /// 定义服务。持一个 DefinitionStore 实现（泛型，测试可注入内存假实现）。
 pub struct DefinitionService<S: DefinitionStore> {
     store: S,
@@ -83,6 +94,43 @@ impl<S: DefinitionStore> DefinitionService<S> {
         };
         self.store.upsert_draft(&rec).await?;
         Ok(rec)
+    }
+
+    /// 带乐观锁的存草稿（协同 M1 防静默覆盖）。
+    ///
+    /// `base_updated_at` = 你载入草稿时的 `updatedAt`（RFC3339）。若当前草稿的 `updated_at` 已推进
+    /// （他人先保存）→ 返回 [`SaveDraftOutcome::Conflict`] **不落库**；`base` 为 None/空 时无条件保存
+    /// （单人 / 向后兼容，行为同 [`Self::save_draft`]）。
+    ///
+    /// 乐观比对在服务层（load existing → 比对 → upsert），TOCTOU 窗口仅毫秒级——M1 感知层足够；
+    /// 强并发门（咨询锁 + op-log）留 M2。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn save_draft_checked(
+        &self,
+        name: &str,
+        domain: Option<String>,
+        application: Option<String>,
+        module: Option<String>,
+        category: Option<String>,
+        bpmn_xml: &str,
+        updated_by: Option<String>,
+        base_updated_at: Option<String>,
+    ) -> DefResult<SaveDraftOutcome> {
+        let key = validate_bpmn(bpmn_xml)?;
+        if let Some(base) = base_updated_at.as_deref().filter(|s| !s.is_empty())
+            && let Some(existing) = self.store.get(&key).await?
+            && existing.draft_xml.is_some()
+            && existing.updated_at.to_rfc3339() != base
+        {
+            return Ok(SaveDraftOutcome::Conflict {
+                current_updated_at: existing.updated_at.to_rfc3339(),
+                updated_by: existing.updated_by.clone(),
+            });
+        }
+        let rec = self
+            .save_draft(name, domain, application, module, category, bpmn_xml, updated_by)
+            .await?;
+        Ok(SaveDraftOutcome::Saved(rec))
     }
 
     /// 发布：草稿 → 版本 +1，标记已发布。返回新版本号。

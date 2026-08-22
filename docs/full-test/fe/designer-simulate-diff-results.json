@@ -1,0 +1,74 @@
+[
+  {
+    "id": "S0-load",
+    "ok": true,
+    "desc": "载入 travel_expense（画布出 mgr 图元）",
+    "detail": "shapes=42"
+  },
+  {
+    "id": "S1-sim-tab",
+    "ok": true,
+    "desc": "「模拟」页签渲染（运行按钮 + JSON 变量框）",
+    "detail": ""
+  },
+  {
+    "id": "S2-sim-big-markers",
+    "ok": true,
+    "desc": "大额运行 → 画布高亮 走过节点≥5 + 边≥1 + 任务≥1",
+    "detail": "hit=8 flow=12 task=3"
+  },
+  {
+    "id": "S2-sim-big-trace",
+    "ok": true,
+    "desc": "大额 trace 含 director(总监分支) + 可达结束",
+    "detail": "✓ 可达结束7 节点 · 6 条边 网关分支gw_amountexclusive → f_big 办理人mgr办理人：u_mgrdirector办理人：u_directorcashier办理人：u_cashier 子流程fin_review"
+  },
+  {
+    "id": "S3-sim-small-branch",
+    "ok": true,
+    "desc": "小额运行 → trace 无 director（排他网关另一分支）+ 仍可达结束",
+    "detail": "hit=7 res=\"✓ 可达结束6 节点 · 5 条边 网关分支gw_amountexclusive → f_small 办理人mgr办理人：u_mgrcashier办理人：u_cashier 子流程\""
+  },
+  {
+    "id": "S4-markers-cleared",
+    "ok": true,
+    "desc": "切走「模拟」页签 → 画布 sim 高亮清除",
+    "detail": "hit=0"
+  },
+  {
+    "id": "D0-load-diffdef",
+    "ok": true,
+    "desc": "载入 dd_diff_demo（画布出 s1 图元）",
+    "detail": "shapes=22"
+  },
+  {
+    "id": "D1-diff-open",
+    "ok": true,
+    "desc": "「对比」→ property 差异面板 + 「差异」页签出现",
+    "detail": ""
+  },
+  {
+    "id": "D2-diff-detect",
+    "ok": true,
+    "desc": "v1→v2 结构差异：新增≥1(任务B/连线) + 修改≥1(任务A改/连线)",
+    "detail": "rows=4 add=2 chg=2 sum=\"4 处差异+2 新增 · −0 删除 · ~2 修改\""
+  },
+  {
+    "id": "D3-diff-guard",
+    "ok": true,
+    "desc": "同版本守卫（va==vb → 报错）",
+    "detail": "err=\"请选择两个不同的版本\""
+  },
+  {
+    "id": "D4-diff-exit",
+    "ok": true,
+    "desc": "退出对比 → 「差异」页签消失 + diff 高亮清除",
+    "detail": "tabGone=true marks=0"
+  },
+  {
+    "id": "T-noerr",
+    "ok": true,
+    "desc": "全程无 pageerror（favicon + 可选 DAM 注册表噪声已滤）",
+    "detail": ""
+  }
+]

@@ -23,8 +23,11 @@ const CFG = {
   fetchInit: { credentials: 'same-origin' },
   authHeaders: () => ({}),
   bpmnBase: '',        // 空 = 按部署形态自动推断（见 bpmnBase()）
+  // 协同 M1：当前用户（门户从 localStorage 兜底，组件壳/headless 由宿主注入）。范式同 todo-center.js。
+  getUser: () => { try { return window.localStorage.getItem('cmx_user_id') || window.localStorage.getItem('cmx_username') || 'admin' } catch { return 'admin' } },
 }
 function configure (o) { Object.assign(CFG, o || {}); return CFG }
+function currentUser () { try { return CFG.getUser() || 'admin' } catch { return 'admin' } }
 
 // bpmn-js 本地资产根（每次读 CFG.bpmnBase，故 configure()/bpmn-base 属性覆盖对后续加载即时生效）。
 // 缺省按部署形态自动推断：生产门户挂在 /portal/ 基座（CMXPortalManager dist 经后端静态托管），
@@ -103,7 +106,17 @@ const state = {
   subNav: null,          // 钻入式子流程编辑状态：null=在主流程；否则 { calledKey|null, fixedKey|null,
                          //   variants:[], activeTargetKey, mainKey, mainXml, mainSelId, mainName, mainDam,
                          //   mainShownVersion, mainDirty, subName, pendingBindOrg }
-  propTab: 'node',       // property 区页签：node=节点属性 | model=数据模型（变量声明）
+  propTab: 'node',       // property 区页签：node=节点属性 | model=数据模型（变量声明）| sim=模拟
+  // 设计态模拟（试跑，后端 /definitions/simulate）：facts 表单 / 发起人·组织 / JSON override /
+  //   结果 trace / 已高亮的画布元素 id（清除用）。
+  sim: { facts: {}, initiator: '', org: '', raw: '', result: null, running: false, marked: [] },
+  // 版本对比（diff，纯前端）：va/vb=选中的两版本('' =草稿/当前画布)；result={added,removed,modified}；
+  //   running 期间禁重入；marked=已高亮的画布元素 id。null=未进入对比。
+  diff: null,
+  // 协同 M1（感知+防冲突）：仅编辑草稿时启用。sessionId 每标签页一个；roster 在场者；es SSE；
+  //   hbTimer 心跳；selTimer 选中去抖；baseUpdatedAt 载入草稿时的时间戳（乐观锁基线）；
+  //   marked 远端选中已高亮的元素 id；notice 「他人更新了草稿」提示；user 当前用户。
+  collab: { on: false, defKey: null, sessionId: null, user: null, roster: [], es: null, hbTimer: null, selTimer: null, baseUpdatedAt: null, marked: [], notice: null },
 }
 
 const EMPTY_DIAGRAM = `<?xml version="1.0" encoding="UTF-8"?>
@@ -144,7 +157,7 @@ async function apiJson (url, options = {}) {
   const res = await fetch(full, {
     ...CFG.fetchInit,
     ...options,
-    headers: { Accept: 'application/json', ...CFG.authHeaders(), ...(options.headers || {}) },
+    headers: { Accept: 'application/json', 'X-User': currentUser(), ...CFG.authHeaders(), ...(options.headers || {}) },
   })
   let j = null
   try { j = await res.json() } catch {}
@@ -425,7 +438,7 @@ function defItemHtml (d) {
 function contentHtml () {
   return `<section class="flow flow-content">
     <div class="flow-toolbar" data-flow-toolbar>${toolbarInnerHtml()}</div>
-    <div class="flow-canvas-wrap"><div class="flow-canvas" data-flow-canvas tabindex="0"></div><div data-vdialog-host>${versionDialogHtml()}</div></div>
+    <div class="flow-canvas-wrap"><div class="flow-canvas" data-flow-canvas tabindex="0"></div><div class="flow-collab-bar" data-collab-bar></div><div class="flow-collab-notice" data-collab-notice></div><div data-vdialog-host>${versionDialogHtml()}</div></div>
     <div class="flow-toast"></div>
   </section>`
 }
@@ -445,7 +458,8 @@ function toolbarInnerHtml () {
          <option value="" ${shown == null ? 'selected' : ''}>草稿</option>
          ${vers.map((v) => `<option value="${v.version}" ${v.version === shown ? 'selected' : ''}>v${v.version}${v.version === d.activeVersion ? ' · 当前' : ''}</option>`).join('')}
        </select>
-       <button class="flow-btn slim" data-act="versions" title="版本管理"><ui5-icon name="settings"></ui5-icon></button>`
+       <button class="flow-btn slim" data-act="versions" title="版本管理"><ui5-icon name="settings"></ui5-icon></button>
+       <button class="flow-btn slim" data-act="diff" title="版本对比（结构 diff + 画布高亮）" ${vers.length ? '' : 'disabled'}><ui5-icon name="compare"></ui5-icon> 对比</button>`
     : ''
   return `<input class="flow-name" data-name value="${esc(state.name)}" placeholder="流程名称">
     <button class="flow-btn" data-act="new">＋ 新建</button>
@@ -889,12 +903,19 @@ function scheduleMinimapViewport () {
   state.__mmVpRaf = requestAnimationFrame(() => { state.__mmVpRaf = null; updateMinimapViewport() })
 }
 function propertyHtml () {
-  const model = state.propTab === 'model'
+  const tab = state.propTab
+  const tb = (k, ic, label) => `<button class="flow-ptab ${tab === k ? 'on' : ''}" data-ptab="${k}"><ui5-icon name="${ic}"></ui5-icon> ${label}</button>`
   const tabs = `<div class="flow-ptabs">
-    <button class="flow-ptab ${!model ? 'on' : ''}" data-ptab="node"><ui5-icon name="detail-view"></ui5-icon> 节点属性</button>
-    <button class="flow-ptab ${model ? 'on' : ''}" data-ptab="model"><ui5-icon name="course-book"></ui5-icon> 数据模型${state.varSchema.length ? `（${state.varSchema.length}）` : ''}</button>
+    ${tb('node', 'detail-view', '节点属性')}
+    ${tb('model', 'course-book', `数据模型${state.varSchema.length ? `（${state.varSchema.length}）` : ''}`)}
+    ${tb('sim', 'play', '模拟')}
+    ${state.diff ? tb('diff', 'compare', '差异') : ''}
   </div>`
-  return `<div class="flow-prop-wrap">${tabs}${model ? dataModelPanelHtml() : nodePropBodyHtml()}</div>`
+  const body = tab === 'model' ? dataModelPanelHtml()
+    : tab === 'sim' ? simPanelHtml()
+      : tab === 'diff' && state.diff ? diffPanelHtml()
+        : nodePropBodyHtml()
+  return `<div class="flow-prop-wrap">${tabs}${body}</div>`
 }
 
 // 「数据模型」页签主体：内联的流程变量声明编辑器（复用 varRowHtml / state.varSchema / bindVarDialog 的
@@ -922,6 +943,286 @@ function dataModelPanelHtml () {
         </label>
         <button class="flow-btn primary" data-var-save><ui5-icon name="accept"></ui5-icon> 保存声明</button>
       </div>
+    </div>
+  </section>`
+}
+
+// ═══════════════ 「模拟」页签：设计态试跑（后端 /definitions/simulate，无持久实例、无副作用） ═══════════════
+// 给样例变量试跑当前画布：算令牌路径 / 网关分支 / userTask 办理人 / businessRuleTask 决策输出，
+// 结果渲成 trace 列表 + 画布高亮（复用 ops-console 的 canvas.addMarker 技法，见 styleCss 的 .flow-sim-*）。
+function simPanelHtml () {
+  recomputeVarPaths()
+  const scalars = (state.varPaths || []).filter((p) => !['OBJECT', 'ARRAY'].includes(p.type))
+  const factField = (p) => {
+    const v = state.sim.facts[p.path] ?? ''
+    const head = `<span>${esc(p.label || p.path)} <code>${esc(p.path)}</code>${p.type === 'NUMBER' ? ' <em>数</em>' : ''}</span>`
+    if (p.type === 'BOOLEAN') {
+      return `<label class="flow-sim-f">${head}<select data-sim-fact="${esc(p.path)}"><option value="" ${v === '' ? 'selected' : ''}>—</option><option value="true" ${v === 'true' ? 'selected' : ''}>true</option><option value="false" ${v === 'false' ? 'selected' : ''}>false</option></select></label>`
+    }
+    if (p.type === 'ENUM' && (p.enumOptions || []).length) {
+      return `<label class="flow-sim-f">${head}<select data-sim-fact="${esc(p.path)}"><option value="">—</option>${p.enumOptions.map((o) => `<option value="${esc(o)}" ${v === String(o) ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`
+    }
+    return `<label class="flow-sim-f">${head}<input data-sim-fact="${esc(p.path)}" value="${esc(v)}" placeholder="输入 ${esc(p.path)}"></label>`
+  }
+  const facts = scalars.length
+    ? scalars.map(factField).join('')
+    : '<div class="flow-hint">未声明标量变量。可在「数据模型」页签声明，或用下方 JSON 直接给。</div>'
+  const r = state.sim.result
+  return `<section class="flow flow-prop">
+    <div class="flow-prop-head"><b>模拟 · 试跑</b><small>${esc(state.name || state.selectedKey || '当前画布')}</small></div>
+    <div class="flow-prop-body">
+      <div class="flow-hint">给样例变量试跑当前画布：算令牌路径、网关分支、办理人、决策输出——<b>不建实例、无副作用</b>。</div>
+      <div class="flow-sim-facts">${facts}</div>
+      <div class="flow-sim-ctx">
+        <label class="flow-sim-f"><span>发起人 <code>initiator</code></span><input data-sim-init value="${esc(state.sim.initiator)}" placeholder="如 u_applicant"></label>
+        <label class="flow-sim-f"><span>组织 <code>orgId</code></span><input data-sim-org value="${esc(state.sim.org)}" placeholder="如 fin_bj"></label>
+      </div>
+      <details class="flow-sim-adv" ${state.sim.raw ? 'open' : ''}><summary>高级：JSON 变量（合并覆盖上方表单）</summary>
+        <textarea data-sim-raw rows="3" placeholder='{"amount":30000}'>${esc(state.sim.raw)}</textarea></details>
+      <button class="flow-btn primary block" data-sim-run ${state.sim.running ? 'disabled' : ''}><ui5-icon name="${state.sim.running ? 'pending' : 'play'}"></ui5-icon> ${state.sim.running ? '模拟中…' : '运行模拟'}</button>
+      ${r ? simResultHtml(r) : '<div class="flow-hint" style="margin-top:10px">运行后：画布高亮走过的路径，此处列出网关分支 / 办理人 / 决策 / 提示。</div>'}
+    </div>
+  </section>`
+}
+
+// trace 结果渲染：可达摘要 + 网关分支 / 办理人 / 决策 / 子流程分组 + warnings。
+function simResultHtml (r) {
+  const warn = (r.warnings || []).length ? `<div class="flow-sim-warn">${r.warnings.map((w) => `<div><ui5-icon name="alert"></ui5-icon> ${esc(w)}</div>`).join('')}</div>` : ''
+  const row = (ic, node, txt, bad) => `<div class="flow-sim-row ${bad ? 'bad' : ''}"><ui5-icon name="${ic}"></ui5-icon><b>${esc(node)}</b><span>${txt}</span></div>`
+  const gws = (r.gateways || []).map((g) => row('decision', g.node, `${esc(g.type)} → ${(g.taken || []).map(esc).join(', ') || '（无分支）'}`, !(g.taken || []).length)).join('')
+  const uts = (r.userTasks || []).map((u) => row('employee', u.node, (u.assignees || []).length ? `办理人：${u.assignees.map(esc).join(', ')}` : '<em>未解析到办理人</em>', !(u.assignees || []).length)).join('')
+  const dcs = (r.decisions || []).map((d) => row('table-view', d.node, `${esc(d.decisionKey)} → 命中 ${(d.matchedRules || []).length} 条 · ${esc(JSON.stringify(d.outputs || {}))}`)).join('')
+  const subs = (r.subflows || []).map((s) => row('process', s.node, `子流程 → ${esc(s.target || '?')}`)).join('')
+  const sts = (r.serviceTasks || []).map((s) => row('activity-2', s.node, esc(s.externalTopic ? `外部 topic：${s.externalTopic}` : s.delegate || '服务任务'))).join('')
+  return `<div class="flow-sim-res">
+    ${warn}
+    <div class="flow-sim-sum"><span class="flow-sim-pill ${r.endReached ? 'ok' : 'no'}">${r.endReached ? '✓ 可达结束' : '⚠ 未达结束'}</span><span>${(r.path || []).length} 节点 · ${(r.flows || []).length} 条边</span></div>
+    ${gws ? `<div class="flow-sim-sec">网关分支</div>${gws}` : ''}
+    ${uts ? `<div class="flow-sim-sec">办理人</div>${uts}` : ''}
+    ${dcs ? `<div class="flow-sim-sec">决策</div>${dcs}` : ''}
+    ${subs ? `<div class="flow-sim-sec">子流程</div>${subs}` : ''}
+    ${sts ? `<div class="flow-sim-sec">服务任务</div>${sts}` : ''}
+  </div>`
+}
+
+// facts 智能转型（仿 rules simulator typedInput）：数字/布尔/JSON 自动识别，否则原字符串；空串=不传。
+function simCoerce (s) {
+  const t = String(s).trim()
+  if (t === '') return undefined
+  if (t === 'true') return true
+  if (t === 'false') return false
+  if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t)
+  if ((t[0] === '{' && t.slice(-1) === '}') || (t[0] === '[' && t.slice(-1) === ']')) { try { return JSON.parse(t) } catch { /* 原样 */ } }
+  return s
+}
+// 汇总模拟变量：表单标量 → JSON override 合并 → initiator 兜底注入。
+function buildSimVars () {
+  const out = {}
+  for (const [k, v] of Object.entries(state.sim.facts)) { const c = simCoerce(v); if (c !== undefined) out[k] = c }
+  const raw = (state.sim.raw || '').trim()
+  if (raw) { try { const j = JSON.parse(raw); if (j && typeof j === 'object') Object.assign(out, j) } catch { /* 高级框非法 JSON 忽略 */ } }
+  if (state.sim.initiator && out.initiator === undefined) out.initiator = state.sim.initiator
+  return out
+}
+async function runSimulation () {
+  if (state.sim.running) return
+  let xml
+  try { xml = await getXml() } catch (e) { toast('取画布 XML 失败: ' + e.message); return }
+  state.sim.running = true; refreshView('property')
+  try {
+    const body = { bpmnXml: xml, variables: buildSimVars(), initiator: state.sim.initiator || undefined, orgId: state.sim.org || undefined }
+    const res = await apiJson('/api/flow/definitions/simulate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    state.sim.result = res
+    applySimMarkers(res)
+  } catch (e) {
+    toast('模拟失败: ' + e.message)
+    state.sim.result = { warnings: ['模拟失败: ' + e.message], path: [], flows: [] }
+    clearSimMarkers()
+  }
+  state.sim.running = false; refreshView('property')
+}
+// 画布高亮：走过节点(flow-sim-hit)/边(flow-sim-flow)/userTask(flow-sim-task) 各一色。marker CSS 见 styleCss。
+function clearSimMarkers () {
+  const m = state.modeler; if (!m) return
+  let canvas; try { canvas = m.get('canvas') } catch { return }
+  for (const id of state.sim.marked) {
+    try { canvas.removeMarker(id, 'flow-sim-hit'); canvas.removeMarker(id, 'flow-sim-flow'); canvas.removeMarker(id, 'flow-sim-task') } catch { /* 元素已删 */ }
+  }
+  state.sim.marked = []
+}
+function applySimMarkers (r) {
+  clearSimMarkers()
+  const m = state.modeler; if (!m) return
+  let canvas, reg
+  try { canvas = m.get('canvas'); reg = m.get('elementRegistry') } catch { return }
+  const mark = (id, cls) => { if (id && reg.get(id)) { try { canvas.addMarker(id, cls); state.sim.marked.push(id) } catch { /* ignore */ } } }
+  for (const id of (r.flows || [])) mark(id, 'flow-sim-flow')
+  for (const id of (r.path || [])) mark(id, 'flow-sim-hit')
+  for (const u of (r.userTasks || [])) mark(u.node, 'flow-sim-task')
+}
+
+// ═══════════════ 「差异」页签：同一定义两版本的结构 diff（纯前端，DOMParser 解析 + 画布高亮） ═══════════════
+const BPMN_MODEL_NS = 'http://www.omg.org/spec/BPMN/20100524/MODEL'
+function typeNameFromLocal (ln) {
+  const t = (ln || '').charAt(0).toUpperCase() + (ln || '').slice(1)
+  return TYPE_NAME[t] || ln
+}
+// 解析一份 BPMN XML → { id: {id,type,name,attrs,sig} }，仅取 BPMN 模型命名空间的流程元素（自动排除 DI 布局层）。
+function parseFlowElements (xml) {
+  const map = {}
+  let doc
+  try { doc = new DOMParser().parseFromString(xml, 'text/xml') } catch { return map }
+  const skip = new Set(['definitions', 'process', 'collaboration', 'extensionElements', 'laneSet', 'lane'])
+  for (const el of Array.from(doc.getElementsByTagName('*'))) {
+    if (el.namespaceURI !== BPMN_MODEL_NS) continue           // 跳过 bpmndi/omgdc/omgdi 布局层
+    const ln = el.localName || ''
+    if (skip.has(ln)) continue
+    const id = el.getAttribute && el.getAttribute('id')
+    if (!id) continue                                         // incoming/outgoing/conditionExpression 无 id → 计入父的子文本
+    const attrs = {}
+    for (const a of Array.from(el.attributes)) { if (a.localName !== 'id') attrs[a.localName] = a.value }
+    let kids = ''
+    for (const c of Array.from(el.children)) {
+      if (c.namespaceURI === BPMN_MODEL_NS && (c.localName === 'incoming' || c.localName === 'outgoing')) continue // 顺序无关
+      kids += (c.localName || '') + ':' + (c.textContent || '').replace(/\s+/g, ' ').trim() + ';'
+    }
+    const ordered = Object.keys(attrs).sort().map((k) => k + '=' + attrs[k]).join('&')
+    map[id] = { id, type: ln, name: attrs.name || '', attrs, sig: ln + '§' + ordered + '§' + kids }
+  }
+  return map
+}
+// 结构 diff（按 id）：added=B 有 A 无 / removed=A 有 B 无 / modified=同 id 但签名变（附变化字段）。
+function diffFlow (a, b) {
+  const added = [], removed = [], modified = []
+  for (const id of Object.keys(b)) if (!a[id]) added.push(b[id])
+  for (const id of Object.keys(a)) if (!b[id]) removed.push(a[id])
+  for (const id of Object.keys(a)) if (b[id] && a[id].sig !== b[id].sig) modified.push({ ...b[id], from: a[id], changes: changedFields(a[id], b[id]) })
+  return { added, removed, modified }
+}
+// 人读的变化字段（名称/条件/办理人/子流程 key/决策… + 其余增删属性键）。
+function changedFields (fa, fb) {
+  const out = []
+  const LABEL = { name: '名称', assignee: '办理人', candidateUsers: '候选人', candidateGroups: '候选组', sourceRef: '起点', targetRef: '终点', default: '默认流', calledElement: '子流程', decisionRef: '决策表' }
+  for (const k of new Set([...Object.keys(fa.attrs), ...Object.keys(fb.attrs)])) {
+    if ((fa.attrs[k] || '') !== (fb.attrs[k] || '')) out.push(LABEL[k] || k)
+  }
+  if (fa.sig.split('§')[2] !== fb.sig.split('§')[2]) out.push('条件/扩展')
+  return [...new Set(out)]
+}
+// 版本选项（草稿 + 已发布版本）。
+function diffVersionOptions () {
+  const d = state.definitions.find((x) => x.key === state.selectedKey)
+  const vers = d && Array.isArray(d.versions) ? d.versions : []
+  const opts = [{ v: '', label: '草稿 / 当前画布' }]
+  for (const v of vers) opts.push({ v: String(v.version), label: 'v' + v.version + (v.version === d.activeVersion ? ' · 当前' : '') })
+  return opts
+}
+// 取某侧 XML：'' = 当前画布（getXml，含未存改动）；否则按版本号取已存 XML。
+async function diffVersionXml (sel) {
+  if (sel === '' || sel == null) return await getXml()
+  const detail = await apiJson('/api/flow/definitions/' + enc(state.selectedKey) + '?version=' + enc(sel))
+  if (!detail || !detail.bpmnXml) throw new Error('v' + sel + ' 无 XML')
+  return detail.bpmnXml
+}
+function openDiff () {
+  if (!state.selectedKey) { toast('请先选择一个流程定义'); return }
+  const d = state.definitions.find((x) => x.key === state.selectedKey)
+  const vers = d && Array.isArray(d.versions) ? d.versions : []
+  // 默认：从=当前生效版本（无则最旧），到=草稿/当前画布。
+  const from = vers.length ? String(d.activeVersion || vers[vers.length - 1].version) : ''
+  state.diff = { va: from, vb: '', result: null, running: false, marked: [], error: '' }
+  clearSimMarkers()
+  state.propTab = 'diff'
+  refreshView('property')
+}
+function exitDiff () {
+  clearDiffMarkers()
+  state.diff = null
+  if (state.propTab === 'diff') state.propTab = 'node'
+  refreshView('property')
+}
+async function runDiff () {
+  const dd = state.diff
+  if (!dd || dd.running) return
+  if (dd.va === dd.vb) { dd.error = '请选择两个不同的版本'; refreshView('property'); return }
+  dd.running = true; dd.error = ''; refreshView('property')
+  try {
+    const [xa, xb] = await Promise.all([diffVersionXml(dd.va), diffVersionXml(dd.vb)])
+    dd.result = diffFlow(parseFlowElements(xa), parseFlowElements(xb))
+    applyDiffMarkers(dd.result)
+  } catch (e) {
+    dd.error = '对比失败: ' + e.message
+    dd.result = null
+    clearDiffMarkers()
+  }
+  dd.running = false
+  refreshView('property')
+}
+// 画布高亮：新增=绿(flow-diff-add) / 修改=琥珀(flow-diff-chg)（删除项不在当前画布，仅列表）。
+function clearDiffMarkers () {
+  const m = state.modeler; if (!m || !state.diff) return
+  let canvas; try { canvas = m.get('canvas') } catch { return }
+  for (const id of state.diff.marked) {
+    try { canvas.removeMarker(id, 'flow-diff-add'); canvas.removeMarker(id, 'flow-diff-chg') } catch { /* 已删 */ }
+  }
+  state.diff.marked = []
+}
+function applyDiffMarkers (res) {
+  clearDiffMarkers()
+  const m = state.modeler; if (!m || !state.diff) return
+  let canvas, reg; try { canvas = m.get('canvas'); reg = m.get('elementRegistry') } catch { return }
+  const mark = (id, cls) => { if (id && reg.get(id)) { try { canvas.addMarker(id, cls); state.diff.marked.push(id) } catch { /* ignore */ } } }
+  for (const e of (res.added || [])) mark(e.id, 'flow-diff-add')
+  for (const e of (res.modified || [])) mark(e.id, 'flow-diff-chg')
+}
+// 点击差异行 → 选中并居中该元素（存在于当前画布时）。
+function centerOnElement (id) {
+  const m = state.modeler; if (!m) return
+  let reg, el; try { reg = m.get('elementRegistry'); el = reg.get(id) } catch { return }
+  if (!el) { toast('该元素不在当前画布'); return }
+  try { m.get('selection').select(el) } catch { /* ignore */ }
+  try { m.get('canvas').scrollToElement(el) } catch { /* 旧版无此 API */ }
+}
+function diffPanelHtml () {
+  const dd = state.diff
+  if (!dd) return ''
+  const opts = diffVersionOptions()
+  const sel = (which, cur) => `<select data-diff-${which}>${opts.map((o) => `<option value="${esc(o.v)}" ${o.v === cur ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`
+  const r = dd.result
+  const label = (v) => v === '' ? '草稿' : ('v' + v)
+  const IC = { userTask: 'employee', serviceTask: 'activity-2', exclusiveGateway: 'decision', parallelGateway: 'decision', inclusiveGateway: 'decision', eventBasedGateway: 'decision', sequenceFlow: 'chain-link', callActivity: 'process', businessRuleTask: 'table-view', startEvent: 'circle-task', endEvent: 'circle-task', subProcess: 'process' }
+  const row = (e, kind) => {
+    const nm = e.name || typeNameFromLocal(e.type)
+    const chg = kind === 'chg' && e.changes && e.changes.length ? ` <span class="flow-diff-fields">${e.changes.map(esc).join(' · ')}</span>` : ''
+    return `<div class="flow-diff-row ${kind}" data-diff-goto="${esc(e.id)}"><ui5-icon name="${IC[e.type] || 'circle-task'}"></ui5-icon><b>${esc(nm)}</b><code>${esc(e.id)}</code>${chg}</div>`
+  }
+  const group = (title, arr, kind) => arr.length ? `<div class="flow-sim-sec">${title}（${arr.length}）</div>${arr.map((e) => row(e, kind)).join('')}` : ''
+  let res
+  if (dd.running) res = '<div class="flow-hint" style="margin-top:10px">对比中…</div>'
+  else if (r) {
+    const total = r.added.length + r.removed.length + r.modified.length
+    res = `<div class="flow-sim-res">
+      <div class="flow-sim-sum"><span class="flow-sim-pill ${total ? 'no' : 'ok'}">${total ? total + ' 处差异' : '✓ 无结构差异'}</span><span>+${r.added.length} 新增 · −${r.removed.length} 删除 · ~${r.modified.length} 修改</span></div>
+      ${group('新增', r.added, 'add')}
+      ${group('修改', r.modified, 'chg')}
+      ${group('删除', r.removed, 'del')}
+    </div>`
+  } else res = '<div class="flow-hint" style="margin-top:10px">选「从 / 到」两版本后点「对比」：结构差异列于此，新增/修改在画布高亮（绿/琥珀）。</div>'
+  return `<section class="flow flow-prop">
+    <div class="flow-prop-head"><b>版本对比 · 结构 diff</b><small>${esc(state.name || state.selectedKey || '')} · ${esc(label(dd.va))} → ${esc(label(dd.vb))}</small></div>
+    <div class="flow-prop-body">
+      <div class="flow-hint">对比同一定义两个版本的节点与连线：新增 / 删除 / 修改（名称·条件·办理人·子流程 key 等）。基于当前画布高亮，删除项仅列于下方。</div>
+      <div class="flow-diff-pick">
+        <label class="flow-sim-f"><span>从（旧）</span>${sel('va', dd.va)}</label>
+        <ui5-icon name="arrow-right" class="flow-diff-arrow"></ui5-icon>
+        <label class="flow-sim-f"><span>到（新）</span>${sel('vb', dd.vb)}</label>
+      </div>
+      ${dd.error ? `<div class="flow-dialog-err">${esc(dd.error)}</div>` : ''}
+      <div class="flow-diff-btns">
+        <button class="flow-btn primary" data-diff-run ${dd.running ? 'disabled' : ''}><ui5-icon name="compare"></ui5-icon> ${dd.running ? '对比中…' : '对比'}</button>
+        <button class="flow-btn" data-diff-exit><ui5-icon name="decline"></ui5-icon> 退出对比</button>
+      </div>
+      ${res}
     </div>
   </section>`
 }
@@ -1923,11 +2224,25 @@ function bind (root, view, host) {
 
 // 属性面板事件绑定（抽出，供正常渲染与子流程编辑器就地刷新复用）。
 function bindProperty (root) {
-  // property 区页签切换（节点属性 | 数据模型）。
+  // property 区页签切换（节点属性 | 数据模型 | 模拟）。切走「模拟」时清画布高亮。
   root.querySelectorAll('[data-ptab]').forEach((b) => b.addEventListener('click', () => {
+    const prev = state.propTab
     state.propTab = b.dataset.ptab
+    if (prev === 'sim' && b.dataset.ptab !== 'sim') clearSimMarkers()
     refreshView('property')
   }))
+  // 模拟页签：facts 表单 / 发起人·组织 / JSON override / 运行。
+  root.querySelectorAll('[data-sim-fact]').forEach((inp) => inp.addEventListener('change', () => { state.sim.facts[inp.dataset.simFact] = inp.value }))
+  root.querySelector('[data-sim-init]')?.addEventListener('change', (e) => { state.sim.initiator = e.target.value })
+  root.querySelector('[data-sim-org]')?.addEventListener('change', (e) => { state.sim.org = e.target.value })
+  root.querySelector('[data-sim-raw]')?.addEventListener('change', (e) => { state.sim.raw = e.target.value })
+  root.querySelector('[data-sim-run]')?.addEventListener('click', () => runSimulation())
+  // 差异页签：从/到 版本选择 / 对比 / 退出 / 点行定位。
+  root.querySelector('[data-diff-va]')?.addEventListener('change', (e) => { if (state.diff) state.diff.va = e.target.value })
+  root.querySelector('[data-diff-vb]')?.addEventListener('change', (e) => { if (state.diff) state.diff.vb = e.target.value })
+  root.querySelector('[data-diff-run]')?.addEventListener('click', () => runDiff())
+  root.querySelector('[data-diff-exit]')?.addEventListener('click', () => exitDiff())
+  root.querySelectorAll('[data-diff-goto]').forEach((el) => el.addEventListener('click', () => centerOnElement(el.dataset.diffGoto)))
   root.querySelectorAll('[data-prop]').forEach((inp) => {
     inp.addEventListener('change', () => applyProp(inp.dataset.prop, inp.value))
   })
@@ -2079,6 +2394,7 @@ function bindToolbar (root) {
     if (state.selectedKey) loadDef(state.selectedKey, v)
   })
   root.querySelector('[data-act="versions"]')?.addEventListener('click', () => openVersionDialog())
+  root.querySelector('[data-act="diff"]')?.addEventListener('click', () => openDiff())
 }
 
 // 版本管理对话框事件（每次重渲对话框后重绑）。
@@ -2761,6 +3077,7 @@ async function bootCanvas (root, host) {
       initConditionForSelection()
       refreshView('property')
       refreshOutline() // ★ 画布 → 大纲：选中变化即同步大纲高亮
+      broadcastSelection() // 协同：去抖广播我选中的节点（远端高亮）
     })
     state.modeler.on('element.changed', (e) => {
       if (state.selectedElement && state.selectedElement.id === e.element.id) refreshView('property')
@@ -2780,7 +3097,13 @@ async function bootCanvas (root, host) {
     // 导入完成（载入定义 / 钻入子流程 / 新建）→ 挂载并重建缩略图。
     state.modeler.on('import.done', () => { mountMinimap(); scheduleMinimapRender() })
     // U1：命令栈变化 = 有未保存编辑。用户操作（增删节点/连线/属性）都经 commandStack。
-    state.modeler.on('commandStack.changed', () => { if (!state.__loadingDiagram) state.dirty = true })
+    //   编辑使上一次模拟高亮失效 → 清除画布 marker（addMarker 不经 commandStack，无递归）。
+    state.modeler.on('commandStack.changed', () => {
+      if (state.__loadingDiagram) return
+      state.dirty = true
+      if (state.sim.marked.length) { clearSimMarkers(); state.sim.result = null }
+      if (state.diff && state.diff.marked.length) { clearDiffMarkers(); state.diff.result = null }
+    })
     // ★ 快捷入口：双击 callActivity 节点 → 打开子流程编辑器（与属性面板「编辑子流程」等效）。
     state.modeler.on('element.dblclick', (e) => {
       const el = e.element
@@ -3461,6 +3784,9 @@ async function loadDef (key, version) {
     refreshView('property')       // property 区 DAM 归属同步
     await openDiagram(detail.bpmnXml)   // 就地把 XML 导入现有 modeler（内含 readVarSchemaFromXml）
     refreshView('property')             // ⑤ varSchema 读入后刷新属性区（变量摘要/下拉数据源就位）
+    // 协同 M1：仅编辑「草稿」（shownVersion==null）时启用感知+防冲突；看已发布版本(只读)则停。
+    if (state.shownVersion == null) startCollab(key, detail.updatedAt)
+    else stopCollab()
     toast('已加载: ' + (detail.name || key) + ' · ' + versionLabel(state.shownVersion))
   } catch (e) { toast('加载失败: ' + e.message) }
 }
@@ -3625,9 +3951,21 @@ async function doSave () {
         application: state.defDam.application || null,
         module: state.defDam.module || null,
         bpmnXml: xml,
+        baseUpdatedAt: state.collab.baseUpdatedAt || undefined,  // 协同乐观锁基线
+        updatedBy: currentUser(),
       }),
     })
+    // 协同：草稿在你 base 之后被他人改过 → 让用户选覆盖 / 载入最新。
+    if (r && r.conflict) {
+      const who = r.updatedBy || '他人'
+      const when = (r.currentUpdatedAt || '').slice(0, 19).replace('T', ' ')
+      const overwrite = window.confirm(`${who} 刚保存了草稿（${when}）。\n\n确定 = 覆盖保存（以你的为准）\n取消 = 放弃保存并载入最新`)
+      if (overwrite) { state.collab.baseUpdatedAt = r.currentUpdatedAt; return doSave() }
+      if (state.selectedKey) await loadDef(state.selectedKey)
+      return
+    }
     state.selectedKey = r.key
+    state.collab.baseUpdatedAt = r.updatedAt || state.collab.baseUpdatedAt  // 保存成功推进基线
     state.dirty = false   // U1：保存成功清脏
     toast('草稿已保存: ' + r.key + '（后端编译校验通过）')
     await loadDefs()
@@ -3664,10 +4002,153 @@ async function doSaveSilent () {
       application: state.defDam.application || null,
       module: state.defDam.module || null,
       bpmnXml: xml,
+      baseUpdatedAt: state.collab.baseUpdatedAt || undefined,
+      updatedBy: currentUser(),
     }),
   })
+  // 协同：发布前静默存草稿撞冲突 → 抛出让发布流程中止并提示（勿静默覆盖）。
+  if (r && r.conflict) throw new Error(`草稿已被 ${r.updatedBy || '他人'} 更新，请先「载入最新」再发布`)
   state.selectedKey = r.key
+  state.collab.baseUpdatedAt = r.updatedAt || state.collab.baseUpdatedAt
   return r
+}
+
+// ═══════════════════════════ 协同 M1 · 感知层 + 防冲突 ═══════════════════════════
+// 仅在编辑「草稿」时启用（shownVersion==null）。SSE 收 presence/draft.saved（后端 collab.rs），
+// presence 心跳/选中经 POST 发；远端选中用 canvas.addMarker 高亮（复用 sim/diff 技法）。
+// 传输：/api/flow/v1/design/*（off 模式；EventSource 无 header → tenant=default，defKey 过滤）。
+
+function selectedId () { return state.selectedElement ? state.selectedElement.id : null }
+
+function collabContentRoot () {
+  for (const host of Array.from(state.hosts || [])) {
+    if (host && host.__flowView === 'content' && host.isConnected) { const r = hostRoot(host); if (r) return r }
+  }
+  return null
+}
+// 向后端 presence 端点发一条（fire-and-forget；apiJson 已注入 X-User 定 actor）。
+function collabPost (path, extra) {
+  const c = state.collab
+  if (!c.defKey || !c.sessionId) return
+  apiJson('/api/flow/v1/design/presence/' + path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({ defKey: c.defKey, sessionId: c.sessionId, user: c.user }, extra || {})),
+  }).catch(() => {})
+}
+// 页面卸载：sendBeacon 尽力离场（fetch 卸载期不保证送达；leave 仅按 sessionId 无需鉴权）。
+function collabLeaveBeacon () {
+  const c = state.collab
+  if (!c.on || !c.defKey || !c.sessionId) return
+  try {
+    const url = (CFG.apiBase || '') + '/api/flow/v1/design/presence/leave'
+    const body = JSON.stringify({ defKey: c.defKey, sessionId: c.sessionId })
+    if (navigator.sendBeacon) navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }))
+  } catch { /* ignore */ }
+}
+
+function startCollab (defKey, baseUpdatedAt) {
+  const c = state.collab
+  if (c.on && c.defKey === defKey) { if (baseUpdatedAt) c.baseUpdatedAt = baseUpdatedAt; return }
+  stopCollab()
+  if (!defKey) return
+  c.on = true; c.defKey = defKey; c.user = currentUser(); c.baseUpdatedAt = baseUpdatedAt || null; c.notice = null
+  c.sessionId = c.sessionId || ('s-' + Math.random().toString(36).slice(2, 10))
+  collabPost('join', { selection: selectedId() })
+  try {
+    const wc = !(CFG.fetchInit && CFG.fetchInit.credentials === 'omit')
+    const es = new EventSource((CFG.apiBase || '') + '/api/flow/v1/design/collab?defKey=' + enc(defKey), { withCredentials: wc })
+    es.addEventListener('presence', (m) => { try { onPresence(JSON.parse(m.data)) } catch { /* ignore */ } })
+    es.addEventListener('draft.saved', (m) => { try { onDraftSaved(JSON.parse(m.data)) } catch { /* ignore */ } })
+    // 连接就绪后再 join 一次：首个 join 在流建立前发出会丢自己的初始 roster（对方后续 select 才补上）——
+    // onopen 时补发，确保加入者在流活跃后立刻收到完整 roster（含自己）。
+    es.onopen = () => { if (state.collab.on && state.collab.defKey === defKey) collabPost('join', { selection: selectedId() }) }
+    c.es = es
+  } catch { /* EventSource 不可用则降级为仅心跳 */ }
+  c.hbTimer = setInterval(() => collabPost('heartbeat', { selection: selectedId() }), 10000)
+  if (!window.__flowCollabUnload) {
+    window.__flowCollabUnload = true
+    window.addEventListener('beforeunload', collabLeaveBeacon)
+    window.addEventListener('pagehide', collabLeaveBeacon)
+  }
+  renderPresenceBar()
+}
+function stopCollab () {
+  const c = state.collab
+  if (c.hbTimer) { clearInterval(c.hbTimer); c.hbTimer = null }
+  if (c.selTimer) { clearTimeout(c.selTimer); c.selTimer = null }
+  if (c.on) collabPost('leave', {})
+  if (c.es) { try { c.es.close() } catch { /* ignore */ } c.es = null }
+  clearCollabMarks()
+  c.on = false; c.defKey = null; c.roster = []; c.notice = null
+  renderPresenceBar(); renderCollabNotice()
+}
+// 选中变化 → 去抖广播（远端画布高亮我选的节点）。
+function broadcastSelection () {
+  const c = state.collab
+  if (!c.on) return
+  clearTimeout(c.selTimer)
+  c.selTimer = setTimeout(() => collabPost('select', { selection: selectedId() }), 250)
+}
+
+// SSE: presence 全 roster 快照 → 更新在场条 + 远端选中高亮。
+function onPresence (ev) {
+  state.collab.roster = (ev && ev.payload && ev.payload.roster) || []
+  applyCollabMarks()
+  renderPresenceBar()
+}
+// SSE: 他人保存了草稿 → 通知（不脏可一键载入；脏则提示自决）。自己的保存忽略。
+function onDraftSaved (ev) {
+  const c = state.collab
+  if (!ev || ev.user === c.user) return
+  c.notice = { user: ev.user, updatedAt: ev.payload && ev.payload.updatedAt }
+  renderCollabNotice()
+}
+
+// 远端选中高亮：所有他人选中的元素打一个统一「协同选中」描边（谁选的看在场条）。
+function clearCollabMarks () {
+  const m = state.modeler; if (!m) return
+  let canvas; try { canvas = m.get('canvas') } catch { return }
+  for (const id of state.collab.marked) { try { canvas.removeMarker(id, 'flow-collab-sel') } catch { /* 已删 */ } }
+  state.collab.marked = []
+}
+function applyCollabMarks () {
+  clearCollabMarks()
+  const m = state.modeler; if (!m) return
+  let canvas, reg; try { canvas = m.get('canvas'); reg = m.get('elementRegistry') } catch { return }
+  const me = state.collab.sessionId
+  for (const p of (state.collab.roster || [])) {
+    if (p.sessionId === me || !p.selection) continue
+    if (reg.get(p.selection)) { try { canvas.addMarker(p.selection, 'flow-collab-sel'); state.collab.marked.push(p.selection) } catch { /* ignore */ } }
+  }
+}
+
+// 在场条（content 画布右上；单人不显示）。头像=user 首二字，色由后端派生。
+function renderPresenceBar () {
+  const root = collabContentRoot(); if (!root) return
+  const bar = root.querySelector('[data-collab-bar]'); if (!bar) return
+  const c = state.collab
+  const all = c.roster || []
+  if (!c.on || all.length <= 1) { bar.innerHTML = ''; return }
+  const chips = all.map((p) => {
+    const self = p.sessionId === c.sessionId
+    const initial = esc((p.user || '?').slice(0, 2))
+    const tip = `${esc(p.user || '?')}${self ? '（你）' : ''}${p.selection ? ' · 选中 ' + esc(p.selection) : ''}`
+    return `<span class="flow-collab-avatar${self ? ' me' : ''}" style="--c:${esc(p.color || '#888')}" title="${tip}">${initial}</span>`
+  }).join('')
+  bar.innerHTML = `<span class="flow-collab-label">协作中</span>${chips}`
+}
+// 「草稿已被他人更新」通知条（content 画布顶部居中）。
+function renderCollabNotice () {
+  const root = collabContentRoot(); if (!root) return
+  const el = root.querySelector('[data-collab-notice]'); if (!el) return
+  const n = state.collab.notice
+  if (!n) { el.innerHTML = ''; el.classList.remove('show'); return }
+  el.classList.add('show')
+  el.innerHTML = `<ui5-icon name="history"></ui5-icon><span>${esc(n.user || '他人')} 更新了草稿${state.dirty ? '（你有未保存改动，载入将丢弃）' : ''}</span>
+    <button class="flow-btn slim" data-collab-reload><ui5-icon name="refresh"></ui5-icon> 载入最新</button>
+    <button class="flow-icon-btn" data-collab-dismiss title="忽略"><ui5-icon name="decline"></ui5-icon></button>`
+  el.querySelector('[data-collab-reload]')?.addEventListener('click', async () => { state.collab.notice = null; if (state.selectedKey) await loadDef(state.selectedKey) })
+  el.querySelector('[data-collab-dismiss]')?.addEventListener('click', () => { state.collab.notice = null; renderCollabNotice() })
 }
 
 // ————————————————————— 样式 —————————————————————
@@ -3977,6 +4458,64 @@ function styleCss () {
     --popup-background-color:var(--tile);
     --popup-shadow-color:color-mix(in srgb,#000 55%,transparent);
   }
+  /* ── 模拟（simulate）画布高亮：复刻 ops-console，改 .djs-visual 首子元素描边（marker 由 canvas.addMarker 加类）。task 覆盖 hit ── */
+  .flow-sim-flow .djs-visual > :nth-child(1){stroke:var(--brand)!important;stroke-width:3px!important}
+  .flow-sim-hit .djs-visual > :nth-child(1){stroke:var(--brand)!important;stroke-width:3px!important;fill:color-mix(in srgb,var(--brand) 12%,var(--tile))!important}
+  .flow-sim-task .djs-visual > :nth-child(1){stroke:var(--warn)!important;stroke-width:3.5px!important;fill:color-mix(in srgb,var(--warn) 14%,var(--tile))!important}
+  /* ── 模拟面板 ── */
+  .flow-sim-facts,.flow-sim-ctx{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+  .flow-sim-ctx{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line-soft)}
+  .flow-sim-f{display:flex;flex-direction:column;gap:3px;font-size:11.5px;color:var(--ink)}
+  .flow-sim-f>span{color:var(--muted);display:flex;align-items:center;gap:5px}
+  .flow-sim-f code{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:var(--brand-d)}
+  .flow-sim-f em{font-style:normal;font-size:9.5px;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:0 4px}
+  .flow-sim-f input,.flow-sim-f select{height:28px;font:inherit;font-size:12px;border:1px solid var(--line);border-radius:7px;padding:0 8px;background:var(--tile);color:var(--ink)}
+  .flow-sim-f input:focus,.flow-sim-f select:focus{outline:none;border-color:var(--brand)}
+  .flow-sim-adv{margin-top:8px}
+  .flow-sim-adv summary{font-size:11px;color:var(--muted);cursor:pointer}
+  .flow-sim-adv textarea{width:100%;margin-top:6px;font-family:ui-monospace,Menlo,monospace;font-size:11px;border:1px solid var(--line);border-radius:7px;padding:6px 8px;background:var(--tile);color:var(--ink);resize:vertical;box-sizing:border-box}
+  .flow-sim-res{margin-top:12px;border-top:1px solid var(--line-soft);padding-top:10px}
+  .flow-sim-sum{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted);margin-bottom:6px}
+  .flow-sim-pill{font-size:11px;font-weight:700;padding:2px 8px;border-radius:9px}
+  .flow-sim-pill.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,var(--tile));border:1px solid color-mix(in srgb,var(--ok) 34%,transparent)}
+  .flow-sim-pill.no{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,var(--tile));border:1px solid color-mix(in srgb,var(--warn) 34%,transparent)}
+  .flow-sim-sec{font-size:10.5px;font-weight:800;color:var(--brand-d);text-transform:uppercase;letter-spacing:.04em;margin:10px 0 5px}
+  .flow-sim-row{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink);padding:4px 8px;border:1px solid var(--line-soft);border-radius:7px;margin-bottom:4px;background:var(--tile)}
+  .flow-sim-row ui5-icon{color:var(--brand);width:14px;height:14px;flex:0 0 auto}
+  .flow-sim-row b{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;flex:0 0 auto}
+  .flow-sim-row span{color:var(--muted);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .flow-sim-row em{font-style:normal;color:var(--warn)}
+  .flow-sim-row.bad{border-color:color-mix(in srgb,var(--warn) 40%,var(--line))} .flow-sim-row.bad ui5-icon{color:var(--warn)}
+  .flow-sim-warn{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
+  .flow-sim-warn>div{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,var(--tile));border:1px solid color-mix(in srgb,var(--warn) 28%,transparent);border-radius:7px;padding:5px 8px}
+  .flow-sim-warn ui5-icon{width:13px;height:13px;flex:0 0 auto}
+  /* ── 版本 diff 画布高亮：新增=绿(--ok) / 修改=琥珀(--warn)。删除项不在画布 ── */
+  .flow-diff-add .djs-visual > :nth-child(1){stroke:var(--ok)!important;stroke-width:3px!important;fill:color-mix(in srgb,var(--ok) 12%,var(--tile))!important}
+  .flow-diff-chg .djs-visual > :nth-child(1){stroke:var(--warn)!important;stroke-width:3px!important;fill:color-mix(in srgb,var(--warn) 12%,var(--tile))!important}
+  /* ── 差异面板 ── */
+  .flow-diff-pick{display:flex;align-items:flex-end;gap:8px;margin-top:10px}
+  .flow-diff-pick .flow-sim-f{flex:1;min-width:0}
+  .flow-diff-arrow{color:var(--muted);width:16px;height:16px;margin-bottom:6px;flex:0 0 auto}
+  .flow-diff-btns{display:flex;gap:8px;margin-top:10px} .flow-diff-btns .flow-btn{flex:1;justify-content:center;display:flex;align-items:center;gap:6px}
+  .flow-diff-row{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink);padding:5px 8px;border:1px solid var(--line-soft);border-left-width:3px;border-radius:7px;margin-bottom:4px;background:var(--tile);cursor:pointer;transition:background .12s}
+  .flow-diff-row:hover{background:var(--brand-soft)}
+  .flow-diff-row ui5-icon{width:14px;height:14px;flex:0 0 auto;color:var(--muted)}
+  .flow-diff-row b{font-weight:600;flex:0 0 auto} .flow-diff-row code{font-family:ui-monospace,Menlo,monospace;font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .flow-diff-row.add{border-left-color:var(--ok)} .flow-diff-row.add ui5-icon{color:var(--ok)}
+  .flow-diff-row.chg{border-left-color:var(--warn)} .flow-diff-row.chg ui5-icon{color:var(--warn)}
+  .flow-diff-row.del{border-left-color:var(--muted);opacity:.72} .flow-diff-row.del b{text-decoration:line-through}
+  .flow-diff-fields{margin-left:auto;font-size:10px;color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,var(--tile));border-radius:6px;padding:1px 6px;flex:0 0 auto}
+  /* ── 协同 M1：在场条 + 远端选中高亮 + 草稿更新通知 ── */
+  .flow-collab-bar{position:absolute;top:8px;right:12px;z-index:6;display:flex;align-items:center;gap:5px;pointer-events:none}
+  .flow-collab-bar:empty{display:none}
+  .flow-collab-label{font-size:10.5px;color:var(--muted);background:var(--tile);border:1px solid var(--line-soft);border-radius:9px;padding:1px 8px;box-shadow:0 1px 3px var(--glow)}
+  .flow-collab-avatar{width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;color:#fff;background:var(--c,#888);border:2px solid var(--tile);box-shadow:0 1px 3px rgba(0,0,0,.2);margin-left:-8px}
+  .flow-collab-avatar.me{outline:2px solid color-mix(in srgb,var(--c) 50%,transparent)}
+  /* 远端选中：虚线描边（区别本端实线蓝选中）。改 .djs-visual 首子元素，复用 sim/diff marker 技法。 */
+  .flow-collab-sel .djs-visual > :nth-child(1){stroke:var(--violet,#7c5cff)!important;stroke-width:2.5px!important;stroke-dasharray:5 3!important}
+  .flow-collab-notice{position:absolute;top:8px;left:50%;transform:translateX(-50%);z-index:7;display:none;align-items:center;gap:8px;background:var(--tile);border:1px solid color-mix(in srgb,var(--brand) 34%,var(--line));border-radius:9px;padding:6px 10px;box-shadow:0 4px 16px var(--glow);font-size:12px;color:var(--ink);max-width:80%}
+  .flow-collab-notice.show{display:flex}
+  .flow-collab-notice ui5-icon{color:var(--brand);width:15px;height:15px;flex:0 0 auto}
   `
 }
 

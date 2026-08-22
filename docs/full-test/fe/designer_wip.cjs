@@ -1,30 +1,32 @@
 // Tier-2b：直接验证 WIP「办理人类型」修复 —— 切到角色不回弹 + 值输入出现 + 属性写回
 const { chromium } = require('playwright');
 const path = require('path');
+const { startStatic, vendorRoute, clickDefPaged } = require('./_harness.cjs');
 const KEY = 'cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6';
 const SHOTS = path.join(__dirname, 'shots');
+const PORT = 9094;
 const results = [];
 const A = (id, desc, ok, detail) => { results.push({ id, ok: !!ok, desc, detail }); console.log(`[${id}] ${ok ? 'PASS' : 'FAIL'}  ${desc}${detail ? '  :: ' + detail : ''}`); };
 
 (async () => {
+  const srv = startStatic(PORT); // 自起静态服（serve web/），测试自包含只依赖 :8091
+  await new Promise((r) => setTimeout(r, 900));
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   const ctx = await browser.newContext({ extraHTTPHeaders: { 'X-API-Key': KEY }, viewport: { width: 1600, height: 950 } });
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
-  await page.route('**/portal/vendor/**', async route => {
-    const url = route.request().url(); const rel = url.substring(url.indexOf('/portal/vendor/'));
-    try { const r = await ctx.request.get('http://127.0.0.1:8080' + rel); await route.fulfill({ status: r.status(), body: await r.body(), headers: { 'content-type': r.headers()['content-type'] || 'application/octet-stream' } }); }
-    catch { await route.abort(); }
-  });
+  await vendorRoute(page, ctx); // bpmn-js vendor 从磁盘服（门户没起也能跑）
 
-  await page.goto('http://127.0.0.1:9099/demo/index.html', { waitUntil: 'domcontentloaded' });
+  await page.goto(`http://127.0.0.1:${PORT}/demo/index.html`, { waitUntil: 'domcontentloaded' });
   await page.fill('#apiBase', 'http://127.0.0.1:8091');
   await page.click('[data-tab="designer"]');
   await page.waitForTimeout(1000);
 
-  // 载入 travel_expense（Playwright 选择器默认穿透 shadow DOM）
-  await page.click('.flow-def[data-key="travel_expense"]', { timeout: 8000 }).catch(e => A('FE-WIP-click-def', '点选 travel_expense', false, e.message));
+  // 载入 travel_expense（explorer 分页翻页定位，共享脚手架）
+  await page.waitForFunction(() => { const w = r => [...r.querySelectorAll('*')].some(e => (e.className && ('' + e.className).includes('flow-def')) || (e.shadowRoot && w(e.shadowRoot))); return w(document); }, { timeout: 10000 }).catch(() => {});
+  const clickedDef = await clickDefPaged(page, 'travel_expense');
+  if (!clickedDef) A('FE-WIP-click-def', '点选 travel_expense', false, 'not found in any page');
   await page.waitForSelector('[data-element-id="mgr"]', { timeout: 8000 }).catch(() => {});
   const hasMgr = await page.locator('[data-element-id="mgr"]').count();
   A('FE-WIP-load', '载入 travel_expense 且 mgr 节点渲染', hasMgr > 0, `mgrShapes=${hasMgr}`);
@@ -72,6 +74,7 @@ const A = (id, desc, ok, detail) => { results.push({ id, ok: !!ok, desc, detail 
 
   A('FE-WIP-noerr', '设计器交互无 pageerror', errors.length === 0, errors.slice(0, 2).join(' | ').slice(0, 160));
   await browser.close();
+  try { srv.kill('SIGTERM'); } catch {}
   const pass = results.filter(r => r.ok).length;
   console.log(`\n==== FE Tier2b WIP assignee-fix: ${pass}/${results.length} ====`);
   require('fs').writeFileSync(path.join(__dirname, 'tier2b-results.json'), JSON.stringify(results, null, 2));

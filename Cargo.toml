@@ -22,6 +22,7 @@ members = [
     "crates/cmx-flow-server",
     "crates/cmx-flow-demo",
     "crates/cmx-flow-tests",
+    "crates/cmx-flow-worker-sdk",
 ]
 
 [workspace.package]

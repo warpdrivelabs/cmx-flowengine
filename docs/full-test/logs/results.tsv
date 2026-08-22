@@ -27,7 +27,7 @@ DSN-mi_dyn_role-key	PASS	deploy key=mi_dyn_role	exp=mi_dyn_role	act=mi_dyn_role
 DSN-mi_dyn_role-hot	PASS	发布热装载生效	exp=true	act=true
 DSN-neg-nostart	PASS	无start事件→valid=false	exp=false	act=false
 DSN-neg-xml	PASS	非法XML→valid=false	exp=false	act=false
-DSN-ver-bump	PASS	重复发布版本递增(��38)	exp=true	act=true
+DSN-ver-bump	PASS	重复发布版本递增(��86)	exp=true	act=true
 DSN-ver-activate	PASS	激活历史版本v1 code=0	exp=0	act=0
 S2-rolepool-cand	PASS	role(finance)→池[u_fin1,u_fin2,u_fin3]	exp=["u_fin1","u_fin2","u_fin3"]	act=["u_fin1","u_fin2","u_fin3"]
 S2-rolepool-claim	PASS	u_fin2认领后assignee=u_fin2	exp=u_fin2	act=u_fin2
@@ -148,7 +148,7 @@ S11A-initiated-filter	PASS	todos/initiated?user=alice 不应含 bob 的实例	ex
 S11B-mi-noreject	PASS	会签子任务rejectable=false	exp=false	act=false
 S11C-empty-mi	PASS	空approvers→会签节点跳过→COMPLETED	exp=COMPLETED	act=COMPLETED
 S11D-invalid-reject	PASS	无效退回目标被拒(code=1)或安全留在l1	exp=true	act=true
-S11E-audit-note	PASS	记录:complete意见留痕存在(userId=NULL)	exp=true	act=true
+S11E-audit-note	PASS	记录:complete意见留痕存在(userId=u_fin1)	exp=true	act=true
 S11F-kindall	PASS	kind=all 有响应(不报错)	exp=true	act=true
 S11G-correlate	PASS	correlate端点有结构化响应	exp=true	act=true
 S13A-B-direct	PASS	产品B role(cashier)→直派u_cashier1	exp=u_cashier1	act=u_cashier1

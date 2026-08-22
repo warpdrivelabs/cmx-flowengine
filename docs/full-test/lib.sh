@@ -9,7 +9,10 @@
 # 用法：source lib.sh ；每个请求都追加进 logs/transcript.log（数据全留存）
 # ─────────────────────────────────────────────────────────────────────────────
 BASE="http://127.0.0.1:8091/api/flow/v1"
-K="X-API-Key: cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"
+# 鉴权：走 off 模式头路径（X-Tenant 定租户；X-User 定调用者身份，满足 T0/T0b 任务端点授权）。
+# 不用 X-API-Key——它在 auth 中间件里优先命中服务身份分支(current_user=None)，会短路掉读 X-User 的
+# off 路径，导致 complete/reject 等因「缺少用户身份」被拒。故服务器须 FLOW_AUTH_MODE=off 起。
+K="X-Tenant: default"
 CT="Content-Type: application/json"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # LOG/RESULTS 可由调用方 export 覆盖（统一入口用它汇总到独立账本）；否则用默认。
@@ -20,18 +23,20 @@ mkdir -p "$HERE/logs" "$HERE/data"
 
 _ts() { date +"%H:%M:%S"; }   # display only; not used for logic
 
-# 核心请求：j METHOD PATH [jsonBody] —— 回显响应 body，全程记账
+# 核心请求：j METHOD PATH [jsonBody] [actingUser] —— 回显响应 body，全程记账
+# actingUser（可选）：off 模式下作为 X-User 头 → current_user，满足 T0/T0b 任务端点调用者授权。
 j() {
-  local m="$1" p="$2" body="${3:-}"
-  local resp
+  local m="$1" p="$2" body="${3:-}" user="${4:-}"
+  local resp hdrs=(-H "$K")
+  [ -n "$user" ] && hdrs+=(-H "X-User: $user")
   if [ -n "$body" ]; then
-    resp=$(curl -s -X "$m" -H "$K" -H "$CT" -d "$body" "$BASE$p")
+    resp=$(curl -s -X "$m" "${hdrs[@]}" -H "$CT" -d "$body" "$BASE$p")
   elif [ "$m" = "GET" ]; then
-    resp=$(curl -s -H "$K" "$BASE$p")
+    resp=$(curl -s "${hdrs[@]}" "$BASE$p")
   else
-    resp=$(curl -s -X "$m" -H "$K" "$BASE$p")
+    resp=$(curl -s -X "$m" "${hdrs[@]}" "$BASE$p")
   fi
-  { echo "### $m $p"; [ -n "$body" ] && echo "REQ  $body"; echo "RESP $resp"; echo; } >> "$LOG"
+  { echo "### $m $p"; [ -n "$user" ] && echo "USER $user"; [ -n "$body" ] && echo "REQ  $body"; echo "RESP $resp"; echo; } >> "$LOG"
   echo "$resp"
 }
 # 只取 HTTP 码
@@ -91,34 +96,42 @@ nodeof()   { j GET "/tasks/my?assignee=$1" | jq -r --arg i "$2" '.data.tasks[]?|
 iid() { echo "$1" | jq -r '.data.id // empty'; }
 
 # ── 任务动作（注意大小写！）─────────────────────────────────────────────────
+# T0/T0b：任务端点校验调用者身份（off 模式下经 X-User → current_user，须为办理人/候选/发起人）。
+# 各助手把「实际办理人」作为 X-User 传给 j：complete/reject 缺省从任务当前 assignee 推断；
+# claim/transfer/delegate/addsign/urge/withdraw 用其显式办理人参数。
+# task_assignee <taskId> <instanceId> —— 取该任务当前 assignee（推断 complete/reject 的调用者）
+# 注意：实例视图 openTasks 的任务 id 字段是 .id（非 /tasks/my 的 .taskId）。
+task_assignee() { inst "$2" | jq -r --arg t "$1" '.data.openTasks[]?|select(.id==$t)|.assignee // empty' | head -1; }
 # complete <taskId> <instanceId> [comment] [decision] [varsJson]
 complete() {
   local t="$1" i="$2" c="${3:-同意}" d="${4:-}" v="$5"; [ -z "$v" ] && v='{}'
+  local u; u=$(task_assignee "$t" "$i")
   local body
   body=$(jq -n --arg i "$i" --arg c "$c" --arg d "$d" --argjson v "$v" \
     '{instanceId:$i, comment:$c, variables:$v} + (if $d=="" then {} else {decision:$d} end)')
-  j POST "/tasks/$t/complete" "$body"
+  j POST "/tasks/$t/complete" "$body" "$u"
 }
 # reject <taskId> <instanceId> [targetBpmnId] [reason] [fromUser]
 reject() {
   local t="$1" i="$2" tgt="${3:-}" r="${4:-退回修改}" fu="${5:-}"
+  local u="$fu"; [ -z "$u" ] && u=$(task_assignee "$t" "$i")
   local body
   body=$(jq -n --arg i "$i" --arg r "$r" --arg tgt "$tgt" --arg fu "$fu" \
     '{instanceId:$i, reason:$r} + (if $tgt=="" then {} else {targetBpmnId:$tgt} end) + (if $fu=="" then {} else {fromUser:$fu} end)')
-  j POST "/tasks/$t/reject" "$body"
+  j POST "/tasks/$t/reject" "$body" "$u"
 }
 rtargets() { j GET "/tasks/$1/reject-targets?instanceId=$2"; }
-# claim/transfer/delegate/addsign —— 蛇形！
-claim()    { j POST "/tasks/$1/claim" "$(jq -n --arg i "$2" --arg u "$3" '{instance_id:$i,user_id:$u}')"; }
-transfer() { j POST "/tasks/$1/transfer" "$(jq -n --arg i "$2" --arg f "$3" --arg t "$4" --arg r "${5:-转办}" '{instance_id:$i,from_user:$f,to_user:$t,reason:$r}')"; }
-delegate() { j POST "/tasks/$1/delegate" "$(jq -n --arg i "$2" --arg f "$3" --arg t "$4" --arg r "${5:-委托}" '{instance_id:$i,from_user:$f,to_user:$t,reason:$r}')"; }
+# claim/transfer/delegate/addsign —— 蛇形！调用者=claimer/from（作 X-User）。
+claim()    { j POST "/tasks/$1/claim" "$(jq -n --arg i "$2" --arg u "$3" '{instance_id:$i,user_id:$u}')" "$3"; }
+transfer() { j POST "/tasks/$1/transfer" "$(jq -n --arg i "$2" --arg f "$3" --arg t "$4" --arg r "${5:-转办}" '{instance_id:$i,from_user:$f,to_user:$t,reason:$r}')" "$3"; }
+delegate() { j POST "/tasks/$1/delegate" "$(jq -n --arg i "$2" --arg f "$3" --arg t "$4" --arg r "${5:-委托}" '{instance_id:$i,from_user:$f,to_user:$t,reason:$r}')" "$3"; }
 # addsign <taskId> <instanceId> <fromUser> <toUser> [before(true/false)] [reason]
-addsign()  { j POST "/tasks/$1/addsign" "$(jq -n --arg i "$2" --arg f "$3" --arg t "$4" --argjson b "${5:-true}" --arg r "${6:-加签}" '{instance_id:$i,from_user:$f,to_user:$t,before:$b,reason:$r}')"; }
-urge()     { j POST "/tasks/$1/urge" "$(jq -n --arg i "$2" --arg f "${3:-}" --arg m "${4:-催办}" '{instanceId:$i,fromUser:$f,message:$m}')"; }
+addsign()  { j POST "/tasks/$1/addsign" "$(jq -n --arg i "$2" --arg f "$3" --arg t "$4" --argjson b "${5:-true}" --arg r "${6:-加签}" '{instance_id:$i,from_user:$f,to_user:$t,before:$b,reason:$r}')" "$3"; }
+urge()     { j POST "/tasks/$1/urge" "$(jq -n --arg i "$2" --arg f "${3:-}" --arg m "${4:-催办}" '{instanceId:$i,fromUser:$f,message:$m}')" "${3:-}"; }
 
 # ── 取回/撤回 ──────────────────────────────────────────────────────────────────
 withdrawable() { j GET "/instances/$1/withdrawable?user=$2"; }
-withdraw()     { j POST "/instances/$1/withdraw" "$(jq -n --arg u "$2" --arg r "${3:-发起人取回}" '{user:$u,reason:$r}')"; }
+withdraw()     { j POST "/instances/$1/withdraw" "$(jq -n --arg u "$2" --arg r "${3:-发起人取回}" '{user:$u,reason:$r}')" "$2"; }
 
 # ── 抄送 ──────────────────────────────────────────────────────────────────────
 cc_list()  { j GET "/cc?user=$1${2:+&unread=$2}"; }

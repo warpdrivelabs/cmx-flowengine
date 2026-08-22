@@ -13,6 +13,7 @@
 
 pub mod auth;
 pub mod biz_link;
+pub mod collab;
 pub mod conditions;
 pub mod dashboard;
 pub mod decisions;
@@ -24,6 +25,7 @@ pub mod identity;
 pub mod observe;
 pub mod openapi;
 pub mod resp;
+pub mod simulate;
 pub mod stats;
 pub mod tenancy;
 pub mod tenant;
@@ -64,7 +66,13 @@ where
         "/flow/v1",
         flow_routes_inner::<S>()
             // SSE 实时事件流（仅 v1；第三方 UI 增量刷新替轮询）。
-            .route("/events", get(events::sse_events)),
+            .route("/events", get(events::sse_events))
+            // 设计器协同 M1（感知层）：协同 SSE + presence（仅 v1）。
+            .route("/design/collab", get(collab::collab_sse))
+            .route("/design/presence/join", post(collab::presence_join))
+            .route("/design/presence/heartbeat", post(collab::presence_heartbeat))
+            .route("/design/presence/select", post(collab::presence_select))
+            .route("/design/presence/leave", post(collab::presence_leave)),
     )
 }
 
@@ -79,6 +87,8 @@ where
         .route("/design/definitions", get(handlers::list_design_definitions))
         .route("/definitions/draft", post(handlers::save_definition_draft))
         .route("/definitions/validate", post(handlers::validate_definition))
+        // —— 设计态模拟（试跑：路径/分支/办理人/决策，无持久实例） ——
+        .route("/definitions/simulate", post(simulate::simulate_definition))
         .route("/definitions/{key}", get(handlers::get_definition_detail))
         .route("/definitions/{key}/variables", get(handlers::get_definition_variables))
         .route("/definitions/variables/validate", post(handlers::validate_definition_variables))
@@ -138,6 +148,12 @@ where
             "/instances/{id}/variables",
             get(handlers::get_instance_variables),
         )
+        // —— 变量变更历史 + TTL 归档 ——
+        .route(
+            "/instances/{id}/variables/history",
+            get(handlers::get_instance_var_history),
+        )
+        .route("/admin/var-history/sweep", post(handlers::sweep_var_history))
         .route("/instances/{id}/biz", get(handlers::get_instance_biz))
         .route(
             "/instances/{id}/comments",
@@ -203,6 +219,9 @@ where
         .route("/orgs", get(handlers::list_orgs))
         .route("/dimensions", get(handlers::list_dimensions))
         .route("/dimension/{dimKey}/entries", get(handlers::list_dimension_entries))
+        // —— 身份 / 维度回连端点（⑤ + RD5 服务端；独立部署经 Http* resolver 回连有 IAM 访问的提供方）——
+        .route("/identity/resolve", post(handlers::resolve_identity))
+        .route("/dimensions/ancestors", get(handlers::get_dimension_ancestors))
         .route("/subflow-bindings", post(handlers::upsert_subflow_binding))
         .route(
             "/subflow-bindings/{key}",
@@ -217,7 +236,8 @@ where
         .route("/conditions/validate", post(conditions::validate))
         .route("/conditions/functions", get(conditions::functions))
         // —— A3：决策表（注册 + 试算，businessRuleTask 引用） ——
-        .route("/decisions", post(decisions::register_decision))
+        .route("/decisions", post(decisions::register_decision).get(decisions::list_decisions))
+        .route("/decisions/{key}", delete(decisions::delete_decision))
         .route("/decisions/evaluate", post(decisions::evaluate_decision))
         // —— 内建身份主数据（P0-c：仅 local 模式可写；external 只读/闲置） ——
         .route("/identity/mode", get(identity::get_mode))

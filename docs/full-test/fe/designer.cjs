@@ -1,12 +1,16 @@
 // Tier-2 前端测试：BPMN 设计器（WIP 办理人类型修复）—— 加载/渲染/属性面板
 const { chromium } = require('playwright');
 const path = require('path');
+const { startStatic, vendorRoute, clickDefPaged } = require('./_harness.cjs');
 const KEY = 'cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6';
 const SHOTS = path.join(__dirname, 'shots');
+const PORT = 9095;
 const results = [];
 const A = (id, desc, ok, detail) => { results.push({ id, ok: !!ok, desc, detail }); console.log(`[${id}] ${ok ? 'PASS' : 'FAIL'}  ${desc}${detail ? '  :: ' + detail : ''}`); };
 
 (async () => {
+  const srv = startStatic(PORT); // 自起静态服（serve web/），测试自包含只依赖 :8091
+  await new Promise((r) => setTimeout(r, 900));
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   const ctx = await browser.newContext({ extraHTTPHeaders: { 'X-API-Key': KEY }, viewport: { width: 1600, height: 950 } });
   const page = await ctx.newPage();
@@ -14,19 +18,11 @@ const A = (id, desc, ok, detail) => { results.push({ id, ok: !!ok, desc, detail 
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', m => { if (m.type() === 'error') consoleErrs.push(m.text()); });
 
-  // bpmn-js 资源代理到运行中的门户(:8080)
-  await page.route('**/portal/vendor/**', async route => {
-    const url = route.request().url();
-    const rel = url.substring(url.indexOf('/portal/vendor/'));
-    try {
-      const r = await ctx.request.get('http://127.0.0.1:8080' + rel);
-      const body = await r.body();
-      await route.fulfill({ status: r.status(), body, headers: { 'content-type': r.headers()['content-type'] || 'application/octet-stream' } });
-    } catch (e) { await route.abort(); }
-  });
+  // bpmn-js 资源从磁盘服（门户没起也能跑，见 _harness.cjs）
+  await vendorRoute(page, ctx);
 
   // 挂载 <flow-designer>，api-base 指向 :8091
-  await page.goto('http://127.0.0.1:9099/demo/index.html', { waitUntil: 'domcontentloaded' });
+  await page.goto(`http://127.0.0.1:${PORT}/demo/index.html`, { waitUntil: 'domcontentloaded' });
   await page.fill('#apiBase', 'http://127.0.0.1:8091');
   await page.click('[data-tab="designer"]');
   await page.waitForTimeout(1200);
@@ -42,18 +38,11 @@ const A = (id, desc, ok, detail) => { results.push({ id, ok: !!ok, desc, detail 
   await page.waitForFunction(() => !!document.querySelector('flow-designer')?.shadowRoot, { timeout: 8000 }).catch(() => {});
   A('FE-DSG-mount', '<flow-designer> 挂载并建立 shadowRoot', await page.evaluate(() => !!document.querySelector('flow-designer')?.shadowRoot));
 
-  // 定义列表：等 explorer 拉到已发布定义，点击 travel_expense
-  const loaded = await page.evaluate(async () => {
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const deepQueryAll = sel => { const res = []; const walk = root => { root.querySelectorAll(sel).forEach(e => res.push(e)); root.querySelectorAll('*').forEach(e => e.shadowRoot && walk(e.shadowRoot)); }; walk(document); return res; };
-    for (let i = 0; i < 30; i++) {
-      const items = deepQueryAll('*').filter(e => /travel_expense|差旅报销/.test(e.textContent || '') && e.children.length <= 2 && (e.onclick || e.getAttribute('data-key') || e.tagName === 'LI' || /item|row|def/i.test(e.className || '')));
-      if (items.length) { items[0].click(); await sleep(1500); return { clicked: items[0].textContent.trim().slice(0, 40) }; }
-      await sleep(400);
-    }
-    return { clicked: null };
-  });
-  A('FE-DSG-deflist', 'explorer 列出并可点选定义(travel_expense)', !!loaded.clicked, loaded.clicked || 'not found');
+  // 定义列表：等 explorer 拉到已发布定义，翻页定位并点击 travel_expense（共享脚手架，分页安全）
+  await page.waitForFunction(() => { const w = r => [...r.querySelectorAll('*')].some(e => (e.className && ('' + e.className).includes('flow-def')) || (e.shadowRoot && w(e.shadowRoot))); return w(document); }, { timeout: 10000 }).catch(() => {});
+  const clickedDef = await clickDefPaged(page, 'travel_expense');
+  await page.waitForTimeout(1500);
+  A('FE-DSG-deflist', 'explorer 列出并可点选定义(travel_expense)', clickedDef, clickedDef ? 'travel_expense' : 'not found');
 
   // 等 bpmn 画布 SVG 渲染
   await page.waitForTimeout(2500);
@@ -75,6 +64,7 @@ const A = (id, desc, ok, detail) => { results.push({ id, ok: !!ok, desc, detail 
   require('fs').writeFileSync(path.join(__dirname, 'designer-structure.json'), JSON.stringify({ canvas, consoleErrs: consoleErrs.slice(0, 10), errors: errors.slice(0, 5) }, null, 2));
 
   await browser.close();
+  try { srv.kill('SIGTERM'); } catch {}
   const pass = results.filter(r => r.ok).length;
   console.log(`\n==== FE Tier2 designer: ${pass}/${results.length} ====`);
   require('fs').writeFileSync(path.join(__dirname, 'tier2-results.json'), JSON.stringify(results, null, 2));

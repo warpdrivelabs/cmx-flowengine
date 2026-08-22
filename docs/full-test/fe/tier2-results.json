@@ -8,19 +8,19 @@
     "id": "FE-DSG-deflist",
     "ok": true,
     "desc": "explorer 列出并可点选定义(travel_expense)",
-    "detail": "差旅报销申请travel_expense · fico/报销/差旅\n    \n "
+    "detail": "travel_expense"
   },
   {
     "id": "FE-DSG-canvas",
     "ok": true,
     "desc": "bpmn-js 画布渲染 SVG",
-    "detail": "svg=4"
+    "detail": "svg=6"
   },
   {
     "id": "FE-DSG-shapes",
     "ok": true,
     "desc": "BPMN 图元渲染(节点 shape)",
-    "detail": "shapes=4 ids=[\"new_process\",\"start\",\"start_label\"]"
+    "detail": "shapes=42 ids=[\"travel_expense\",\"start\",\"mgr\",\"gw_amount\",\"director\",\"fin_review\",\"cashier\",\"end\",\"end_label\",\"f_start\",\"f_mgr\",\"f_big\",\"f_small\",\"f_director\",\"f_fin\",\"f_cashier\",\"start_label\",\"gw_amount_label\",\"f_big_label\",\"f_small_label\"]"
   },
   {
     "id": "FE-DSG-noerr",

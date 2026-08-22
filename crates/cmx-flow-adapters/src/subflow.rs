@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use cmx_flow_engine::{RouteError, RouteResult, SubflowRouter};
+use cmx_flow_engine::{DimensionResolver, RouteError, RouteResult, SubflowRouter};
 
 /// 外部组织服务子流程路由器。
 #[derive(Debug, Clone)]
@@ -87,5 +87,106 @@ impl SubflowRouter for HttpSubflowRouter {
                 dim_value: dim_value.map(|s| s.to_string()),
             }),
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RD5 · 维度层级的外部 HTTP 实现 —— 独立部署时经它读字典/组织层级做继承解析。
+// 绑定表始终 flow 本地；本实现只解耦「维度祖先链」这一外部事实源（不直连字典表）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 期望响应体：祖先取值链（由近及远，不含自身）。
+#[derive(Deserialize)]
+struct AncestorsResp {
+    #[serde(default)]
+    ancestors: Vec<String>,
+}
+
+/// 维度层级的外部 HTTP 实现（RD5）。
+///
+/// `GET {base}/dimensions/ancestors?dimKey=..&dimValue=..` → `{"ancestors":["parent","grandparent",..]}`。
+/// 404 视为「无层级」（返回空链 = 无继承，非错误）；非成功 5xx/4xx → Backend 错误。
+#[derive(Debug, Clone)]
+pub struct HttpDimensionResolver {
+    base_url: String,
+    http: reqwest::Client,
+}
+
+impl HttpDimensionResolver {
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            http: reqwest::Client::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl DimensionResolver for HttpDimensionResolver {
+    async fn ancestors(&self, dim_key: &str, dim_value: &str) -> RouteResult<Vec<String>> {
+        let url = format!("{}/dimensions/ancestors", self.base_url);
+        let resp = self
+            .http
+            .get(&url)
+            .query(&[("dimKey", dim_key), ("dimValue", dim_value)])
+            .send()
+            .await
+            .map_err(|e| RouteError::Backend(format!("维度服务请求失败: {e}")))?;
+        let status = resp.status();
+        // 无层级/未知取值 → 空链（无继承，非错误；与 Pg 版平级维度天然跳继承一致）。
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        if !status.is_success() {
+            let msg = resp.text().await.unwrap_or_default();
+            return Err(RouteError::Backend(format!("维度服务返回 {status}: {msg}")));
+        }
+        let parsed: AncestorsResp = resp
+            .json()
+            .await
+            .map_err(|e| RouteError::Backend(format!("维度服务响应解析失败: {e}")))?;
+        Ok(parsed.ancestors)
+    }
+}
+
+/// 维度层级的 Mock 实现（测试/脱外部）：按 dim_value 固定祖先链。
+#[derive(Debug, Clone, Default)]
+pub struct MockDimensionResolver {
+    map: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl MockDimensionResolver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 追加一条 `dim_value → 祖先链（由近及远）` 映射。链式。
+    pub fn with(mut self, dim_value: impl Into<String>, ancestors: Vec<String>) -> Self {
+        self.map.insert(dim_value.into(), ancestors);
+        self
+    }
+}
+
+#[async_trait]
+impl DimensionResolver for MockDimensionResolver {
+    async fn ancestors(&self, _dim_key: &str, dim_value: &str) -> RouteResult<Vec<String>> {
+        Ok(self.map.get(dim_value).cloned().unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod rd5_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn mock_dimension_resolver_returns_configured_ancestors() {
+        let r = MockDimensionResolver::new()
+            .with("fin_bj_g1", vec!["fin_bj".into(), "zongbu".into()]);
+        assert_eq!(
+            r.ancestors("org", "fin_bj_g1").await.unwrap(),
+            vec!["fin_bj".to_string(), "zongbu".to_string()]
+        );
+        // 未知取值 → 空链（无继承）。
+        assert!(r.ancestors("org", "unknown").await.unwrap().is_empty());
     }
 }

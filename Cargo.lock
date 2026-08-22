@@ -864,6 +864,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmx-flow-worker-sdk"
+version = "0.1.12"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cmx-rowsource"
 version = "0.1.12"
 dependencies = [

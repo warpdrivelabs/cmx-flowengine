@@ -21,13 +21,14 @@ use serde_json::json;
 use tokio::sync::{OnceCell, RwLock};
 
 use cmx_flow_adapters::{
-    AdapterConfig, AdapterMode, HttpAssigneeResolver, HttpDelegate, HttpSubflowRouter,
-    MockAssigneeResolver, MockDelegate, MockSubflowRouter, WebhookSender,
+    AdapterConfig, AdapterMode, HttpAssigneeResolver, HttpDelegate, HttpDimensionResolver,
+    HttpSubflowRouter, MockAssigneeResolver, MockDelegate, MockSubflowRouter, WebhookSender,
 };
 use cmx_flow_def::{DefinitionService, PgDefinitionStore};
 use cmx_flow_engine::{DelegateContext, Engine, JavaDelegate, ProcessDefinition};
 use cmx_flow_store_pg::{
-    PgIamAssigneeResolver, PgRuntimeStore, PgSubflowBindingStore, PgSubflowRouter,
+    PgDecisionStore, PgIamAssigneeResolver, PgRuntimeStore, PgSubflowBindingStore, PgSubflowRouter,
+    PgVarHistoryStore,
 };
 
 use crate::tenant::{DEFAULT_TENANT, current_tenant};
@@ -61,6 +62,18 @@ pub fn identity_is_local() -> bool {
         .unwrap_or(false)
 }
 
+/// RD5：读维度层级外部解析地址。`FLOW_DIMENSION_MODE=http` 且 `FLOW_DIMENSION_URL` 非空时返回 Some，
+/// 否则 None（沿用 PgSubflowRouter 直连字典表继承，零回归）。
+fn dimension_http_url() -> Option<String> {
+    let mode = std::env::var("FLOW_DIMENSION_MODE").unwrap_or_default();
+    if !mode.eq_ignore_ascii_case("http") {
+        return None;
+    }
+    std::env::var("FLOW_DIMENSION_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+}
+
 /// 流程运行态聚合：共享引擎 + 已装载定义（供前端画图）+ 定义服务（设计器草稿/发布）。
 pub struct FlowRuntime {
     pub engine: Arc<Engine<PgRuntimeStore>>,
@@ -69,6 +82,10 @@ pub struct FlowRuntime {
     pub def_svc: Arc<DefinitionService<PgDefinitionStore>>,
     /// 子流程组织绑定管理（设计态 CRUD + 组织树；与运行期 PgSubflowRouter 同表 IAM 库）。
     pub binding_store: Arc<PgSubflowBindingStore>,
+    /// 决策表持久化（businessRuleTask 引用的表随注册落库，启动装载回引擎；flow 租户库）。
+    pub decision_store: Arc<PgDecisionStore>,
+    /// 变量变更历史 + TTL 归档（start/complete/set-variables 三路径捕获；flow 租户库）。
+    pub var_history_store: Arc<PgVarHistoryStore>,
     /// 已注册的自分级路由维度字典（RD2）：供 /flow/dimensions 列举 + 维度条目读取。org 内建不在内。
     pub dimension_specs: Arc<Vec<DimRegistration>>,
     /// 出站生命周期 webhook 发送器（app 层 handler emit 事件，后台异步投递第三方）。
@@ -255,6 +272,15 @@ async fn build_for(
             for d in &dim_regs {
                 router.register_dim(d.dim_key.clone(), d.spec.clone());
             }
+            // RD5：配了 FLOW_DIMENSION_MODE=http + FLOW_DIMENSION_URL → 继承步经外部 HTTP 读维度层级
+            //      （独立部署不共享字典库；绑定表仍本地）。默认 None = 直连字典表继承（零回归）。
+            let router = match dimension_http_url() {
+                Some(url) => {
+                    tracing::info!(url, "子流程继承：维度层级经外部 HTTP 解析（RD5）");
+                    router.with_dim_resolver(Arc::new(HttpDimensionResolver::new(url)))
+                }
+                None => router,
+            };
             engine.set_subflow_router(Arc::new(router));
         }
         AdapterMode::Http => match &cfg.subflow_url {
@@ -341,6 +367,34 @@ async fn build_for(
         Err(e) => tracing::warn!(error = %e, "读取已发布定义失败"),
     }
 
+    // 3b) 决策表持久化：建表兜底 + 装载库里已落库的决策表回引擎注册表（businessRuleTask 依赖）。
+    //     决策表是设计态产物，与定义同库同租户（flow 库）。失败仅告警，不阻断启动。
+    let decision_store = PgDecisionStore::new(flow_db_id);
+    if let Err(e) = decision_store.ensure_schema().await {
+        tracing::warn!(error = %e, "决策表建表失败（决策表持久化不可用，仅内存热注册）");
+    }
+    match decision_store.load_all().await {
+        Ok((tables, errors)) => {
+            for (k, e) in &errors {
+                tracing::warn!(decision = %k, error = %e, "决策表解析失败，跳过装载");
+            }
+            let n = tables.len();
+            for t in tables {
+                engine.register_decision(t);
+            }
+            if n > 0 {
+                tracing::info!(count = n, "装载已落库决策表");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "读取已落库决策表失败"),
+    }
+
+    // 3c) 变量历史表兜底建表（flow 库；start/complete/set-variables 捕获变更）。失败仅告警。
+    let var_history_store = PgVarHistoryStore::new(flow_db_id);
+    if let Err(e) = var_history_store.ensure_schema().await {
+        tracing::warn!(error = %e, "变量历史表建表失败（变量历史不可用）");
+    }
+
     // 4) 出站 webhook 发送器：配了 FLOW_WEBHOOK_URLS 则起后台投递 worker，否则 disabled（emit no-op）。
     let webhook = if cfg.webhook.is_enabled() {
         tracing::info!(
@@ -362,6 +416,8 @@ async fn build_for(
         definitions: Arc::new(RwLock::new(definitions)),
         def_svc: Arc::new(def_svc),
         binding_store: Arc::new(binding_store),
+        decision_store: Arc::new(decision_store),
+        var_history_store: Arc::new(var_history_store),
         dimension_specs: Arc::new(dim_regs),
         webhook,
         tenant: tenant.to_string(),

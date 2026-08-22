@@ -19,6 +19,7 @@ pub mod service;
 pub mod store;
 
 pub use service::DefinitionService;
+pub use service::SaveDraftOutcome;
 pub use store::PgDefinitionStore;
 
 use chrono::{DateTime, Utc};

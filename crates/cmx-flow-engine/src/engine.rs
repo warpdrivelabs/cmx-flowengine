@@ -436,6 +436,14 @@ impl<S: RuntimeStore> Engine<S> {
             .cloned()
     }
 
+    /// 注销一张决策表（管理面删除时同步内存注册表；未注册则无操作）。
+    pub fn unregister_decision(&self, key: &str) {
+        self.decisions
+            .write()
+            .expect("decisions 锁中毒")
+            .remove(key);
+    }
+
     /// 借用底层存储（消费侧偶尔需要直接查询）。
     pub fn store(&self) -> &S {
         &self.store

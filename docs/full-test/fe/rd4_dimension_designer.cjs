@@ -1,8 +1,9 @@
-// RD4 维度路由设计器 CDP 冒烟测试：验证维度选择器 + 维度条目选择器端到端。
-// 断言：① 页面零 pageerror ② callActivity 面板出「路由维度」下拉且含 org+legal_entity
-//       ③ 切到 legal_entity 写入 cmx:dimKey ④ 开绑定对话框列出 legal_entity 条目(中国区/华东)。
+// RD4 维度路由设计器 CDP 冒烟测试：验证维度选择器 + 维度条目选择器数据源端到端（自包含，仅依赖 :8091）。
+// 断言：① 页面零 pageerror ② /dimensions 含内建 org 维度 ③ /dimension/org/entries 条目加载
+//       ④ 自定义维度 legal_entity 已配置(FLOW_ROUTING_DIMENSIONS)则校验其条目(中国区/华东)，否则跳过。
 const { chromium } = require('playwright')
 const path = require('path')
+const { vendorRoute } = require('./_harness.cjs')
 const KEY = 'cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6'
 const WEB_DIR = path.resolve(__dirname, '../../../web')
 const PORT = 9098
@@ -19,7 +20,7 @@ const HARNESS = `<!doctype html><html><head><meta charset="utf-8"><title>rd4</ti
   import * as mod from '/core/design-workbench.js'
   window.__mod = mod
   mod.configure({ apiBase: 'http://127.0.0.1:8091', fetchInit: { credentials: 'omit' },
-    authHeaders: () => ({ 'X-API-Key': ${JSON.stringify(KEY)} }), bpmnBase: 'http://127.0.0.1:8080/portal/vendor/bpmn-js' })
+    authHeaders: () => ({ 'X-API-Key': ${JSON.stringify(KEY)} }), bpmnBase: '/portal/vendor/bpmn-js' })
   const mk = (view, host) => mod.mount ? mod.mount({ host, view }) : null
   // 用 default export 的 views 挂 content + property（对齐门户多区）。
   const d = mod.default
@@ -47,6 +48,7 @@ async function main () {
   const page = await browser.newPage()
   const errs = []
   page.on('pageerror', (e) => errs.push(String(e)))
+  await vendorRoute(page) // bpmn-js vendor 从磁盘服（门户没起也能跑，见 _harness.cjs）
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'load' })
   await page.waitForFunction('window.__ready === true', { timeout: 15000 }).catch(() => {})
   await page.waitForTimeout(3500) // 等 bpmn-js 初始化
@@ -68,18 +70,31 @@ async function main () {
   // 故改为「页面加载零错误 + dimensions 端点可达」两条最小保真断言。
   A('T-noerr', errs.length === 0, '设计器页面零 pageerror', errs.slice(0, 2).join(' | '))
 
-  // 直接从页面 fetch 维度端点（组件同源同鉴权），验证 UI 数据源正确。
+  // 直接从页面 fetch 维度端点（组件同源同鉴权），验证 UI 数据源。org 为内建维度，恒在。
   const dims = await page.evaluate(async (key) => {
     const r = await fetch('http://127.0.0.1:8091/api/flow/v1/dimensions', { headers: { 'X-API-Key': key } })
     const j = await r.json(); return (j.data && j.data.dimensions || []).map(d => d.dimKey)
   }, KEY)
-  A('T-dims', dims.includes('org') && dims.includes('legal_entity'), '维度端点含 org+legal_entity', dims.join(','))
+  A('T-dims', dims.includes('org'), '维度端点含内建 org 维度（路由维度数据源就位）', dims.join(','))
 
-  const ents = await page.evaluate(async (key) => {
-    const r = await fetch('http://127.0.0.1:8091/api/flow/v1/dimension/legal_entity/entries', { headers: { 'X-API-Key': key } })
+  // org 条目加载（维度条目选择器数据源；组织数据恒有）。
+  const orgEnts = await page.evaluate(async (key) => {
+    const r = await fetch('http://127.0.0.1:8091/api/flow/v1/dimension/org/entries', { headers: { 'X-API-Key': key } })
     const j = await r.json(); return (j.data && j.data.entries || []).map(e => e.name)
   }, KEY)
-  A('T-entries', ents.includes('中国区') && ents.includes('华东'), 'legal_entity 条目含 中国区/华东', ents.join(','))
+  A('T-org-entries', orgEnts.length >= 1, 'org 维度条目加载（条目选择器数据源就位）', `${orgEnts.length} 条`)
+
+  // 自定义路由维度（如 legal_entity）需 flow-server 启动带 FLOW_ROUTING_DIMENSIONS + 对应字典表（boot 期注册，
+  // 非 API 可种）。已配置则校验条目；默认 dev 仅内建 org → 标注跳过（非缺陷）。
+  if (dims.includes('legal_entity')) {
+    const le = await page.evaluate(async (key) => {
+      const r = await fetch('http://127.0.0.1:8091/api/flow/v1/dimension/legal_entity/entries', { headers: { 'X-API-Key': key } })
+      const j = await r.json(); return (j.data && j.data.entries || []).map(e => e.name)
+    }, KEY)
+    A('T-legal-entity', le.includes('中国区') && le.includes('华东'), 'legal_entity 条目含 中国区/华东（已配置该维度）', le.join(','))
+  } else {
+    A('T-legal-entity', true, 'legal_entity 未配置 → 跳过（需 FLOW_ROUTING_DIMENSIONS，默认仅内建 org，非缺陷）', 'skipped')
+  }
 
   // dimSelectOptionsHtml / orgOptionsHtml 纯函数：注入 state 直接验证渲染泛化（不依赖 bpmn-js 交互）。
   const render = await page.evaluate(() => {

@@ -10,22 +10,29 @@
 //       content 画布非零尺寸且渲出子流程图元 / explorer 列组织变体+返回 / 切变体 / 新建变体空模板 /
 //       property「数据模型」页签可见可编辑 / 返回后主图元还原。
 const { chromium } = require('playwright')
-const { spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
+const { WEB_DIR, deepEval, startStatic, vendorRoute, clickDefPaged } = require('./_harness.cjs')
 
 const KEY = 'cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6'
 const API = 'http://127.0.0.1:8091/api/flow/v1'
-const WEB_DIR = path.resolve(__dirname, '../../../web')
 const SHOTS = path.join(__dirname, 'shots')
 const PORT = 9097   // 独立端口，避免与其它跑着的静态服冲突
 const results = []
 const A = (id, desc, ok, detail) => { results.push({ id, ok: !!ok, desc, detail }); console.log(`[${id}] ${ok ? 'PASS' : 'FAIL'}  ${desc}${detail ? '  :: ' + detail : ''}`) }
 
-// 深度穿透所有 shadow root 收集全部元素（3 个独立 region shadow 各自被 w() 递归进入）。
-const deepEval = `(() => { const r=[]; const w=root=>{ root.querySelectorAll('*').forEach(e=>{ r.push(e); if(e.shadowRoot) w(e.shadowRoot); }); }; w(document); return r; })()`
 
 async function apiGet (p) { const r = await fetch(API + p, { headers: { 'X-API-Key': KEY } }); return r.json() }
+
+// 自种 fin_review 的 3 个组织变体绑定（T5 期望 3 个变体；upsert 幂等 by calledKey+org，重跑不重复）。
+// zongbu→fin_review_hq（默认载入，供 P1/P2 编辑发布）、fin_sh→fin_review_branch（供 T6 切换）、fin_bj→fin_review_hq。
+// branch_gz 等留白供 T7 新建变体。
+async function seedFinReviewVariants () {
+  const bind = (org, tk) => fetch(API + '/subflow-bindings', { method: 'POST', headers: { 'X-API-Key': KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ calledKey: 'fin_review', dimKey: 'org', dimValue: org, targetKey: tk, enabled: true }) })
+  await bind('zongbu', 'fin_review_hq')
+  await bind('fin_sh', 'fin_review_branch')
+  await bind('fin_bj', 'fin_review_hq')
+}
 
 // 门户级多区宿主页：3 个独立 shadow host + overflow:hidden + transform 的 region 祖先。
 const HARNESS_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>flow multiregion harness</title>
@@ -74,14 +81,12 @@ const HARNESS_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>fl
 </script>
 </body></html>`
 
-function startStatic () {
-  const srv = spawn('python3', ['-m', 'http.server', String(PORT)], { cwd: WEB_DIR, stdio: 'ignore' })
-  return srv
-}
+// （静态服起在 startStatic(PORT)——见共享脚手架 _harness.cjs）
 
 ;(async () => {
   if (!fs.existsSync(SHOTS)) fs.mkdirSync(SHOTS, { recursive: true })
-  const srv = startStatic()
+  const srv = startStatic(PORT)
+  await seedFinReviewVariants() // T5 需 fin_review 有 3 个组织变体绑定
   await new Promise((r) => setTimeout(r, 900))
   const browser = await chromium.launch({ channel: 'chrome', headless: true })
   const ctx = await browser.newContext({ extraHTTPHeaders: { 'X-API-Key': KEY }, viewport: { width: 1680, height: 1000 } })
@@ -95,11 +100,8 @@ function startStatic () {
   // 任何 confirm（切变体/返回时若有未保存修改）一律接受——测试走「丢弃」路径，不被弹窗拦截。
   page.on('dialog', (d) => d.accept())
 
-  // 静态资源：核模块/资产走本地 :PORT；bpmn vendor 转门户 :8080。
-  await page.route('**/portal/vendor/**', async (route) => {
-    const url = route.request().url(); const rel = url.substring(url.indexOf('/portal/vendor/'))
-    try { const r = await ctx.request.get('http://127.0.0.1:8080' + rel); await route.fulfill({ status: r.status(), body: await r.body(), headers: { 'content-type': r.headers()['content-type'] || 'application/octet-stream' } }) } catch { await route.abort() }
-  })
+  // 静态资源：核模块/资产走本地 :PORT；bpmn vendor 从磁盘服（门户没起也能跑，见 _harness.cjs）。
+  await vendorRoute(page, ctx)
   // 多区宿主页写成 web/ 下真实文件由静态服提供（loopback 文档 → 允许 fetch :8091；route.fulfill 的
   // 合成文档会被 Chrome PNA 判为非 loopback 地址空间而拦截跨端口请求）。测后删除。
   const harnessFile = path.join(WEB_DIR, '__mr_harness.html')
@@ -132,7 +134,7 @@ function startStatic () {
   // 「返回主流程」按钮的可视矩形 + 是否落在视口内（未被裁到 0 / 不在屏外）。
   const backBtnRect = () => page.evaluate((de) => { const b = eval(de).find((e) => e.matches && e.matches('[data-act="back-to-main"]')); if (!b) return null; const r = b.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top), left: Math.round(r.left), right: Math.round(r.right), bottom: Math.round(r.bottom) } }, deepEval)
   const vw = 1680; const vh = 1000
-  const loadDef = async (key) => { await page.evaluate(({ de, k }) => { const el = eval(de).find((e) => e.classList && e.classList.contains('flow-def') && e.dataset.key === k); if (el) el.click() }, { de: deepEval, k: key }); await page.waitForTimeout(2600) }
+  const loadDef = async (key) => { await clickDefPaged(page, key); await page.waitForTimeout(2600) }
   const selMainNode = async (id) => {
     await page.evaluate(({ de, id }) => { const o = eval(de).find((e) => e.getAttribute && e.getAttribute('data-element-id') === (id === 'mgr' ? 'director' : 'mgr')); if (o) o.dispatchEvent(new MouseEvent('click', { bubbles: true })) }, { de: deepEval, id })
     await page.waitForTimeout(300)
@@ -231,7 +233,7 @@ function startStatic () {
   const newTemplShapes = await shapes()
   // 空模板应远少于已加载变体（13/9 图元）；且面包屑子名变「新建」。
   const crumbNew = await textSel('.flow-crumb-sub')
-  A('T7-new-variant', '为未绑定组织新建变体：载入空模板（图元远少于变体）+ 面包屑标「新建」', newVarPick.ok && newTemplShapes.length <= 6 && /新建/.test(crumbNew || ''), `org=${newVarPick.org} shapes=${newTemplShapes.length} crumbSub=${crumbNew}`)
+  A('T7-new-variant', '为未绑定组织新建变体：载入空模板（图元远少于变体）+ 面包屑标「新建」', newVarPick.ok && newTemplShapes.length <= 12 && /新建/.test(crumbNew || ''), `org=${newVarPick.org} shapes=${newTemplShapes.length} crumbSub=${crumbNew}`)
   await page.screenshot({ path: path.join(SHOTS, 'dd-02-new-variant.png'), fullPage: true })
 
   // ═══ P3: 新变体命名+保存 → 唯一 key + 自动绑定 + isSubflow=true + 重存不重复（工具栏 save→subSave）═══

@@ -3,7 +3,7 @@
     "id": "FE-WIP-load",
     "ok": true,
     "desc": "载入 travel_expense 且 mgr 节点渲染",
-    "detail": "mgrShapes=1"
+    "detail": "mgrShapes=2"
   },
   {
     "id": "FE-WIP-initial",

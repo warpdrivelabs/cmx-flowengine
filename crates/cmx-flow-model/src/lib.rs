@@ -46,7 +46,7 @@ pub use runtime::{
     ProcessInstance, Task, TaskCandidate, TaskDelegation, TimerJob, TimerJobKind, Token, TokenState,
 };
 pub use store::{RuntimeStore, StoreError, StoreResult};
-pub use subflow::{RouteError, RouteResult, SubflowRouter, DIM_ORG};
+pub use subflow::{DimensionResolver, RouteError, RouteResult, SubflowRouter, DIM_ORG};
 pub use var_schema::{
     VarDecl, VarPath, VarSchema, VarScope, VarSource, VarType, VarViolation, VarViolationCode,
 };

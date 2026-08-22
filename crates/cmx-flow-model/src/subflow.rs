@@ -61,3 +61,16 @@ pub trait SubflowRouter: Send + Sync {
         dim_value: Option<&str>,
     ) -> RouteResult<String>;
 }
+
+/// 维度层级解析契约（RD5，可选）。
+///
+/// `PgSubflowRouter` 的「继承」步默认直连维度字典表（`cmx_org`/`cf_*`）沿物化路径找祖先绑定。
+/// 独立微服务部署时 flow 可能不共享字典库——注入本 trait 后，继承步改由外部服务（HTTP）返回祖先
+/// 取值链（由近及远），flow 只用**本地**绑定表逐祖先查绑定。绑定表始终 flow 自有；本 trait 只把
+/// 「维度层级」这一外部事实源解耦出去，引擎/路由仍不认字典表结构。
+#[async_trait]
+pub trait DimensionResolver: Send + Sync {
+    /// 返回 `dim_value` 在 `dim_key` 维度下的祖先取值链，**由近及远**（不含自身）。
+    /// 平级/无层级维度返回空 `Vec`。底层错误走 [`RouteError::Backend`]。
+    async fn ancestors(&self, dim_key: &str, dim_value: &str) -> RouteResult<Vec<String>>;
+}

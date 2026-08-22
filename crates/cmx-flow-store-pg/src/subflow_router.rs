@@ -24,6 +24,9 @@ pub struct PgSubflowRouter {
     /// `org` 维度内建（不必注册）；其余自分级 cf_* 字典由 app 层按 DCT 元数据注册进来。
     /// 未注册的维度 = 平级字典，只走精确 + 兜底（无继承）。
     dim_specs: std::collections::HashMap<String, DimSpec>,
+    /// RD5（可选）：维度层级解析器。注入后「继承」步改由它返回祖先链（独立部署经 HTTP 读字典层级），
+    /// 逐祖先查本地绑定表，不再直连字典表 JOIN。None = 沿用 DimSpec 直连字典表继承（默认，零回归）。
+    dim_resolver: Option<std::sync::Arc<dyn cmx_flow_model::DimensionResolver>>,
 }
 
 /// 一个自分级路由维度的物理规格（RD1）——把 M5.2 写死的 cmx_org/path/'/' 参数化。
@@ -64,7 +67,17 @@ impl PgSubflowRouter {
         Self {
             db_id: db_id.into(),
             dim_specs: std::collections::HashMap::new(),
+            dim_resolver: None,
         }
+    }
+
+    /// RD5：注入维度层级解析器（继承步改走它，不再直连字典表）。返回 self 便于链式构建。
+    pub fn with_dim_resolver(
+        mut self,
+        resolver: std::sync::Arc<dyn cmx_flow_model::DimensionResolver>,
+    ) -> Self {
+        self.dim_resolver = Some(resolver);
+        self
     }
 
     /// 注册一个自分级维度字典的物理规格（RD1，app 层按 DCT 元数据调用）。
@@ -99,6 +112,48 @@ impl PgSubflowRouter {
         }
         Ok(None)
     }
+
+    /// 取某维度取值的祖先取值链（由近及远，不含自身）——供平台侧「维度层级回连端点」(⑤/RD5) 复用。
+    /// 沿维度字典物化路径找所有祖先（前缀匹配 + 分隔符修边界），按路径长度 DESC = 最近在前。
+    /// 平级/未注册维度或非法规格 → 空链。
+    pub async fn ancestors(&self, dim_key: &str, dim_value: &str) -> RouteResult<Vec<String>> {
+        let spec = match self.dim_spec(dim_key) {
+            Some(s) => s,
+            None => return Ok(Vec::new()),
+        };
+        if !(is_safe_ident(&spec.table)
+            && is_safe_ident(&spec.id_col)
+            && is_safe_ident(&spec.path_col))
+        {
+            return Ok(Vec::new());
+        }
+        let (tbl, idc, pc) = (&spec.table, &spec.id_col, &spec.path_col);
+        let d = esc(&spec.delim);
+        let v = esc(dim_value);
+        let sql = format!(
+            "SELECT a.\"{idc}\" AS anc_id \
+             FROM \"{tbl}\" a JOIN \"{tbl}\" s ON s.\"{idc}\" = '{v}' \
+             WHERE a.\"{idc}\" <> s.\"{idc}\" \
+               AND a.\"{pc}\" IS NOT NULL AND s.\"{pc}\" IS NOT NULL \
+               AND (s.\"{pc}\" = a.\"{pc}\" OR s.\"{pc}\" LIKE a.\"{pc}\" || '{d}' || '%') \
+             ORDER BY length(a.\"{pc}\") DESC"
+        );
+        let ds = query_sql(&self.db_id, None, &sql, "dim_ancestors")
+            .await
+            .map_err(|e| RouteError::Backend(format!("查询维度祖先失败: {e}")))?;
+        let schema = ds.schema.as_ref();
+        let mut out = Vec::with_capacity(ds.row_count());
+        for row in ds.iter() {
+            match row.get_by_name(schema, "anc_id") {
+                Some(DataValue::String(s)) => out.push(s.clone()),
+                Some(DataValue::ShortStr(s)) | Some(DataValue::LongStr(s)) => {
+                    out.push(s.to_string())
+                }
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// 单引号转义（值来自 BPMN 定义 / 实例组织，无强注入面，仍防御）。
@@ -131,7 +186,21 @@ impl SubflowRouter for PgSubflowRouter {
             // 2) 继承（RD1）：该维度是自分级字典时，沿其物化路径向上找最近祖先的绑定（path 最长=最近）。
             //    把 M5.2 写死的 cmx_org/path 参数化为 DimSpec{table,id_col,path_col,delim}；
             //    平级/未注册维度无 spec → 天然跳过继承（无「上级」概念，非缺陷）。
-            if let Some(spec) = self.dim_spec(dim_key) {
+            // RD5：若注入了维度解析器 → 优先经它取祖先链（由近及远），逐祖先查**本地**绑定表
+            //      （独立部署经 HTTP 读字典层级，不直连字典表 JOIN）。
+            if let Some(resolver) = &self.dim_resolver {
+                let ancestors = resolver.ancestors(dim_key, dv).await?;
+                for anc in &ancestors {
+                    let av = esc(anc);
+                    let sql = format!(
+                        "SELECT target_definition_key FROM cmx_flow_subflow_binding \
+                         WHERE called_key = '{k}' AND dim_key = '{dk}' AND dim_value = '{av}' AND enabled = TRUE LIMIT 1"
+                    );
+                    if let Some(t) = self.query_one_target(&sql, "subflow_inherit_dimresolver").await? {
+                        return Ok(t);
+                    }
+                }
+            } else if let Some(spec) = self.dim_spec(dim_key) {
                 // 白名单校验表/列名（受信 dictMeta，仍防御注入面扩大）；非法则跳继承。
                 if is_safe_ident(&spec.table)
                     && is_safe_ident(&spec.id_col)

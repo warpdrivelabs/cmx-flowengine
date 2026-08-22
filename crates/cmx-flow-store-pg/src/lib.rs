@@ -7,12 +7,16 @@
  */
 
 pub mod ddl;
+pub mod decision_store;
 pub mod mapping;
 pub mod resolver;
 pub mod store;
 pub mod subflow_router;
+pub mod var_history;
 
 pub use ddl::DDL_STATEMENTS;
+pub use decision_store::{DecisionMeta, PgDecisionStore};
 pub use resolver::PgIamAssigneeResolver;
 pub use store::PgRuntimeStore;
 pub use subflow_router::{DimSpec, OrgNode, PgSubflowBindingStore, PgSubflowRouter, SubflowBinding};
+pub use var_history::{PgVarHistoryStore, VarChange, VarHistoryEntry};

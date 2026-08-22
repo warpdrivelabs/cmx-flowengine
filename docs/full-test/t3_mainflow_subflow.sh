@@ -3,6 +3,12 @@
 source "$(dirname "$0")/lib.sh"
 echo "════════ SUITE 3: 主流程 + 网关 + 子流程路由 ════════"
 
+# 自包含 seed（幂等）：t3 依赖 fin_review 按 org 路由的绑定——3A 总部→hq、3B 上海→branch、
+# 3C 北京(fin_bj 无精确绑定)沿 org path 继承到 zongbu→hq。历史靠外部预置，其它套件(sub2)用不同
+# 绑定矩阵会覆盖，故此处自建保证 run-all 自包含。upsert 幂等，同 (calledKey,org) 覆盖。
+upsert_binding fin_review zongbu fin_review_hq >/dev/null
+upsert_binding fin_review fin_sh fin_review_branch >/dev/null
+
 # 完成实例首个开放任务（complete 无需办理人）
 adv() { local i="$1" t; t=$(inst "$i" | jq -r '.data.openTasks[0].id'); complete "$t" "$i" "advance" >/dev/null; }
 node_open() { inst "$1" | jq -r --arg n "$2" '[.data.openTasks[]?|select(.nodeBpmnId==$n)]|length>0'; }

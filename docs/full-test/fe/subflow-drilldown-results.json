@@ -9,7 +9,7 @@
     "id": "T-load-main",
     "ok": true,
     "desc": "主流程载入且有图元",
-    "detail": "shapes=21"
+    "detail": "shapes=42"
   },
   {
     "id": "T-sel-callactivity",
@@ -51,13 +51,13 @@
     "id": "T4-sub-rendered",
     "ok": true,
     "desc": "子流程图元已渲染（≥3）",
-    "detail": "shapes=13"
+    "detail": "shapes=26"
   },
   {
     "id": "P1-save-canvas-alive",
     "ok": true,
     "desc": "★保存子流程后画布存活(≥3图元)+无遮罩(旧Bug A:保存毁画布 已防)",
-    "detail": "shapes=13 fixed=0"
+    "detail": "shapes=26 fixed=0"
   },
   {
     "id": "P1-save-persist",
@@ -69,13 +69,13 @@
     "id": "P2-publish-version",
     "ok": true,
     "desc": "★工具栏「发布」→ subPublish → 版本号 +1",
-    "detail": "5→6"
+    "detail": "9→10"
   },
   {
     "id": "P2-publish-canvas-alive",
     "ok": true,
     "desc": "发布后画布存活",
-    "detail": "shapes=13"
+    "detail": "shapes=26"
   },
   {
     "id": "T5-explorer-variants",
@@ -87,25 +87,25 @@
     "id": "T6-variant-switch",
     "ok": true,
     "desc": "切换到 fin_review_branch 变体：画布重载有图元 + 高亮切换",
-    "detail": "active=fin_review_branch shapes=9"
+    "detail": "active=fin_review_branch shapes=18"
   },
   {
     "id": "T7-new-variant",
     "ok": true,
     "desc": "为未绑定组织新建变体：载入空模板（图元远少于变体）+ 面包屑标「新建」",
-    "detail": "org=branch_gz shapes=4 crumbSub=＋ 新建子流程"
+    "detail": "org=branch_gz shapes=8 crumbSub=＋ 新建子流程"
   },
   {
     "id": "P3-newvar-unique-key",
     "ok": true,
     "desc": "★新变体唯一 key（非 new_process）",
-    "detail": "key=fin_review_branch_gz newDefs=[\"fin_review_branch_gz\"]"
+    "detail": "key=fin_review_branch_gz_9 newDefs=[\"fin_review_branch_gz_9\"]"
   },
   {
     "id": "P3-newvar-autobind",
     "ok": true,
     "desc": "★保存即自动绑定到该组织",
-    "detail": "org=branch_gz→fin_review_branch_gz"
+    "detail": "org=branch_gz→fin_review_branch_gz_9"
   },
   {
     "id": "P3-newvar-isSubflow",
@@ -117,7 +117,7 @@
     "id": "P3-resave-nodup",
     "ok": true,
     "desc": "★重存同变体不重复建定义",
-    "detail": "31→31"
+    "detail": "58→58"
   },
   {
     "id": "T8-datamodel-tab",

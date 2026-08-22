@@ -1,11 +1,28 @@
 {
   "canvas": {
-    "svgCount": 4,
-    "shapeCount": 4,
+    "svgCount": 6,
+    "shapeCount": 42,
     "elementIds": [
-      "new_process",
+      "travel_expense",
       "start",
-      "start_label"
+      "mgr",
+      "gw_amount",
+      "director",
+      "fin_review",
+      "cashier",
+      "end",
+      "end_label",
+      "f_start",
+      "f_mgr",
+      "f_big",
+      "f_small",
+      "f_director",
+      "f_fin",
+      "f_cashier",
+      "start_label",
+      "gw_amount_label",
+      "f_big_label",
+      "f_small_label"
     ]
   },
   "consoleErrs": [

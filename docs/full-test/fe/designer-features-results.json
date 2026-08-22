@@ -1,0 +1,65 @@
+{
+  "results": [
+    {
+      "id": "A1-sim-tab",
+      "ok": true,
+      "desc": "模拟页签渲染（运行按钮+变量框）",
+      "detail": "loaded=true"
+    },
+    {
+      "id": "A2-sim-big",
+      "ok": true,
+      "desc": "大额(30000)运行→画布高亮≥5+trace含director",
+      "detail": "hit=8"
+    },
+    {
+      "id": "A3-sim-small",
+      "ok": true,
+      "desc": "小额(5000)运行→trace无director（走另一分支）",
+      "detail": "hit=7"
+    },
+    {
+      "id": "B1-diff-panel",
+      "ok": true,
+      "desc": "「对比」→差异面板+「差异」页签",
+      "detail": ""
+    },
+    {
+      "id": "B2-diff-result",
+      "ok": true,
+      "desc": "v1→v2 差异：新增≥1+修改≥1（列表+画布高亮）",
+      "detail": "add=2 chg=2"
+    },
+    {
+      "id": "C1-presence",
+      "ok": true,
+      "desc": "两用户在场条各见≥2头像（含对方）",
+      "detail": "A=2 B=2"
+    },
+    {
+      "id": "C2-remote-sel",
+      "ok": true,
+      "desc": "A 选中 a1 → B 画布现远端选中高亮",
+      "detail": "B .flow-collab-sel=1"
+    },
+    {
+      "id": "C3-notice",
+      "ok": true,
+      "desc": "A 保存→B 收「草稿已更新·载入最新」通知",
+      "detail": "notice=true reload=true"
+    },
+    {
+      "id": "C4-conflict",
+      "ok": true,
+      "desc": "B 过期保存→冲突确认框（防静默覆盖）",
+      "detail": "u_alice 刚保存了草稿（2026-08-22 02:54:42）。  确定 = 覆盖保存（以你的为准） 取消 = 放弃保存并载入最新"
+    },
+    {
+      "id": "Z-noerr",
+      "ok": true,
+      "desc": "全程无 pageerror",
+      "detail": ""
+    }
+  ],
+  "conflictDialog": "u_alice 刚保存了草稿（2026-08-22 02:54:42）。\n\n确定 = 覆盖保存（以你的为准）\n取消 = 放弃保存并载入最新"
+}
