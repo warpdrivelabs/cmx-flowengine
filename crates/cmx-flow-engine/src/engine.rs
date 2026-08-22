@@ -352,8 +352,7 @@ impl<S: RuntimeStore> Engine<S> {
             None,
         ).await?;
         let snap = self.launch_subflows_for(&snap.instance.id).await?;
-        self.flush_pending_subs(&snap).await;
-        self.flush_pending_activities(&snap).await;
+        self.flush_pending(&snap).await;
         Ok(Self::result_of(&snap))
     }
 
@@ -390,6 +389,28 @@ impl<S: RuntimeStore> Engine<S> {
                 tracing::warn!(instance = %snap.instance.id, activity = %act.activity_bpmn_id, error = %e, "写入活动历史失败（非 fatal）");
             }
         }
+    }
+
+    /// 把 `snapshot.pending_var_changes`（本段引擎派生的变量变更：决策输出/子流程回填）批量写入
+    /// store（非阻塞，失败只 warn）。与 flush_pending_activities 同构——变量历史是审计旁路，丢一条
+    /// 不影响流程正确性。空则底层 record_var_changes 直接返回。
+    async fn flush_pending_var_changes(&self, snap: &InstanceSnapshot) {
+        if snap.pending_var_changes.is_empty() {
+            return;
+        }
+        if let Err(e) = self.store.record_var_changes(&snap.pending_var_changes).await {
+            tracing::warn!(instance = %snap.instance.id, error = %e, "写入引擎派生变量历史失败（非 fatal）");
+        }
+    }
+
+    /// 一次性 flush 本推进段的三类旁路记录：消息订阅（P3/A2）+ 活动历史（A6）+ 派生变量历史。
+    /// 三者恒作为一组、同序在每个 `save_snapshot` 之后写出——收进一个 helper 使调用点从 3 行降到 1 行，
+    /// 并杜绝「漏 flush 其中一员」（`complete_subflow` 曾漏过）。异步 Job flush（P1）不在此组，
+    /// 因它只在少数路径需要、且须在本组之后调（见调用点）。
+    async fn flush_pending(&self, snap: &InstanceSnapshot) {
+        self.flush_pending_subs(snap).await;
+        self.flush_pending_activities(snap).await;
+        self.flush_pending_var_changes(snap).await;
     }
 
     /// 克隆出一份已部署定义（读锁只在克隆期间持有，绝不跨 await）。未部署 → DefinitionNotFound。
@@ -554,8 +575,7 @@ impl<S: RuntimeStore> Engine<S> {
             .await?;
         // 若起始段就走到 callActivity，挂起了 WaitingSubflow 令牌，启动其子实例。
         let snap = self.launch_subflows_for(&snap.instance.id).await?;
-        self.flush_pending_subs(&snap).await;
-        self.flush_pending_activities(&snap).await;
+        self.flush_pending(&snap).await;
         Ok(Self::result_of(&snap))
     }
 
@@ -646,13 +666,13 @@ impl<S: RuntimeStore> Engine<S> {
             delegations: Vec::new(),
             pending_subs: Vec::new(),
             pending_activities: Vec::new(),
+            pending_var_changes: Vec::new(),
         };
 
         self.run_to_wait(&def, &mut snapshot, now).await?;
         self.store.create_snapshot(&snapshot).await?;
         // P3：flush 本次推进段产生的消息订阅（WaitingMessage 令牌的 Catch 订阅）。
-        self.flush_pending_subs(&snapshot).await;
-        self.flush_pending_activities(&snapshot).await;
+        self.flush_pending(&snapshot).await;
         // P1：flush 本次推进段产生的异步 Job（WaitingAsync 令牌）。
         self.flush_pending_async_jobs(&snapshot).await;
         Ok(snapshot)
@@ -901,7 +921,16 @@ impl<S: RuntimeStore> Engine<S> {
 
             // 输出变量映射：子 → 父。空映射 = 全量回写。
             let back = map_vars(&child.instance.variables, &ca.output_vars, true);
+            // 变量历史（引擎派生）：子流程回填逐 key 相对父旧值 diff → pending_var_changes。
+            let derived = diff_derived_var_changes(
+                &parent.instance.id,
+                &back,
+                &parent.instance.variables,
+                "subflow",
+                &node_bpmn,
+            );
             parent.instance.variables.merge(back);
+            parent.pending_var_changes.extend(derived);
 
             // 父令牌离开 callActivity 沿唯一出边，转 Active。
             let target = outgoing
@@ -919,6 +948,10 @@ impl<S: RuntimeStore> Engine<S> {
 
             self.run_to_wait(&def, &mut parent, now).await?;
             self.store.save_snapshot(&parent).await?;
+            // flush 本段父推进产生的旁路记录（与其它 advance 路径同构）：子流程回填的变量历史
+            //   （pending_var_changes，本轮新增）、父段闭合的活动历史、新增消息订阅。此前 complete_subflow
+            //   遗漏 flush——回填变量历史会丢（现补上；活动/订阅同理，虽多在别处再生，一并对齐）。
+            self.flush_pending(&parent).await;
 
             // 父推进后可能又停在新的 callActivity，或自身完成再唤醒祖父。
             if parent.instance.state == InstanceState::Completed {
@@ -1074,8 +1107,7 @@ impl<S: RuntimeStore> Engine<S> {
         self.store.save_snapshot(&snapshot).await?;
 
         // P3：flush 本次推进段产生的消息订阅。
-        self.flush_pending_subs(&snapshot).await;
-        self.flush_pending_activities(&snapshot).await;
+        self.flush_pending(&snapshot).await;
         // 办结可能把令牌推进到 callActivity（挂起 WaitingSubflow）→ 启动子实例。
         let snapshot = self.launch_subflows_for(instance_id).await?;
         // 若本实例是子流程且已完成 → 唤醒父实例（回写变量 + 推进父流程）。
@@ -1456,6 +1488,7 @@ impl<S: RuntimeStore> Engine<S> {
         self.run_to_wait(&def, &mut snapshot, now).await?;
         snapshot.instance.updated_at = now;
         self.store.save_snapshot(&snapshot).await?;
+        self.flush_pending(&snapshot).await;
         Ok(Self::result_of(&snapshot))
     }
 
@@ -1565,6 +1598,7 @@ impl<S: RuntimeStore> Engine<S> {
         self.run_to_wait(&def, &mut snapshot, now).await?;
         snapshot.instance.updated_at = now;
         self.store.save_snapshot(&snapshot).await?;
+        self.flush_pending(&snapshot).await;
         // 子流程解析类 incident：令牌重激活后经 run_to_wait 会重新停到 WaitingSubflow，
         // 需再跑一遍子流程启动（绑定已修好则这次能解析成功）。对 serviceTask incident 无副作用。
         let snapshot = self.launch_subflows_for(instance_id).await?;
@@ -1742,6 +1776,7 @@ impl<S: RuntimeStore> Engine<S> {
             snapshot.instance.updated_at = now;
             self.run_to_wait(&def, &mut snapshot, now).await?;
             self.store.save_snapshot(&snapshot).await?;
+            self.flush_pending(&snapshot).await;
             tracing::info!(instance = %instance_id, "实例已恢复（含级联子实例）");
             Ok(Self::result_of(&snapshot))
         })
@@ -1817,6 +1852,7 @@ impl<S: RuntimeStore> Engine<S> {
         self.run_to_wait(&def, &mut snapshot, now).await?;
         snapshot.instance.updated_at = now;
         self.store.save_snapshot(&snapshot).await?;
+        self.flush_pending(&snapshot).await;
         tracing::info!(instance = %instance_id, target = %target_bpmn_id, "自由跳转");
         Ok(Self::result_of(&snapshot))
     }
@@ -1996,8 +2032,7 @@ impl<S: RuntimeStore> Engine<S> {
         self.run_to_wait(&def, &mut snapshot, now).await?;
         snapshot.instance.updated_at = now;
         self.store.save_snapshot(&snapshot).await?;
-        self.flush_pending_subs(&snapshot).await;
-        self.flush_pending_activities(&snapshot).await;
+        self.flush_pending(&snapshot).await;
         // P3：唤醒成功，删除已消费的 Catch 订阅（按实例批量删，幂等）。
         let _ = self.store.delete_subscriptions_by_instance(&target_iid).await;
         tracing::info!(instance = %target_iid, message = %message_name, "相关消息已投递");
@@ -2194,8 +2229,7 @@ impl<S: RuntimeStore> Engine<S> {
         snapshot.instance.updated_at = now;
         self.store.save_snapshot(&snapshot).await?;
         // P3：撤回产生新任务（landing），但不会经过 MessageCatchEvent，flush 是幂等无害的。
-        self.flush_pending_subs(&snapshot).await;
-        self.flush_pending_activities(&snapshot).await;
+        self.flush_pending(&snapshot).await;
         Ok(Self::result_of(&snapshot))
     }
 
@@ -2266,8 +2300,7 @@ impl<S: RuntimeStore> Engine<S> {
                     f.instance_state = snapshot.instance.state;
                 }
                 self.store.save_snapshot(&snapshot).await?;
-                self.flush_pending_subs(&snapshot).await;
-                self.flush_pending_activities(&snapshot).await;
+                self.flush_pending(&snapshot).await;
                 // A10：若定时器赢得事件网关竞速，清理同令牌挂起的消息订阅（竞争对手）。
                 // fire_timer 已清同令牌的其它 TimerJob，这里补清消息订阅。
                 let _ = self.store.delete_subscriptions_by_instance(&instance_id).await;
@@ -2471,7 +2504,16 @@ impl<S: RuntimeStore> Engine<S> {
                     match self.get_decision(&br.decision_key) {
                         Some(table) => {
                             let res = evaluate_decision(&table, &snapshot.instance.variables)?;
+                            // 变量历史（引擎派生）：决策输出逐 key 相对旧值 diff → pending_var_changes。
+                            let derived = diff_derived_var_changes(
+                                &snapshot.instance.id,
+                                &res.outputs,
+                                &snapshot.instance.variables,
+                                "decision",
+                                &node_bpmn,
+                            );
                             snapshot.instance.variables.merge(res.outputs);
+                            snapshot.pending_var_changes.extend(derived);
                             tracing::debug!(
                                 node = %node_bpmn, decision = %br.decision_key,
                                 matched = ?res.matched_rules, "决策表求值"
@@ -3052,8 +3094,7 @@ impl<S: RuntimeStore> Engine<S> {
         tok.updated_at = now;
         self.run_to_wait(&def, &mut snapshot, now).await?;
         self.store.save_snapshot(&snapshot).await?;
-        self.flush_pending_subs(&snapshot).await;
-        self.flush_pending_activities(&snapshot).await;
+        self.flush_pending(&snapshot).await;
         self.flush_pending_async_jobs(&snapshot).await;
         Ok(Some(Self::result_of(&snapshot)))
     }
@@ -3304,6 +3345,37 @@ fn transition_token(
     let tok = &mut snapshot.tokens[idx];
     tok.node_bpmn_id = target_bpmn_id;
     tok.updated_at = now;
+}
+
+/// 引擎派生变量变更 diff：把即将 merge 进实例的 `incoming` 逐 key 与 `old` 现值比对，
+/// 变化的（含新增）产出一条 `VarChangeRecord`（未变的 key 跳过，避免噪声）。
+///
+/// 与 app 层 `diff_var_changes` 同构（此处针对引擎侧 `Variables`，`by` 恒为 system 故不带此字段）。
+/// 在 merge **之前**调用——此时 `old` 尚为旧值；返回后调用方 merge 并 `extend` 到 pending。
+fn diff_derived_var_changes(
+    instance_id: &str,
+    incoming: &Variables,
+    old: &Variables,
+    source: &str,
+    node_bpmn_id: &str,
+) -> Vec<cmx_flow_model::VarChangeRecord> {
+    let mut out = Vec::new();
+    for (k, v) in incoming.iter() {
+        let old_v = old.get(k).map(|x| x.to_string());
+        let new_v = Some(v.to_string());
+        if old_v == new_v {
+            continue;
+        }
+        out.push(cmx_flow_model::VarChangeRecord {
+            instance_id: instance_id.to_string(),
+            var_name: k.clone(),
+            old_value: old_v,
+            new_value: new_v,
+            source: source.to_string(),
+            node_bpmn_id: Some(node_bpmn_id.to_string()),
+        });
+    }
+    out
 }
 
 /// 闭合令牌 `idx` 当前所在节点的活动历史（A6）——不迁移令牌，仅记账。

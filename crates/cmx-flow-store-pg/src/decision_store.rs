@@ -11,7 +11,7 @@
  */
 
 use cmx_core::model::cell::DataValue;
-use cmx_database_pg::{SqlParams, execute_sql, execute_sql_with_params, query_sql};
+use cmx_database_pg::{SqlParams, execute_sql, execute_sql_with_params, query_sql, query_sql_with_params};
 use cmx_flow_model::DecisionTable;
 
 /// 决策表元数据（列表端点用，不含整表规则明细）。
@@ -152,6 +152,23 @@ impl PgDecisionStore {
                 updated_by: as_str(row.get_by_name(schema, "updated_by")),
             })
             .collect())
+    }
+
+    /// 取单张决策表全表（含规则；设计器/运维查看器渲染网格用）。不存在返回 None。
+    pub async fn get(&self, key: &str) -> Result<Option<DecisionTable>, String> {
+        let sql = "SELECT table_json FROM cmx_flow_decision WHERE key = $1";
+        let params = SqlParams::DataValues(vec![DataValue::String(key.to_string())]);
+        let ds = query_sql_with_params(&self.db_id, None, sql, params, "decision_get")
+            .await
+            .map_err(|e| format!("查询决策表失败: {e}"))?;
+        let schema = ds.schema.as_ref();
+        let Some(row) = ds.iter().next() else {
+            return Ok(None);
+        };
+        let js = as_str(row.get_by_name(schema, "table_json")).unwrap_or_default();
+        serde_json::from_str::<DecisionTable>(&js)
+            .map(Some)
+            .map_err(|e| format!("决策表 {key} JSON 解析失败: {e}"))
     }
 
     /// 删除一张决策表（按 key）。

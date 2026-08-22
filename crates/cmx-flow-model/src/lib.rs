@@ -44,6 +44,7 @@ pub use runtime::{
     AsyncJob, ActivityRecord, CcRecord, CcSummary, DeadLetterJob, DueJob, InstanceSnapshot,
     InstanceState, InstanceSummary, MessageSubscription, MessageSubscriptionKind, MiScope,
     ProcessInstance, Task, TaskCandidate, TaskDelegation, TimerJob, TimerJobKind, Token, TokenState,
+    VarChangeRecord,
 };
 pub use store::{RuntimeStore, StoreError, StoreResult};
 pub use subflow::{DimensionResolver, RouteError, RouteResult, SubflowRouter, DIM_ORG};

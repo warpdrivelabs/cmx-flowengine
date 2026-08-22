@@ -212,4 +212,18 @@ pub trait RuntimeStore: Send + Sync {
         &self,
         instance_id: &str,
     ) -> StoreResult<Vec<crate::runtime::ActivityRecord>>;
+
+    // ============================ 引擎派生变量历史 ============================
+
+    /// 批量记录引擎派生的变量变更（决策输出 / 子流程回填）。空则实现可直接返回。
+    ///
+    /// 与「调用方送入」的变量历史（app 层 start/complete/set-variables 捕获）落同一张表、同一读端点，
+    /// 区别仅在 `source`（`decision`/`subflow`）与 `changed_by=system`。默认实现为 no-op——内存
+    /// 存储（测试/嵌入）无需持久化引擎派生历史，只有 PG 实现落库。
+    async fn record_var_changes(
+        &self,
+        _changes: &[crate::runtime::VarChangeRecord],
+    ) -> StoreResult<()> {
+        Ok(())
+    }
 }

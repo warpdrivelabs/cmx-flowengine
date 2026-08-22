@@ -82,6 +82,21 @@ pub async fn delete_decision(Path(key): Path<String>) -> Result<Json<ApiResp<Val
     Ok(Json(ApiResp::ok(json!({ "key": key, "deleted": true }))))
 }
 
+/// GET /decisions/{key} —— 取单张决策表全表（含 inputs/outputs/hitPolicy/rules），供可视化查看器渲染网格。
+pub async fn get_decision(Path(key): Path<String>) -> Result<Json<ApiResp<Value>>> {
+    let rt = flow().await?;
+    let table = rt
+        .decision_store
+        .get(&key)
+        .await
+        .map_err(FlowError::business)?
+        .ok_or_else(|| FlowError::not_found(format!("决策表不存在: {key}")))?;
+    // DecisionTable 派生 Serialize（rules/hit_policy 等），直接转 JSON 返回。
+    let body = serde_json::to_value(&table)
+        .map_err(|e| FlowError::business(format!("决策表序列化失败: {e}")))?;
+    Ok(Json(ApiResp::ok(body)))
+}
+
 /// POST /decisions/evaluate —— 试算：{table, variables} → {matchedRules, outputs}。
 ///
 /// table 为内联决策表 JSON（设计器调试），variables 为样例变量。纯函数，不注册、不落库。

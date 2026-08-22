@@ -33,6 +33,10 @@ const state = {
   viewerEl: null,    // 查看器当前挂载的容器
   viewerKey: null,   // 查看器当前载入的定义 key（换实例/定义才重导入）
   bpmnCache: {},     // definitionKey → bpmnXml（避免重复拉取）
+  es: null,          // P4+：生命周期事件 SSE（EventSource），令牌位置实时刷新替轮询
+  liveOn: false,     // SSE 是否已连接（图例上显示「实时/手动」）
+  liveTimer: null,   // 事件到达后的去抖 reload 定时器（合并突发事件）
+  varHistory: null,  // 变量历史（含引擎派生 decision/subflow）；随选中实例载入
 }
 
 const esc = (s) => String(s ?? '')
@@ -171,10 +175,21 @@ function contentHtml () {
   const varRows = (vars && vars.length)
     ? vars.map((k) => `<tr><td>${esc(k)}</td><td>${esc(typeof d.variables[k] === 'object' ? JSON.stringify(d.variables[k]) : d.variables[k])}</td></tr>`).join('')
     : '<tr><td colspan="2" class="ops-muted">无变量</td></tr>'
+  // 令牌状态图例（只列本实例出现的状态 + 恒常的活动/异常/结束，避免图例过长）。
+  const presentStates = new Set((d.tokens || []).map((t) => t.state))
+  const legendItems = TOK_LEGEND.filter(([cls]) => {
+    if (cls === 'run' || cls === 'inc' || cls === 'end') return true
+    const map = { wait: 'WAITING', subflow: 'WAITING_SUBFLOW', timer: 'WAITING_TIMER', async: 'WAITING_ASYNC', msg: 'WAITING_MESSAGE' }
+    return presentStates.has(map[cls])
+  }).map(([, color, name]) => `<span class="ops-lg"><i style="background:${color}"></i>${name}</span>`).join('')
+  const liveDot = state.liveOn
+    ? '<span class="ops-live" title="实时更新已连接（SSE）"><i></i>实时</span>'
+    : '<span class="ops-live off" title="实时更新未连接，手动刷新"><i></i>手动</span>'
   return `<section class="ops ops-content">
     ${toolbar}
-    <div class="ops-sec">流程图（令牌位置高亮）</div>
+    <div class="ops-sec">流程图（令牌位置高亮）<span class="ops-sec-r">${liveDot}<button class="ops-mini" data-act="fit" title="适配视图">⤢ 适配</button></span></div>
     <div class="ops-diagram" data-ops-canvas><div class="ops-diagram-loading">加载流程图…</div></div>
+    <div class="ops-legend">${legendItems}</div>
     <div class="ops-sec">令牌位置</div>
     <div class="ops-nodes">${tokens}</div>
     <div class="ops-sec">未办结任务</div>
@@ -186,7 +201,11 @@ function contentHtml () {
 }
 
 function tokenLabel (s) {
-  return { ACTIVE: '活动', WAITING: '等待', JOINING: '合流', WAITING_SUBFLOW: '子流程', INCIDENT: '异常', ENDED: '结束' }[s] || s
+  return {
+    ACTIVE: '活动', WAITING: '等待', JOINING: '合流', WAITING_SUBFLOW: '子流程',
+    WAITING_TIMER: '定时', WAITING_ASYNC: '异步', WAITING_MESSAGE: '消息',
+    INCIDENT: '异常', ENDED: '结束',
+  }[s] || s
 }
 
 // ————————————————————— property：异常明细 + 台账时间线 —————————————————————
@@ -209,6 +228,22 @@ function propertyHtml () {
         ${x.reason ? `<div class="ops-tl-reason">${esc(x.reason)}</div>` : ''}
       </div>`).join('')
     : '<div class="ops-muted">无流转记录</div>'
+  // 变量历史（含引擎派生 decision/subflow）：谁在何时把哪个变量从什么改成什么、经由哪条路径。
+  const vh = state.varHistory
+  const vhBody = vh == null
+    ? '<div class="ops-muted">加载中…</div>'
+    : (vh.length
+      ? vh.map((h) => `<div class="ops-vh">
+          <div class="ops-vh-head">
+            <span class="ops-vh-src ${srcClass(h.source)}">${esc(srcLabel(h.source))}</span>
+            <b class="ops-vh-name">${esc(h.varName)}</b>
+            ${h.nodeBpmnId ? `<span class="ops-vh-node">@${esc(h.nodeBpmnId)}</span>` : ''}
+            <em class="ops-vh-at">${esc((h.changedAt || '').slice(0, 19).replace('T', ' '))}</em>
+          </div>
+          <div class="ops-vh-diff"><span class="ops-vh-old">${esc(vhVal(h.oldValue))}</span><span class="ops-vh-arw">→</span><span class="ops-vh-new">${esc(vhVal(h.newValue))}</span></div>
+          ${h.changedBy ? `<div class="ops-vh-by">${esc(h.changedBy)}</div>` : ''}
+        </div>`).join('')
+      : '<div class="ops-muted">无变量变更</div>')
   return `<section class="ops ops-property">
     <div class="ops-prop-head"><b>异常与台账</b></div>
     <div class="ops-prop-body">
@@ -216,11 +251,26 @@ function propertyHtml () {
       ${incidents}
       <div class="ops-sec">流转台账</div>
       ${dels}
+      <div class="ops-sec">变量历史 <span class="ops-sec-r">${vh && vh.length ? vh.length + ' 条' : ''}</span></div>
+      ${vhBody}
     </div>
   </section>`
 }
 function delKind (k) {
   return { TRANSFER: '转办', DELEGATE: '委派', REJECT: '退回', ADDSIGN_BEFORE: '前加签', ADDSIGN_AFTER: '后加签', RESOLVE: '归还' }[k] || k
+}
+// 变量历史来源标签 + 配色。start/complete/set-variables = 调用方送入；decision/subflow = 引擎派生。
+function srcLabel (s) {
+  return { start: '发起', complete: '办理', 'set-variables': '改量', decision: '决策', subflow: '子流程' }[s] || s
+}
+function srcClass (s) {
+  // decision/subflow=引擎派生(紫)；start=发起；complete=办理；其余(set-variables 等)=人工改量。
+  return { decision: 'derived', subflow: 'derived', start: 'start', complete: 'complete' }[s] || 'manual'
+}
+function vhVal (v) {
+  if (v == null) return '∅'
+  const s = String(v)
+  return s.length > 60 ? s.slice(0, 57) + '…' : s
 }
 
 // ————————————————————— 绑定 —————————————————————
@@ -268,18 +318,41 @@ function injectBpmnCss (root) {
       .ops-tok-run .djs-visual > :nth-child(1){stroke:#3b82f6 !important;stroke-width:3px !important;fill:#dbeafe !important}
       .ops-tok-inc .djs-visual > :nth-child(1){stroke:#dc2626 !important;stroke-width:3px !important;fill:#fee2e2 !important}
       .ops-tok-wait .djs-visual > :nth-child(1){stroke:#d97706 !important;stroke-width:3px !important;fill:#fef3c7 !important}
-      .ops-tok-end .djs-visual > :nth-child(1){stroke:#16a34a !important;stroke-width:3px !important}`
+      .ops-tok-subflow .djs-visual > :nth-child(1){stroke:#7c3aed !important;stroke-width:3px !important;fill:#ede9fe !important}
+      .ops-tok-timer .djs-visual > :nth-child(1){stroke:#0891b2 !important;stroke-width:3px !important;fill:#cffafe !important}
+      .ops-tok-async .djs-visual > :nth-child(1){stroke:#c2410c !important;stroke-width:3px !important;fill:#ffedd5 !important}
+      .ops-tok-msg .djs-visual > :nth-child(1){stroke:#be185d !important;stroke-width:3px !important;fill:#fce7f3 !important}
+      .ops-tok-end .djs-visual > :nth-child(1){stroke:#16a34a !important;stroke-width:3px !important}
+      /* 令牌数徽标（并行/多实例：一个节点多个令牌）——右上角计数气泡 */
+      .ops-tok-badge{background:#0d1117;color:#fff;font:700 10px/1 var(--mono,monospace);min-width:16px;height:16px;padding:0 4px;border-radius:9px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,.35);border:1.5px solid #fff}
+      .ops-tok-badge.inc{background:#cf222e}`
     root.appendChild(st)
   }
 }
 
-// 令牌状态 → marker class（决定节点高亮色）。
+// 令牌状态 → marker class（决定节点高亮色）。等待态细分色，一眼区分卡在何种等待。
 function tokMarkerClass (s) {
   if (s === 'INCIDENT') return 'ops-tok-inc'
   if (s === 'ENDED') return 'ops-tok-end'
   if (s === 'ACTIVE' || s === 'JOINING') return 'ops-tok-run'
-  return 'ops-tok-wait'  // WAITING / WAITING_* / 其它挂起态
+  if (s === 'WAITING_SUBFLOW') return 'ops-tok-subflow'
+  if (s === 'WAITING_TIMER') return 'ops-tok-timer'
+  if (s === 'WAITING_ASYNC') return 'ops-tok-async'
+  if (s === 'WAITING_MESSAGE') return 'ops-tok-msg'
+  return 'ops-tok-wait'  // WAITING / 其它挂起态
 }
+
+// 令牌状态图例（色 + 文字，与画布高亮同色；不靠色区分——每项带中文名）。
+const TOK_LEGEND = [
+  ['run', '#3b82f6', '活动'],
+  ['wait', '#d97706', '等待'],
+  ['subflow', '#7c3aed', '子流程'],
+  ['timer', '#0891b2', '定时'],
+  ['async', '#c2410c', '异步'],
+  ['msg', '#be185d', '消息'],
+  ['inc', '#dc2626', '异常'],
+  ['end', '#16a34a', '结束'],
+]
 
 // 挂载/更新只读流程图 + 令牌高亮（在每次 content 渲染后调用；容器随 innerHTML 重建，故 viewer 重挂）。
 async function mountDiagram (root) {
@@ -313,14 +386,93 @@ async function mountDiagram (root) {
     await state.viewer.importXML(xml)
     const canvas = state.viewer.get('canvas')
     canvas.zoom('fit-viewport', 'auto')
-    // 清旧标记 + 按当前令牌位置打标记。
+    // 令牌按节点分组：一节点可有多个活动令牌（并行网关分裂/多实例会签）——高亮该节点 +
+    // 令牌数 ≥2 时右上角挂计数徽标（bpmn-js overlays），一眼看出并发度。
+    const byNode = new Map()
     for (const t of (d.tokens || [])) {
       if (t.state === 'ENDED') continue  // 已结束令牌不高亮（避免整图铺满）
-      try { canvas.addMarker(t.nodeBpmnId, tokMarkerClass(t.state)) } catch { /* 节点 id 不在图中，跳过 */ }
+      const arr = byNode.get(t.nodeBpmnId) || []
+      arr.push(t)
+      byNode.set(t.nodeBpmnId, arr)
+    }
+    let overlays = null
+    try { overlays = state.viewer.get('overlays') } catch { /* 老 bundle 无 overlays，仅高亮 */ }
+    for (const [nodeId, toks] of byNode) {
+      // 高亮色取该节点「最紧要」令牌状态（异常 > 活动 > 其它等待），避免多令牌时色彩抖动。
+      const lead = toks.find((t) => t.state === 'INCIDENT')
+        || toks.find((t) => t.state === 'ACTIVE' || t.state === 'JOINING')
+        || toks[0]
+      try { canvas.addMarker(nodeId, tokMarkerClass(lead.state)) } catch { /* 节点 id 不在图中，跳过 */ }
+      if (overlays && toks.length >= 2) {
+        const hasInc = toks.some((t) => t.state === 'INCIDENT')
+        try {
+          overlays.add(nodeId, {
+            position: { top: -10, right: 10 },
+            html: `<div class="ops-tok-badge${hasInc ? ' inc' : ''}" title="${toks.length} 个令牌">${toks.length}</div>`,
+          })
+        } catch { /* overlay 定位失败（节点不在图）跳过 */ }
+      }
     }
   } catch (e) {
     el.innerHTML = `<div class="ops-diagram-loading">流程图加载失败：${esc(e.message)}</div>`
   }
+}
+
+// ————————————————————— P4+：生命周期事件 SSE 实时刷新 —————————————————————
+//
+// 订阅 GET /api/flow/v1/events（EventSource，按当前租户过滤）。任一生命周期事件到达时，
+// 若它属于**当前查看的实例**，去抖后 reload 详情并重绘令牌高亮——无需手动刷新即见令牌流动。
+// EventSource 自动重连；仅 off 鉴权模式可用（浏览器 EventSource 不能带 header，对齐既有 SSE 现状）。
+function startLiveEvents () {
+  if (state.es || typeof window === 'undefined' || !window.EventSource) return
+  const url = (CFG.apiBase || '') + '/api/flow/v1/events'
+  let es
+  // withCredentials 随 CFG：同源门户带 cookie（默认）；credentials:'omit' 的组件/测试壳不带，
+  //   避免跨源 + 通配 CORS(`*`) 与凭证冲突（浏览器会拒带凭证的通配响应）。
+  const wc = !(CFG.fetchInit && CFG.fetchInit.credentials === 'omit')
+  try { es = new EventSource(url, { withCredentials: wc }) } catch { return }
+  const onAny = (m) => {
+    let ev = null
+    try { ev = JSON.parse(m.data) } catch { /* keep-alive/非 JSON，忽略 */ }
+    if (!ev || !state.selectedId) return
+    // 只对当前查看实例的事件反应（其它实例的事件仅刷新列表计数）。
+    if (ev.instanceId === state.selectedId) scheduleLiveReload()
+    else scheduleListRefresh()
+  }
+  es.onopen = () => { state.liveOn = true; updateLivePill() }
+  es.onerror = () => { if (state.liveOn) { state.liveOn = false; updateLivePill() } }
+  // 事件名与 FlowEventKind.as_str 对齐；逐一监听（EventSource 无通配，onmessage 只收无 event 名的）。
+  for (const name of ['instance.started', 'instance.completed', 'instance.terminated', 'task.created', 'task.completed', 'task.reassigned']) {
+    es.addEventListener(name, onAny)
+  }
+  es.onmessage = onAny  // 兜底：无 event 名的默认消息
+  state.es = es
+}
+// 只更新「实时/手动」指示点，不重渲染整个 content（避免为翻个状态点而重建 bpmn-js 查看器）。
+function updateLivePill () {
+  const pill = state.liveOn
+    ? '<span class="ops-live" title="实时更新已连接（SSE）"><i></i>实时</span>'
+    : '<span class="ops-live off" title="实时更新未连接，手动刷新"><i></i>手动</span>'
+  for (const host of Array.from(state.hosts)) {
+    if (host.__opsView !== 'content') continue
+    const el = hostRoot(host)?.querySelector?.('.ops-sec-r .ops-live')
+    if (el) el.outerHTML = pill
+  }
+}
+let _listTimer = null
+function scheduleListRefresh () {
+  if (_listTimer) return
+  _listTimer = setTimeout(() => { _listTimer = null; loadList() }, 800)
+}
+// 去抖：突发事件（如并行分裂一次推进多条 task.created）合并成一次 reload，避免抖动。
+function scheduleLiveReload () {
+  if (state.liveTimer) clearTimeout(state.liveTimer)
+  state.liveTimer = setTimeout(() => { state.liveTimer = null; reloadDetail() }, 350)
+}
+
+// 适配视图：把当前查看器缩放到 fit-viewport（用户平移缩放后一键还原）。
+function fitDiagram () {
+  try { state.viewer?.get('canvas')?.zoom('fit-viewport', 'auto') } catch {}
 }
 
 function bind (root, view, host) {
@@ -340,8 +492,11 @@ function bind (root, view, host) {
     root.querySelector('[data-act="resume"]')?.addEventListener('click', () => doSuspendResume('resume'))
     root.querySelector('[data-act="cancel"]')?.addEventListener('click', () => doCancel())
     root.querySelectorAll('[data-urge]').forEach((b) => b.addEventListener('click', () => doUrge(b.dataset.urge)))
+    root.querySelector('[data-act="fit"]')?.addEventListener('click', () => fitDiagram())
     // P4：渲染只读流程图 + 令牌位置高亮（异步，不阻塞事件绑定）。
     mountDiagram(root)
+    // P4+：首次进入 content 即建立生命周期事件 SSE（令牌位置实时刷新）。幂等，已连不重建。
+    startLiveEvents()
   }
 }
 
@@ -363,10 +518,12 @@ async function loadList () {
 
 async function selectInstance (id) {
   state.selectedId = id
+  state.varHistory = null  // 清旧，避免串实例
   try {
     state.detail = await apiJson('/api/flow/instances/' + enc(id))
   } catch (e) { toast('加载详情失败: ' + e.message); state.detail = null }
   refreshAll()
+  loadVarHistory()  // 异步补载变量历史（不阻塞详情/图渲染）
 }
 
 async function reloadDetail () {
@@ -374,6 +531,19 @@ async function reloadDetail () {
   try { state.detail = await apiJson('/api/flow/instances/' + enc(state.selectedId)) } catch {}
   refreshAll()
   loadList()
+  loadVarHistory()
+}
+
+// 载入变量历史（含引擎派生 decision/subflow）；失败静默留空，仅刷新 property 区。
+async function loadVarHistory () {
+  const id = state.selectedId
+  if (!id) return
+  try {
+    const d = await apiJson('/api/flow/instances/' + enc(id) + '/variables/history?limit=200')
+    if (state.selectedId !== id) return  // 期间已切实例，丢弃过期结果
+    state.varHistory = d.history || d.items || (Array.isArray(d) ? d : [])
+  } catch { state.varHistory = [] }
+  refreshView('property')
 }
 
 async function doRetry () {
@@ -497,7 +667,17 @@ function styleCss () {
   .ops-btn.warn { background:var(--warn-soft); color:var(--warn); border-color:#f0e0b0; }
   .ops-btn.danger { color:var(--danger); border-color:#ffc9c9; }
   .ops-btn:disabled { opacity:.4; cursor:not-allowed; }
-  .ops-sec { font-size:11px; font-weight:800; color:var(--brand-d); text-transform:uppercase; margin:14px 14px 8px; padding-bottom:5px; border-bottom:1px solid var(--line-soft); }
+  .ops-sec { font-size:11px; font-weight:800; color:var(--brand-d); text-transform:uppercase; margin:14px 14px 8px; padding-bottom:5px; border-bottom:1px solid var(--line-soft); display:flex; align-items:center; justify-content:space-between; }
+  .ops-sec-r { display:inline-flex; align-items:center; gap:8px; text-transform:none; }
+  .ops-mini { font:inherit; font-size:11px; font-weight:700; padding:2px 8px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--muted); cursor:pointer; }
+  .ops-mini:hover { border-color:var(--brand); color:var(--brand-d); }
+  .ops-live { display:inline-flex; align-items:center; gap:4px; font-size:10.5px; font-weight:700; color:var(--ok); }
+  .ops-live i { width:7px; height:7px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 0 rgba(26,127,55,.5); animation:ops-pulse 1.8s infinite; }
+  .ops-live.off { color:var(--muted); } .ops-live.off i { background:var(--muted); animation:none; }
+  @keyframes ops-pulse { 0%{box-shadow:0 0 0 0 rgba(26,127,55,.5)} 70%{box-shadow:0 0 0 5px rgba(26,127,55,0)} 100%{box-shadow:0 0 0 0 rgba(26,127,55,0)} }
+  .ops-legend { display:flex; flex-wrap:wrap; gap:10px; padding:8px 14px 0; }
+  .ops-legend .ops-lg { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--muted); }
+  .ops-legend .ops-lg i { width:11px; height:11px; border-radius:3px; }
   .ops-diagram { position:relative; margin:0 14px; height:300px; border:1px solid var(--line-soft); border-radius:8px; overflow:hidden; background:var(--bg-soft, #fafafa); }
   .ops-diagram .djs-container { background:transparent; }
   .ops-diagram-loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:12px; color:var(--muted); }
@@ -522,6 +702,21 @@ function styleCss () {
   .ops-tl { margin:0 14px 6px; padding:7px 10px; border-left:2px solid var(--line); font-size:12px; }
   .ops-tl-kind { font-weight:700; color:var(--brand-d); } .ops-tl-who { margin-left:6px; } .ops-tl em { color:var(--muted); font-size:10.5px; margin-left:6px; }
   .ops-tl-reason { color:var(--muted); font-size:11.5px; margin-top:2px; }
+  .ops-vh { margin:0 14px 6px; padding:8px 10px; border:1px solid var(--line-soft); border-radius:8px; }
+  .ops-vh-head { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .ops-vh-src { font-size:10px; font-weight:800; padding:1px 7px; border-radius:20px; background:#eee; color:#666; }
+  .ops-vh-src.start { background:var(--brand-soft); color:var(--brand-d); }
+  .ops-vh-src.complete { background:var(--ok-soft); color:var(--ok); }
+  .ops-vh-src.manual { background:var(--warn-soft); color:var(--warn); }
+  .ops-vh-src.derived { background:#efe9fd; color:#6d28d9; }
+  .ops-vh-name { font-size:12.5px; font-family:var(--mono); }
+  .ops-vh-node { font-size:10.5px; color:var(--muted); font-family:var(--mono); }
+  .ops-vh-at { margin-left:auto; color:var(--muted); font-size:10.5px; }
+  .ops-vh-diff { margin-top:5px; display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11.5px; }
+  .ops-vh-old { color:var(--muted); text-decoration:line-through; opacity:.75; word-break:break-all; }
+  .ops-vh-arw { color:var(--brand); font-weight:800; flex:none; }
+  .ops-vh-new { color:var(--ink); font-weight:600; word-break:break-all; }
+  .ops-vh-by { margin-top:3px; font-size:10.5px; color:var(--muted); }
   .ops-toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); background:#0d1117; color:#fff; padding:9px 16px; border-radius:9px; font-size:12.5px; font-weight:600; opacity:0; pointer-events:none; transition:opacity .2s; z-index:30; }
   .ops-toast.show { opacity:1; }
   `

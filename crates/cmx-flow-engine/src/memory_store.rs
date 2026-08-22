@@ -15,6 +15,20 @@ use cmx_flow_model::{
 };
 use tokio::sync::Mutex;
 
+/// 落库前剥离**推进段瞬态**字段（`pending_subs`/`pending_activities`/`pending_var_changes`）。
+///
+/// 这些字段契约上「不持久化、落库后即弃」（serde skip）。PG 实现天然如此：`load_snapshot` 从列
+/// 重建时它们恒为空。内存实现深拷贝整份聚合，若不剥离，则后续 `load_snapshot` 会把上段已 flush
+/// 的暂存项一并带回、被下段再次 flush（A6 活动历史靠 `ON CONFLICT(id) DO NOTHING` 幂等掩盖了此
+/// 重复；无 id 的派生变量历史会因此重复记录）。在此剥离使内存/PG 两实现对齐同一契约。
+fn stripped(snapshot: &InstanceSnapshot) -> InstanceSnapshot {
+    let mut s = snapshot.clone();
+    s.pending_subs.clear();
+    s.pending_activities.clear();
+    s.pending_var_changes.clear();
+    s
+}
+
 /// 进程内运行态存储。
 #[derive(Clone, Default)]
 pub struct InMemoryStore {
@@ -50,7 +64,7 @@ impl InMemoryStore {
 impl RuntimeStore for InMemoryStore {
     async fn create_snapshot(&self, snapshot: &InstanceSnapshot) -> StoreResult<()> {
         let mut guard = self.inner.lock().await;
-        guard.insert(snapshot.instance.id.clone(), snapshot.clone());
+        guard.insert(snapshot.instance.id.clone(), stripped(snapshot));
         Ok(())
     }
 
@@ -67,7 +81,7 @@ impl RuntimeStore for InMemoryStore {
         if !guard.contains_key(&snapshot.instance.id) {
             return Err(StoreError::InstanceNotFound(snapshot.instance.id.clone()));
         }
-        guard.insert(snapshot.instance.id.clone(), snapshot.clone());
+        guard.insert(snapshot.instance.id.clone(), stripped(snapshot));
         Ok(())
     }
 

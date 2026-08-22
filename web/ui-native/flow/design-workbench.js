@@ -113,10 +113,11 @@ const state = {
   // 版本对比（diff，纯前端）：va/vb=选中的两版本('' =草稿/当前画布)；result={added,removed,modified}；
   //   running 期间禁重入；marked=已高亮的画布元素 id。null=未进入对比。
   diff: null,
-  // 协同 M1（感知+防冲突）：仅编辑草稿时启用。sessionId 每标签页一个；roster 在场者；es SSE；
-  //   hbTimer 心跳；selTimer 选中去抖；baseUpdatedAt 载入草稿时的时间戳（乐观锁基线）；
+  // 协同 M1（感知+防冲突）+ M2（对象级属性合并）：仅编辑草稿时启用。sessionId 每标签页一个；
+  //   roster 在场者；es SSE；hbTimer 心跳；selTimer 选中去抖；baseUpdatedAt 载入草稿时间戳（乐观锁基线）；
   //   marked 远端选中已高亮的元素 id；notice 「他人更新了草稿」提示；user 当前用户。
-  collab: { on: false, defKey: null, sessionId: null, user: null, roster: [], es: null, hbTimer: null, selTimer: null, baseUpdatedAt: null, marked: [], notice: null },
+  //   M2：__applying 远端 op 回放中（echo-guard，不回广播）；opSeen `${elementId}::${prop}`→已应用最大 seq（LWW）。
+  collab: { on: false, defKey: null, sessionId: null, user: null, roster: [], es: null, hbTimer: null, selTimer: null, baseUpdatedAt: null, marked: [], notice: null, __applying: false, opSeen: {} },
 }
 
 const EMPTY_DIAGRAM = `<?xml version="1.0" encoding="UTF-8"?>
@@ -3404,6 +3405,16 @@ function relayoutConnections (modeler) {
 function applyProp (prop, value) {
   const el = state.selectedElement
   if (!el || !activeModeler()) return
+  applyPropTo(el, prop, value)
+  // 协同 M2：本端属性编辑广播 op（远端就地合并）。远端回放期间 __applying 置真，不再回广播（防回声风暴）。
+  if (state.collab && state.collab.on && !state.collab.__applying && !state.subNav) {
+    broadcastOp(el.id, prop, value)
+  }
+}
+
+// 把一次属性编辑落到指定元素（本端交互 + 远端 op 回放共用同一写回逻辑，保证两端语义一致）。
+function applyPropTo (el, prop, value) {
+  if (!el || !activeModeler()) return
   const modeling = activeModeler().get('modeling')
   const moddle = activeModeler().get('moddle')
   try {
@@ -4052,6 +4063,7 @@ function startCollab (defKey, baseUpdatedAt) {
   stopCollab()
   if (!defKey) return
   c.on = true; c.defKey = defKey; c.user = currentUser(); c.baseUpdatedAt = baseUpdatedAt || null; c.notice = null
+  c.opSeen = {}  // 新会话/换草稿：清 LWW seq 记录（旧 defKey 的 seq 不可跨草稿比较）
   c.sessionId = c.sessionId || ('s-' + Math.random().toString(36).slice(2, 10))
   collabPost('join', { selection: selectedId() })
   try {
@@ -4059,6 +4071,7 @@ function startCollab (defKey, baseUpdatedAt) {
     const es = new EventSource((CFG.apiBase || '') + '/api/flow/v1/design/collab?defKey=' + enc(defKey), { withCredentials: wc })
     es.addEventListener('presence', (m) => { try { onPresence(JSON.parse(m.data)) } catch { /* ignore */ } })
     es.addEventListener('draft.saved', (m) => { try { onDraftSaved(JSON.parse(m.data)) } catch { /* ignore */ } })
+    es.addEventListener('op', (m) => { try { onRemoteOp(JSON.parse(m.data)) } catch { /* ignore */ } })
     // 连接就绪后再 join 一次：首个 join 在流建立前发出会丢自己的初始 roster（对方后续 select 才补上）——
     // onopen 时补发，确保加入者在流活跃后立刻收到完整 roster（含自己）。
     es.onopen = () => { if (state.collab.on && state.collab.defKey === defKey) collabPost('join', { selection: selectedId() }) }
@@ -4088,6 +4101,52 @@ function broadcastSelection () {
   if (!c.on) return
   clearTimeout(c.selTimer)
   c.selTimer = setTimeout(() => collabPost('select', { selection: selectedId() }), 250)
+}
+
+// 协同 M2：本端属性编辑 → POST /design/op（服务端盖 seq 后广播；远端就地合并）。fire-and-forget。
+function broadcastOp (elementId, prop, value) {
+  const c = state.collab
+  if (!c.on || !c.defKey || !c.sessionId || !elementId) return
+  // value 统一成 JSON 可序列化：undefined/空串→null（远端据此删属性）。
+  const v = (value === undefined || value === '') ? null : value
+  apiJson('/api/flow/v1/design/op', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ defKey: c.defKey, sessionId: c.sessionId, user: c.user, op: 'updateProperties', elementId, props: { [prop]: v } }),
+  }).catch(() => {})
+}
+
+// SSE: 远端属性 op → 对象级 LWW 合并到本端画布。自己的回声按 origin 忽略；旧 seq 丢弃。
+function onRemoteOp (ev) {
+  const c = state.collab
+  const p = ev && ev.payload
+  if (!p || p.op !== 'updateProperties' || !p.elementId) return
+  if (p.origin === c.sessionId) return  // 自己的回声，忽略
+  const m = state.modeler; if (!m) return
+  let reg; try { reg = m.get('elementRegistry') } catch { return }
+  const el = reg.get(p.elementId)
+  if (!el) return  // 元素本端不存在（结构级差异留 M3；此处宽容跳过）
+  const props = p.props || {}
+  for (const prop of Object.keys(props)) {
+    // 对象级 LWW：同 元素+属性 只应用更大的 seq（防乱序/回环覆盖新值）。seq 非数字则跳过闸门直接应用。
+    const k = p.elementId + '::' + prop
+    if (typeof p.seq === 'number') {
+      if ((c.opSeen[k] || 0) >= p.seq) continue
+      c.opSeen[k] = p.seq
+    }
+    // 回放期间置 __applying：applyProp 不再回广播（防回声风暴）；置 __loadingDiagram：commandStack
+    //   变化不标脏、不清模拟/diff marker（远端合并非本人「未保存编辑」，语义上是同步对端已存意图）。
+    const prevLoad = state.__loadingDiagram
+    c.__applying = true; state.__loadingDiagram = true
+    try {
+      const val = (props[prop] === null) ? '' : props[prop]
+      applyPropTo(el, prop, val)
+    } catch { /* 单属性失败不阻断其余 */ }
+    finally { c.__applying = false; state.__loadingDiagram = prevLoad }
+  }
+  // 若远端改的正是本端选中元素 → 刷新属性面板 + 徽章反映最新值。
+  if (state.selectedElement && state.selectedElement.id === p.elementId) refreshView('property')
+  if (state.__badgeRaf) cancelAnimationFrame(state.__badgeRaf)
+  state.__badgeRaf = requestAnimationFrame(() => { state.__badgeRaf = null; renderNodeBadges() })
 }
 
 // SSE: presence 全 roster 快照 → 更新在场条 + 远端选中高亮。

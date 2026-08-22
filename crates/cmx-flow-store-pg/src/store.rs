@@ -22,7 +22,7 @@ use cmx_database_pg::{
 };
 use cmx_flow_model::{
     ActivityRecord, AsyncJob, DeadLetterJob, DueJob, InstanceSnapshot, InstanceSummary,
-    RuntimeStore, StoreError, StoreResult,
+    RuntimeStore, StoreError, StoreResult, VarChangeRecord,
 };
 
 use crate::mapping;
@@ -284,6 +284,7 @@ impl RuntimeStore for PgRuntimeStore {
             delegations,
             pending_subs: Vec::new(),
             pending_activities: Vec::new(),
+            pending_var_changes: Vec::new(),
         })
     }
 
@@ -693,6 +694,35 @@ impl RuntimeStore for PgRuntimeStore {
             .await
             .map_err(|e| StoreError::Backend(format!("查询活动历史失败: {e}")))?;
         mapping::rows_to_activities(&ds)
+    }
+
+    // ==================== 引擎派生变量历史（决策/子流程回填）====================
+
+    /// 把引擎派生的变量变更落到与 app 层「调用方送入」历史**同一张表** `cmx_flow_var_history`——
+    /// 读端点 `GET /instances/{id}/variables/history` 遂一次返回全部来源。`changed_by='system'`
+    /// 标记引擎派生（区别于人工办理），`source` 为 `decision`/`subflow`。表由 `PgVarHistoryStore::
+    /// ensure_schema` 在启动时建好。复用 `PgVarHistoryStore::record`（同表同 INSERT），只把中立模型的
+    /// `VarChangeRecord` 映射成 store 层 `VarChange`（`changed_by=system`），避免重复 INSERT 语句。
+    async fn record_var_changes(&self, changes: &[VarChangeRecord]) -> StoreResult<()> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let mapped: Vec<crate::var_history::VarChange> = changes
+            .iter()
+            .map(|c| crate::var_history::VarChange {
+                instance_id: c.instance_id.clone(),
+                var_name: c.var_name.clone(),
+                old_value: c.old_value.clone(),
+                new_value: c.new_value.clone(),
+                source: c.source.clone(),
+                node_bpmn_id: c.node_bpmn_id.clone(),
+                changed_by: Some("system".to_string()),
+            })
+            .collect();
+        crate::var_history::PgVarHistoryStore::new(self.db_id.clone())
+            .record(&mapped)
+            .await
+            .map_err(StoreError::Backend)
     }
 }
 
