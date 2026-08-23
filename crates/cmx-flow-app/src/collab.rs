@@ -329,7 +329,8 @@ pub async fn presence_leave(Json(req): Json<PresenceReq>) -> Result<Json<ApiResp
 pub struct OpReq {
     def_key: String,
     session_id: String,
-    /// op 类型：目前只 `updateProperties`（对象级属性合并）。
+    /// op 类型：`updateProperties`（M2 对象级属性合并）| `createShape`/`createConnection`/
+    /// `removeElements`/`moveShape`（M3 结构级增删移动）。服务端只中继+盖 seq，不解释语义。
     op: String,
     /// 目标元素 bpmn id。
     element_id: String,

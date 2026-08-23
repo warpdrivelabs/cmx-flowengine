@@ -1,5 +1,5 @@
 {
-  "defKey": "collab_be_7080",
+  "defKey": "collab_be_6290",
   "total": 19,
   "pass": 19,
   "results": [
@@ -43,19 +43,19 @@
       "id": "B2-event-shape",
       "ok": true,
       "desc": "presence 事件字段完整（tenant/defKey 顶层 + roster 项 sessionId/user/color）",
-      "detail": "tenant=default defKey=collab_be_7080 p0.color=#008300"
+      "detail": "tenant=default defKey=collab_be_6290 p0.color=#008300"
     },
     {
       "id": "C1-save-ok",
       "ok": true,
       "desc": "正确 base 保存 → Saved(conflict:false) + updatedAt 推进",
-      "detail": "conflict=false new=12:42:51"
+      "detail": "conflict=false new=04:17:20"
     },
     {
       "id": "C2-stale-conflict",
       "ok": true,
       "desc": "过期 base 保存 → Conflict(conflict:true) + currentUpdatedAt",
-      "detail": "conflict=true current=12:42:51 by=u_alice"
+      "detail": "conflict=true current=04:17:20 by=u_alice"
     },
     {
       "id": "C3-null-base-force",
@@ -67,7 +67,7 @@
       "id": "C4-draft-saved-sse",
       "ok": true,
       "desc": "成功保存 → SSE draft.saved 事件(含 updatedAt+user)",
-      "detail": "user=u_alice at=12:42:51"
+      "detail": "user=u_alice at=04:17:20"
     },
     {
       "id": "D1-monotonic-seq",

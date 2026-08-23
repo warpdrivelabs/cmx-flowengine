@@ -69,7 +69,7 @@
     "id": "P2-publish-version",
     "ok": true,
     "desc": "★工具栏「发布」→ subPublish → 版本号 +1",
-    "detail": "11→12"
+    "detail": "13→14"
   },
   {
     "id": "P2-publish-canvas-alive",
@@ -99,13 +99,13 @@
     "id": "P3-newvar-unique-key",
     "ok": true,
     "desc": "★新变体唯一 key（非 new_process）",
-    "detail": "key=fin_review_branch_gz_11 newDefs=[\"fin_review_branch_gz_11\"]"
+    "detail": "key=fin_review_branch_gz_13 newDefs=[\"fin_review_branch_gz_13\"]"
   },
   {
     "id": "P3-newvar-autobind",
     "ok": true,
     "desc": "★保存即自动绑定到该组织",
-    "detail": "org=branch_gz→fin_review_branch_gz_11"
+    "detail": "org=branch_gz→fin_review_branch_gz_13"
   },
   {
     "id": "P3-newvar-isSubflow",
@@ -117,7 +117,7 @@
     "id": "P3-resave-nodup",
     "ok": true,
     "desc": "★重存同变体不重复建定义",
-    "detail": "65→65"
+    "detail": "72→72"
   },
   {
     "id": "T8-datamodel-tab",

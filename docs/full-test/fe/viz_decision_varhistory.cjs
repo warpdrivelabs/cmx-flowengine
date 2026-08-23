@@ -96,6 +96,18 @@ async function mountPage (browser, mod) {
   A('D2-simulate', hitRows >= 1 && /approvalLevel/.test(outText) && /\b3\b/.test(outText), '试算 amount=500000 → 命中高亮 + 输出 approvalLevel=3', `hitRows=${hitRows} out="${outText}"`)
 
   // ─────────── ④ 运维台：令牌可视化 + 变量历史 ───────────
+  // 自播种：发起一个 e2e_rule_flow 实例（businessRuleTask 调 e2e_matrix 决策）→ 引擎派生写入
+  // approvalLevel(source=decision) 变量历史，使 O2/O2b 自包含，不依赖运行库既有派生历史数据。
+  let seededInstId = null
+  try {
+    const started = await fetch(`${APIB}/v1/instances`, {
+      method: 'POST', headers: { 'X-Tenant': 'default', 'X-User': 'u_viz', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ definitionKey: 'e2e_rule_flow', businessKey: 'VIZ-DERIVED-FIX', variables: { amount: 500000 } }),
+    }).then((r) => r.json())
+    seededInstId = started && started.data && (started.data.id || started.data.instanceId)
+  } catch {}
+  await new Promise((r) => setTimeout(r, 500))
+
   const OC = await mountPage(browser, 'ops-console')
   cleanup.push(OC.file)
   await OC.page.waitForTimeout(1400)  // loadList
@@ -103,12 +115,13 @@ async function mountPage (browser, mod) {
   const ocRows = await OC.h.count('.ops-row')
   A('O0-inst-list', ocRows >= 1, '运维台实例列表加载', `rows=${ocRows}`)
 
-  // 选中含引擎派生变量历史的实例：优先 e2e_parent（subflow 回填）/ e2e_rule_flow（decision 输出）。
-  const targetId = await OC.page.evaluate((de) => {
+  // 选中含引擎派生变量历史的实例：优先刚播种的实例，其次 e2e_parent(subflow)/e2e_rule_flow(decision)。
+  const targetId = await OC.page.evaluate(({ de, seeded }) => {
     const rows = eval(de).filter((e) => e.classList && e.classList.contains('ops-row') && e.getAttribute('data-id'))
-    const pref = rows.find((r) => /e2e_parent|e2e_rule_flow|E2E父|E2E决策/i.test(r.textContent || ''))
+    const bySeed = seeded && rows.find((r) => r.getAttribute('data-id') === seeded)
+    const pref = bySeed || rows.find((r) => /e2e_parent|e2e_rule_flow|VIZ-DERIVED|E2E父|E2E决策/i.test(r.textContent || ''))
     return (pref || rows[0]) ? (pref || rows[0]).getAttribute('data-id') : null
-  }, deepEval)
+  }, { de: deepEval, seeded: seededInstId })
   if (targetId) await OC.h.clickData('data-id', targetId)
   await OC.page.waitForTimeout(1800)  // detail + var-history load (async)
 

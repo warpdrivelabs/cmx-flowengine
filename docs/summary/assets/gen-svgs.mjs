@@ -115,7 +115,7 @@ function fig1 () {
   b += cell(x + 2 * (shW + 16), 74, shW, 46, P.violet, '③ 可嵌 Web Component', 'web/elements · 框架无关')
   b += LINE(W / 2, 120, W / 2, 140)
   // app 核
-  b += band(x, 142, w, 50, P.blue, 'cmx-flow-app · 平台中立应用核', 'flow_routes::<S>() 泛型路由 + 引擎单例 + 全 handler + 模拟/协同端点 + 身份/维度回连', '7,422')
+  b += band(x, 142, w, 50, P.blue, 'cmx-flow-app · 平台中立应用核', 'flow_routes::<S>() 泛型路由 + 引擎单例 + 全 handler + 模拟/协同/决策查看端点 + 身份/维度回连', '7,508')
   b += LINE(W / 2, 192, W / 2, 210)
   // 注入层 4 格
   const iW = (w - 3 * 12) / 4
@@ -123,13 +123,13 @@ function fig1 () {
   inj.forEach((it, i) => { b += cell(x + i * (iW + 12), 212, iW, 44, it[2], it[0], it[1]) })
   b += LINE(W / 2, 256, W / 2, 274)
   // engine
-  b += band(x, 276, w, 48, P.blue, 'cmx-flow-engine · 令牌执行内核 Engine<S: RuntimeStore>', '等待态即提交点（pause+persist）· JavaDelegate/DelegateRegistry · InMemoryStore', '4,921')
+  b += band(x, 276, w, 48, P.blue, 'cmx-flow-engine · 令牌执行内核 Engine<S: RuntimeStore>', '等待态即提交点（pause+persist）· JavaDelegate/DelegateRegistry · 变量历史派生捕获 · InMemoryStore', '5,016')
   b += LINE(W / 2, 324, W / 2, 340)
   // bpmn
   b += band(x, 342, w, 44, P.orange, 'cmx-flow-bpmn · BPMN 2.0 XML → 中立 IR 编译器', 'compile(xml) → ProcessDefinition · 不支持元素编译期显式报错', '1,507')
   b += LINE(W / 2, 386, W / 2, 402)
   // model
-  b += band(x, 404, w, 48, P.violet, 'cmx-flow-model · 语义中立内核（IR + 运行态 + RuntimeStore trait）', 'ProcessDefinition/FlowNode/Token/Task/Variables · 条件求值 · 可 wasm/嵌入', '4,412')
+  b += band(x, 404, w, 48, P.violet, 'cmx-flow-model · 语义中立内核（IR + 运行态 + RuntimeStore trait）', 'ProcessDefinition/FlowNode/Token/Task/Variables · 条件求值 · VarChangeRecord · 可 wasm/嵌入', '4,474')
   // footer
   b += R(x, 466, w, 52, { rx: 10, fill: P.plane, stroke: P.border, sw: 1 })
   b += T(x + 16, 486, '单向借用 cmx-container 基础库（仅编译期 path 依赖，无反向引用）：', { size: 11.5, w: 700, fill: P.ink2 })
@@ -179,7 +179,8 @@ function fig3 () {
     ['设计器', '', P.yellow, ['定义持久化', '四区画布', '属性面板', '变量声明', 'Excel 公式栏', '子流程钻入式', '模拟试跑', '版本 diff', '协同 M1（感知+防冲突）']],
     ['微服务', 'S0–S6', P.violet, ['S0 迁移', 'S1 适配器', 'S2 多租户', 'S3 headless', 'S4 前端抽核', 'S5 组件', 'S6 平台反代']],
     ['后端补齐', '0821', P.red, ['决策表落库持久化', '变量历史 + TTL/归档', 'RD5 HTTP 维度解析', '外部 worker SDK', '身份·维度回连端点']],
-    ['大前端 · 本轮', '0822', P.orange, ['模拟：facts→trace+画布高亮', '版本 diff：结构级 XML 对比', '协同 M1：presence 在场', '远端选中高亮', '草稿保存乐观锁防冲突', '草稿已更新通知']],
+    ['大前端', '0822', P.orange, ['模拟：facts→trace+画布高亮', '版本 diff：结构级 XML 对比', '协同 M1：感知+防冲突', '远端选中高亮', '草稿保存乐观锁']],
+    ['本轮增量', '0823', P.aqua, ['变量历史·引擎派生捕获（决策/子流程回填）', '决策表只读查看器', '变量历史时间线', '协同 M2：op-log 对象级合并', '令牌可视化：SSE实时+计数徽标', '等待态细分色', '设计器分页+大纲+缩略图', '办理人类型修复', '科技感 light/dark 主题（跟随门户 SAP 令牌）']],
   ]
   const x0 = 156, maxX = W - 34
   let rows = '', y = 78
@@ -195,30 +196,30 @@ function fig3 () {
     y += rowH + 8
   }
   const H = y + 46
-  let b = title(W, '能力演进时间线 · 全功能梳理', '九条能力轨，均已交付并回归通过（里程碑代号取自源码/测试文件命名）')
+  let b = title(W, '能力演进时间线 · 全功能梳理', '十条能力轨，均已交付并回归通过（里程碑代号取自源码/测试文件命名）')
   b += rows
   b += R(28, y + 2, W - 56, 34, { rx: 9, fill: P.plane, stroke: P.border, sw: 1 })
-  b += T(44, y + 24, '状态：M / A / P / H / RD / S 各轨 + 0821「后端补齐 5 项」+ 0822「设计器大前端（模拟 / diff / 协同 M1）」全部已交付并纳入回归；README「S0 骨架」为陈旧文案，实际达 S6 收口。', { size: 11.5, fill: P.ink2 })
+  b += T(44, y + 24, '状态：M / A / P / H / RD / S 各轨 + 0821 后端补齐 + 0822 设计器大前端 + 0823 变量历史派生·决策/变量可视化·协同 M2·令牌可视化·主题化 —— 全部已交付并纳入回归。', { size: 11, fill: P.ink2 })
   return doc(W, H, b)
 }
 
 // ══════════════ 图5 · 测试覆盖 stat tiles ══════════════
 function fig5 () {
   const W = 920, H = 476
-  let b = title(W, '测试覆盖 · 真机验证', 'Rust 单测/集成 + 后端 curl 回归 + Playwright/CDP 前端；含 0821 后端 5 项 + 0822 设计器大前端；均只增不删、数据留库')
+  let b = title(W, '测试覆盖 · 真机验证', 'Rust 单测/集成 + 后端 curl 回归 + Playwright/CDP 前端；含 0823 变量历史派生 / 协同 M2 / 决策·变量可视化 + 0822 设计器大前端；均只增不删、数据留库')
   const tiles = [
-    ['273', 'Rust 测试函数 · 0 失败', 'cargo test --workspace'],
+    ['276', 'Rust 测试函数 · 0 失败', 'cargo test --workspace'],
     ['159/159', '后端全量回归', 'run-all.sh'],
     ['60/60', '子流程专项', 'run-subflow.sh'],
     ['25/25', '维度路由 RD0–4', '维度路由测试报告'],
     ['23/23', '子流程钻入(门户级)', 'subflow_drilldown.cjs'],
     ['22/22', '差旅业务 E2E', 'biz-test'],
-    ['18/18', '新功能真机 E2E', 'A7/A8/A9/P1/A3'],
-    ['5/5', '后端 5 项真机(0821)', '决策/变量/RD5/SDK/回连'],
-    ['12/12', '设计器 模拟+diff(0822)', 'designer_simulate_diff.cjs'],
-    ['10/10', '设计器新功能验收(0822)', 'designer_features_capture.cjs'],
-    ['6/6', '协同 M1 双用户真机(0822)', 'collab_presence.cjs'],
-    ['9 套件', 'FE 全绿 · 自包含 :8091', 'docs/full-test/fe/*.cjs'],
+    ['3/3', '变量历史·引擎派生 · 0823', 'var_history_derived.rs'],
+    ['8/8', '决策/变量历史可视化 · 0823', 'viz_decision_varhistory.cjs'],
+    ['5/5', '协同 M2 对象级合并 · 0823', 'collab_m2_oplog.cjs'],
+    ['12/12', '设计器 模拟+diff · 0822', 'designer_simulate_diff.cjs'],
+    ['10/10', '设计器新功能验收 · 0822', 'designer_features_capture.cjs'],
+    ['6/6', '协同 M1 双用户 · 0822', 'collab_presence.cjs'],
   ]
   const cols = 4, gap = 16, x0 = 40, tw = (W - 80 - (cols - 1) * gap) / cols, th = 96, y0 = 78
   tiles.forEach((t, i) => {
@@ -239,8 +240,8 @@ function fig6 () {
   let b = title(W, '未来计划 · Now / Next / Later', '审批赛道够用即止，世界级完整度按业务诉求择机推进')
   const colW = (W - 80 - 2 * 18) / 3, x0 = 40, y0 = 74
   const cols = [
-    ['Now · 已巩固', P.good, ['审批全链路（会签/转签/抄送/退回/取回）', '子流程维度路由 RD0–4', '异步可靠性 incident/死信/SKIP-LOCKED', 'S0–S6 独立微服务 + 平台反代', '四区设计器 + 子流程钻入式', '★ 0821：决策表落库 · 变量历史 · RD5 · SDK · 身份回连', '★ 0822：设计器模拟/diff/协同 M1（感知+防冲突）']],
-    ['Next · 近期择机', P.blue, ['变量历史引擎派生捕获（决策/子流程回填）', '决策表 / 变量历史 前端可视化', '协同 M2（op-log 对象级合并）', '令牌可视化优化（前端 bpmn-js）']],
+    ['Now · 已巩固', P.good, ['审批全链路（会签/转签/抄送/退回/取回）', '子流程维度路由 RD0–5', '异步可靠性 incident/死信/SKIP-LOCKED', 'S0–S6 独立微服务 + 平台反代', '四区设计器 + 子流程钻入 + light/dark 主题化', '★ 0822：设计器模拟 / diff / 协同 M1（感知+防冲突）', '★ 0823：变量历史派生 · 决策/变量可视化 · 协同 M2 · 令牌可视化优化']],
+    ['Next · 近期择机', P.blue, ['协同 M3（结构级增删/移动合并）', '决策表可编辑设计器（现为只读查看）', '令牌可视化 · 生命周期回放', 'SSE JWT 鉴权（协同非 off 模式）']],
     ['Later · B 级长期', P.violet, ['补偿事件（B2）', '全事件体系 信号/升级/条件/link（B4）', '完整 FEEL/DMN + DRD 序列化（B6）', '水平扩展执行（B8 · 暂不追）', '附件（接文档服务）', 'ZmcDataSet 数据集导出端点']],
   ]
   const CH = 410 // 卡片高度（容 Now 列 7 项）

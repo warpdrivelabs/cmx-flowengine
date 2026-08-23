@@ -37,6 +37,9 @@ const state = {
   liveOn: false,     // SSE 是否已连接（图例上显示「实时/手动」）
   liveTimer: null,   // 事件到达后的去抖 reload 定时器（合并突发事件）
   varHistory: null,  // 变量历史（含引擎派生 decision/subflow）；随选中实例载入
+  // 生命周期回放：把 /activities（已闭合的历史节点访问，时间序）+ 当前 activeNodes（此刻）
+  // 组成「帧」序列，在只读画布上按帧步进高亮令牌走过的路径。frames[i] = { at, occupied:[node], entered:[node], live } 。
+  replay: { on: false, frames: [], idx: 0, playing: false, timer: null, loading: false },
 }
 
 const esc = (s) => String(s ?? '')
@@ -56,6 +59,44 @@ async function apiJson (url, options = {}) {
     throw new Error((j && (j.msg || j.error)) || `HTTP ${res.status}`)
   }
   return j && typeof j === 'object' && 'data' in j ? j.data : j
+}
+
+// SSE 连接（带 jwt 一次性票据）。原生 EventSource 不能带 header，故 jwt 模式下先用带 header 的 POST
+// 换一张短期一次性票据再拼进 URL（?ticket=）；off 模式后端忽略票据。断线重连会用旧票 401 → onerror
+// 关闭后重新铸票重连（节流+次数守卫）。listeners={name:fn(data)}；onopen/onclose 通知连接态（驱动实时 pill）。
+function openSse (path, listeners, hooks = {}) {
+  const wc = !(CFG.fetchInit && CFG.fetchInit.credentials === 'omit')
+  const handle = { es: null, closed: false, retries: 0, timer: null }
+  const MAX_RETRIES = 6
+  const connect = async () => {
+    if (handle.closed) return
+    let ticket = ''
+    try { const t = await apiJson('/api/flow/v1/sse/ticket', { method: 'POST' }); ticket = (t && t.ticket) || '' } catch { /* 无票裸连（off 仍可用） */ }
+    if (handle.closed) return
+    try {
+      const sep = path.includes('?') ? '&' : '?'
+      const es = new EventSource((CFG.apiBase || '') + path + (ticket ? sep + 'ticket=' + enc(ticket) : ''), { withCredentials: wc })
+      handle.es = es
+      for (const [name, fn] of Object.entries(listeners || {})) es.addEventListener(name, (m) => { try { fn(m) } catch { /* ignore */ } })
+      es.onopen = () => { handle.retries = 0; if (!handle.closed && hooks.onopen) hooks.onopen() }
+      es.onerror = () => {
+        try { es.close() } catch { /* ignore */ }
+        handle.es = null
+        if (hooks.onclose) hooks.onclose()
+        if (handle.closed || handle.retries >= MAX_RETRIES) return
+        handle.retries++
+        handle.timer = setTimeout(connect, Math.min(1000 * handle.retries, 5000))
+      }
+    } catch { /* EventSource 不可用则降级 */ }
+  }
+  connect()
+  return {
+    close () {
+      handle.closed = true
+      if (handle.timer) { clearTimeout(handle.timer); handle.timer = null }
+      if (handle.es) { try { handle.es.close() } catch { /* ignore */ } handle.es = null }
+    },
+  }
 }
 
 function hostRoot (host) {
@@ -187,8 +228,9 @@ function contentHtml () {
     : '<span class="ops-live off" title="实时更新未连接，手动刷新"><i></i>手动</span>'
   return `<section class="ops ops-content">
     ${toolbar}
-    <div class="ops-sec">流程图（令牌位置高亮）<span class="ops-sec-r">${liveDot}<button class="ops-mini" data-act="fit" title="适配视图">⤢ 适配</button></span></div>
+    <div class="ops-sec">流程图（令牌位置高亮）<span class="ops-sec-r">${liveDot}<button class="ops-mini ${state.replay.on ? 'on' : ''}" data-act="replay" title="生命周期回放：按时间步进令牌走过的路径">▶ 回放</button><button class="ops-mini" data-act="fit" title="适配视图">⤢ 适配</button></span></div>
     <div class="ops-diagram" data-ops-canvas><div class="ops-diagram-loading">加载流程图…</div></div>
+    ${state.replay.on ? replayBarHtml() : ''}
     <div class="ops-legend">${legendItems}</div>
     <div class="ops-sec">令牌位置</div>
     <div class="ops-nodes">${tokens}</div>
@@ -198,6 +240,29 @@ function contentHtml () {
     <table class="ops-vtab"><tbody>${varRows}</tbody></table>
     <div class="ops-toast"></div>
   </section>`
+}
+
+// 回放控制条：进度滑块 + 播放/暂停 + 单步 + 帧信息（含该帧新进入节点 + 时间）。
+function replayBarHtml () {
+  const rp = state.replay
+  if (rp.loading) return `<div class="ops-replay"><span class="ops-muted">回放数据加载中…</span></div>`
+  const n = rp.frames.length
+  if (!n) return `<div class="ops-replay"><span class="ops-muted">该实例暂无可回放的历史活动（节点尚未离开或无 DI 布局）。</span></div>`
+  const f = rp.frames[Math.min(rp.idx, n - 1)]
+  const entered = (f.entered || []).join(', ') || '—'
+  const atStr = f.live ? '此刻（当前活动）' : (f.at || '').slice(0, 19).replace('T', ' ')
+  return `<div class="ops-replay">
+    <div class="ops-replay-ctl">
+      <button class="ops-mini" data-rp="first" title="第一帧">⏮</button>
+      <button class="ops-mini" data-rp="prev" title="上一步">◀</button>
+      <button class="ops-mini play" data-rp="play" title="${rp.playing ? '暂停' : '播放'}">${rp.playing ? '⏸' : '▶'}</button>
+      <button class="ops-mini" data-rp="next" title="下一步">▶</button>
+      <button class="ops-mini" data-rp="last" title="最后一帧">⏭</button>
+      <input type="range" class="ops-replay-range" min="0" max="${n - 1}" value="${Math.min(rp.idx, n - 1)}" data-rp-range>
+      <span class="ops-replay-lbl">${Math.min(rp.idx, n - 1) + 1}/${n}</span>
+    </div>
+    <div class="ops-replay-info"><b>进入</b> ${esc(entered)} <span class="ops-replay-at">· ${esc(atStr)}</span></div>
+  </div>`
 }
 
 function tokenLabel (s) {
@@ -323,6 +388,10 @@ function injectBpmnCss (root) {
       .ops-tok-async .djs-visual > :nth-child(1){stroke:#c2410c !important;stroke-width:3px !important;fill:#ffedd5 !important}
       .ops-tok-msg .djs-visual > :nth-child(1){stroke:#be185d !important;stroke-width:3px !important;fill:#fce7f3 !important}
       .ops-tok-end .djs-visual > :nth-child(1){stroke:#16a34a !important;stroke-width:3px !important}
+      /* 回放：轨迹（走过的节点/边，暗色）+ 当前帧占用节点（活动蓝，同 run） */
+      .ops-rp-trail .djs-visual > :nth-child(1){stroke:#94a3b8 !important;stroke-width:2px !important}
+      .ops-rp-trail.djs-connection .djs-visual > :nth-child(1){stroke:#94a3b8 !important}
+      .ops-rp-now .djs-visual > :nth-child(1){stroke:#3b82f6 !important;stroke-width:3.5px !important;fill:#dbeafe !important}
       /* 令牌数徽标（并行/多实例：一个节点多个令牌）——右上角计数气泡 */
       .ops-tok-badge{background:#0d1117;color:#fff;font:700 10px/1 var(--mono,monospace);min-width:16px;height:16px;padding:0 4px;border-radius:9px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,.35);border:1.5px solid #fff}
       .ops-tok-badge.inc{background:#cf222e}`
@@ -386,6 +455,8 @@ async function mountDiagram (root) {
     await state.viewer.importXML(xml)
     const canvas = state.viewer.get('canvas')
     canvas.zoom('fit-viewport', 'auto')
+    // 回放模式：不画 live 令牌，改画当前回放帧（轨迹 + 占用节点）。
+    if (state.replay.on) { applyReplayFrame(); return }
     // 令牌按节点分组：一节点可有多个活动令牌（并行网关分裂/多实例会签）——高亮该节点 +
     // 令牌数 ≥2 时右上角挂计数徽标（bpmn-js overlays），一眼看出并发度。
     const byNode = new Map()
@@ -418,19 +489,110 @@ async function mountDiagram (root) {
   }
 }
 
-// ————————————————————— P4+：生命周期事件 SSE 实时刷新 —————————————————————
+// ————————————————————— 生命周期回放 —————————————————————
+//
+// 数据源：GET /instances/{id}/activities（已闭合节点访问，ORDER BY entered_at）+ 当前 activeNodes（此刻）。
+// 时间戳可能同秒（快 E2E），故帧序以 activities 数组的既有时间序为准（逐条揭示），末帧叠加 live 活动节点。
+async function toggleReplay () {
+  const rp = state.replay
+  if (rp.on) { exitReplay(); return }
+  if (!state.selectedId) return
+  rp.on = true; rp.loading = true; rp.frames = []; rp.idx = 0; rp.playing = false
+  refreshView('content')
+  try {
+    const d = await apiJson('/api/flow/instances/' + enc(state.selectedId) + '/activities')
+    const acts = (d.activities || d.items || []).slice()
+    rp.frames = buildReplayFrames(acts, state.detail)
+    rp.idx = rp.frames.length ? rp.frames.length - 1 : 0  // 默认停在末帧（= 当前态）
+  } catch (e) { toast('回放数据加载失败: ' + e.message); rp.frames = [] }
+  rp.loading = false
+  refreshView('content')
+}
+function exitReplay () {
+  const rp = state.replay
+  rp.on = false; rp.playing = false
+  if (rp.timer) { clearInterval(rp.timer); rp.timer = null }
+  refreshView('content')  // 重渲染 → mountDiagram 恢复 live 令牌高亮
+}
+
+// 构帧：逐条 activity 揭示一帧（累积走过的节点为轨迹，本条为「新进入」并作为占用高亮）；
+// 末帧追加当前 activeNodes（此刻仍占用的节点，历史表尚未记录）。
+function buildReplayFrames (acts, detail) {
+  const frames = []
+  const trail = []
+  for (const a of acts) {
+    const node = a.activityBpmnId
+    trail.push(node)
+    frames.push({ at: a.enteredAt, entered: [node], occupied: [node], trail: trail.slice(), live: false })
+  }
+  // 末帧：当前活动节点（未闭合、不在 hi_activity）。
+  const activeNow = (detail && (detail.activeNodes || (detail.tokens || []).filter((t) => t.state !== 'ENDED').map((t) => t.nodeBpmnId))) || []
+  const uniqActive = Array.from(new Set(activeNow))
+  if (uniqActive.length) {
+    const trail2 = trail.slice()
+    for (const n of uniqActive) if (!trail2.includes(n)) trail2.push(n)
+    frames.push({ at: null, entered: uniqActive, occupied: uniqActive, trail: trail2, live: true })
+  }
+  return frames
+}
+
+// 应用当前回放帧到画布：清所有令牌 marker → 轨迹节点打暗色、占用节点打活动色。
+function applyReplayFrame () {
+  const rp = state.replay
+  if (!rp.on || !state.viewer || !rp.frames.length) return
+  let canvas
+  try { canvas = state.viewer.get('canvas') } catch { return }
+  const reg = state.viewer.get('elementRegistry')
+  // 清掉所有已知令牌/轨迹 marker（含 live 高亮）。
+  const ALL = ['ops-tok-run', 'ops-tok-inc', 'ops-tok-wait', 'ops-tok-subflow', 'ops-tok-timer', 'ops-tok-async', 'ops-tok-msg', 'ops-tok-end', 'ops-rp-trail', 'ops-rp-now']
+  reg.getAll().forEach((el) => { ALL.forEach((c) => { try { canvas.removeMarker(el.id, c) } catch {} }) })
+  const f = rp.frames[Math.min(rp.idx, rp.frames.length - 1)]
+  if (!f) return
+  for (const n of (f.trail || [])) { if (reg.get(n)) { try { canvas.addMarker(n, 'ops-rp-trail') } catch {} } }
+  for (const n of (f.occupied || [])) { if (reg.get(n)) { try { canvas.removeMarker(n, 'ops-rp-trail'); canvas.addMarker(n, f.live ? 'ops-tok-run' : 'ops-rp-now') } catch {} } }
+}
+function replayGoto (idx) {
+  const rp = state.replay
+  const n = rp.frames.length
+  if (!n) return
+  rp.idx = Math.max(0, Math.min(idx, n - 1))
+  // 只更新滑块 label + 信息 + 画布，不整段重渲（避免 mountDiagram 重导入闪烁）。
+  for (const host of Array.from(state.hosts)) {
+    if (host.__opsView !== 'content') continue
+    const root = hostRoot(host)
+    if (!root) continue
+    const rangeEl = root.querySelector('[data-rp-range]'); if (rangeEl) rangeEl.value = String(rp.idx)
+    const lbl = root.querySelector('.ops-replay-lbl'); if (lbl) lbl.textContent = (rp.idx + 1) + '/' + n
+    const info = root.querySelector('.ops-replay-info')
+    if (info) {
+      const f = rp.frames[rp.idx]
+      const atStr = f.live ? '此刻（当前活动）' : (f.at || '').slice(0, 19).replace('T', ' ')
+      info.innerHTML = `<b>进入</b> ${esc((f.entered || []).join(', ') || '—')} <span class="ops-replay-at">· ${esc(atStr)}</span>`
+    }
+    const play = root.querySelector('[data-rp="play"]'); if (play) play.textContent = rp.playing ? '⏸' : '▶'
+  }
+  applyReplayFrame()
+}
+function replayPlayPause () {
+  const rp = state.replay
+  if (rp.playing) { rp.playing = false; if (rp.timer) { clearInterval(rp.timer); rp.timer = null } replayGoto(rp.idx); return }
+  // 从末帧按播放则回到起点重播。
+  if (rp.idx >= rp.frames.length - 1) rp.idx = 0
+  rp.playing = true
+  rp.timer = setInterval(() => {
+    if (rp.idx >= rp.frames.length - 1) { rp.playing = false; if (rp.timer) { clearInterval(rp.timer); rp.timer = null } replayGoto(rp.idx); return }
+    replayGoto(rp.idx + 1)
+  }, 900)
+  replayGoto(rp.idx)
+}
+
+
 //
 // 订阅 GET /api/flow/v1/events（EventSource，按当前租户过滤）。任一生命周期事件到达时，
 // 若它属于**当前查看的实例**，去抖后 reload 详情并重绘令牌高亮——无需手动刷新即见令牌流动。
-// EventSource 自动重连；仅 off 鉴权模式可用（浏览器 EventSource 不能带 header，对齐既有 SSE 现状）。
+// 经 openSse 走一次性票据：jwt 模式亦可用（EventSource 不能带 header）；off 模式后端忽略票据。
 function startLiveEvents () {
   if (state.es || typeof window === 'undefined' || !window.EventSource) return
-  const url = (CFG.apiBase || '') + '/api/flow/v1/events'
-  let es
-  // withCredentials 随 CFG：同源门户带 cookie（默认）；credentials:'omit' 的组件/测试壳不带，
-  //   避免跨源 + 通配 CORS(`*`) 与凭证冲突（浏览器会拒带凭证的通配响应）。
-  const wc = !(CFG.fetchInit && CFG.fetchInit.credentials === 'omit')
-  try { es = new EventSource(url, { withCredentials: wc }) } catch { return }
   const onAny = (m) => {
     let ev = null
     try { ev = JSON.parse(m.data) } catch { /* keep-alive/非 JSON，忽略 */ }
@@ -439,14 +601,15 @@ function startLiveEvents () {
     if (ev.instanceId === state.selectedId) scheduleLiveReload()
     else scheduleListRefresh()
   }
-  es.onopen = () => { state.liveOn = true; updateLivePill() }
-  es.onerror = () => { if (state.liveOn) { state.liveOn = false; updateLivePill() } }
   // 事件名与 FlowEventKind.as_str 对齐；逐一监听（EventSource 无通配，onmessage 只收无 event 名的）。
+  const listeners = { message: onAny }
   for (const name of ['instance.started', 'instance.completed', 'instance.terminated', 'task.created', 'task.completed', 'task.reassigned']) {
-    es.addEventListener(name, onAny)
+    listeners[name] = onAny
   }
-  es.onmessage = onAny  // 兜底：无 event 名的默认消息
-  state.es = es
+  state.es = openSse('/api/flow/v1/events', listeners, {
+    onopen: () => { state.liveOn = true; updateLivePill() },
+    onclose: () => { if (state.liveOn) { state.liveOn = false; updateLivePill() } },
+  })
 }
 // 只更新「实时/手动」指示点，不重渲染整个 content（避免为翻个状态点而重建 bpmn-js 查看器）。
 function updateLivePill () {
@@ -466,6 +629,7 @@ function scheduleListRefresh () {
 }
 // 去抖：突发事件（如并行分裂一次推进多条 task.created）合并成一次 reload，避免抖动。
 function scheduleLiveReload () {
+  if (state.replay.on) return  // 回放态：不被 live 事件打断（帧是历史快照）。
   if (state.liveTimer) clearTimeout(state.liveTimer)
   state.liveTimer = setTimeout(() => { state.liveTimer = null; reloadDetail() }, 350)
 }
@@ -493,6 +657,14 @@ function bind (root, view, host) {
     root.querySelector('[data-act="cancel"]')?.addEventListener('click', () => doCancel())
     root.querySelectorAll('[data-urge]').forEach((b) => b.addEventListener('click', () => doUrge(b.dataset.urge)))
     root.querySelector('[data-act="fit"]')?.addEventListener('click', () => fitDiagram())
+    root.querySelector('[data-act="replay"]')?.addEventListener('click', () => toggleReplay())
+    // 回放控制条（仅回放态存在）。
+    root.querySelector('[data-rp="first"]')?.addEventListener('click', () => replayGoto(0))
+    root.querySelector('[data-rp="prev"]')?.addEventListener('click', () => replayGoto(state.replay.idx - 1))
+    root.querySelector('[data-rp="next"]')?.addEventListener('click', () => replayGoto(state.replay.idx + 1))
+    root.querySelector('[data-rp="last"]')?.addEventListener('click', () => replayGoto(state.replay.frames.length - 1))
+    root.querySelector('[data-rp="play"]')?.addEventListener('click', () => replayPlayPause())
+    root.querySelector('[data-rp-range]')?.addEventListener('input', (e) => replayGoto(+e.target.value))
     // P4：渲染只读流程图 + 令牌位置高亮（异步，不阻塞事件绑定）。
     mountDiagram(root)
     // P4+：首次进入 content 即建立生命周期事件 SSE（令牌位置实时刷新）。幂等，已连不重建。
@@ -519,6 +691,8 @@ async function loadList () {
 async function selectInstance (id) {
   state.selectedId = id
   state.varHistory = null  // 清旧，避免串实例
+  // 切实例：退出上个实例的回放态（帧属于旧实例）。
+  if (state.replay.on) { state.replay.on = false; state.replay.playing = false; if (state.replay.timer) { clearInterval(state.replay.timer); state.replay.timer = null } }
   try {
     state.detail = await apiJson('/api/flow/instances/' + enc(id))
   } catch (e) { toast('加载详情失败: ' + e.message); state.detail = null }
@@ -671,6 +845,16 @@ function styleCss () {
   .ops-sec-r { display:inline-flex; align-items:center; gap:8px; text-transform:none; }
   .ops-mini { font:inherit; font-size:11px; font-weight:700; padding:2px 8px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--muted); cursor:pointer; }
   .ops-mini:hover { border-color:var(--brand); color:var(--brand-d); }
+  .ops-mini.on { background:var(--brand); color:#fff; border-color:var(--brand); }
+  /* 回放控制条 */
+  .ops-replay { margin:8px 14px 0; padding:8px 10px; border:1px solid var(--line-soft); border-radius:9px; background:var(--bg,#f6f8fa); }
+  .ops-replay-ctl { display:flex; align-items:center; gap:6px; }
+  .ops-replay-ctl .ops-mini.play { min-width:30px; }
+  .ops-replay-range { flex:1; min-width:80px; accent-color:var(--brand); cursor:pointer; }
+  .ops-replay-lbl { font:700 11px/1 var(--mono,monospace); color:var(--muted); min-width:40px; text-align:right; }
+  .ops-replay-info { margin-top:6px; font-size:11.5px; color:var(--ink); }
+  .ops-replay-info b { color:var(--brand-d); font-size:11px; }
+  .ops-replay-at { color:var(--muted); font-family:var(--mono,monospace); font-size:10.5px; }
   .ops-live { display:inline-flex; align-items:center; gap:4px; font-size:10.5px; font-weight:700; color:var(--ok); }
   .ops-live i { width:7px; height:7px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 0 rgba(26,127,55,.5); animation:ops-pulse 1.8s infinite; }
   .ops-live.off { color:var(--muted); } .ops-live.off i { background:var(--muted); animation:none; }

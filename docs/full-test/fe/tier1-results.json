@@ -15,7 +15,7 @@
     "id": "FE-DASH-content",
     "ok": true,
     "desc": "大盘渲染业务文案",
-    "detail": "len=1101"
+    "detail": "len=1105"
   },
   {
     "id": "FE-DASH-noerr",
@@ -45,7 +45,7 @@
     "id": "FE-NP-design-workbench",
     "ok": true,
     "desc": "native-page portal.flow.design-workbench 服务合法JS+rev",
-    "detail": "srcLen=221823 rev=fda6a077b099505a"
+    "detail": "srcLen=242235 rev=ed0f2a21068ba485"
   },
   {
     "id": "FE-NP-todo-center",
@@ -69,6 +69,6 @@
     "id": "FE-NP-ops-console",
     "ok": true,
     "desc": "native-page portal.flow.ops-console 服务合法JS+rev",
-    "detail": "srcLen=27231 rev=41b6ed8edaffb037"
+    "detail": "srcLen=47812 rev=754e3c85374b1d44"
   }
 ]

@@ -176,6 +176,47 @@ pub async fn auth(req: Request, next: Next) -> Response {
     scope(ctx, next.run(req)).await
 }
 
+/// SSE 白名单：这些 GET 端点是浏览器原生 EventSource 连接，无法带 Authorization header，
+/// 故 jwt 模式下允许它们改用 `?ticket=` 一次性票据鉴权（见 [`crate::sse`]）。仅这两条豁免。
+fn is_sse_ticket_path(path: &str) -> bool {
+    path.ends_with("/design/collab") || path.ends_with("/events")
+}
+
+/// 从 query string 取 `ticket` 参数值（不引入额外依赖，手工扫 `k=v&`）。
+fn ticket_from_query(req: &Request) -> Option<String> {
+    let q = req.uri().query()?;
+    for pair in q.split('&') {
+        if let Some(v) = pair.strip_prefix("ticket=") {
+            let decoded = urldecode(v);
+            if !decoded.is_empty() {
+                return Some(decoded);
+            }
+        }
+    }
+    None
+}
+
+/// 极简 percent-decode（票据是 uuid，仅可能含 `%` 转义；容忍非法转义原样保留）。
+fn urldecode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// off 模式：从 X-Tenant / X-User 头取（缺省默认租户 / 无用户）。
 fn ctx_from_headers(req: &Request) -> TenantCtx {
     let tenant = header_str(req, "x-tenant").unwrap_or_else(|| DEFAULT_TENANT.to_string());
@@ -184,14 +225,29 @@ fn ctx_from_headers(req: &Request) -> TenantCtx {
 }
 
 /// jwt 模式：从 `Authorization: Bearer` 取令牌验签 + 解 claim。失败返回 401 响应。
+///
+/// 例外：SSE 白名单路径（EventSource 无法带 header）在 header 缺失时改用 `?ticket=` 一次性票据。
 fn verify_jwt(req: &Request, cfg: &AuthConfig) -> Result<TenantCtx, Response> {
-    let token = req
+    let bearer = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")))
-        .ok_or_else(|| unauthorized("缺少 Authorization: Bearer <token>"))?;
-    decode_claims(token, cfg).map_err(|e| unauthorized(&format!("JWT 校验失败: {e}")))
+        .and_then(|s| s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")));
+    match bearer {
+        Some(token) => decode_claims(token, cfg).map_err(|e| unauthorized(&format!("JWT 校验失败: {e}"))),
+        None => {
+            // header 缺失：SSE 白名单路径接受一次性票据（浏览器 EventSource 场景）。
+            if is_sse_ticket_path(req.uri().path()) {
+                if let Some(ticket) = ticket_from_query(req) {
+                    if let Some(ctx) = crate::sse::consume_ticket(&ticket) {
+                        return Ok(ctx);
+                    }
+                    return Err(unauthorized("SSE 票据无效或已过期"));
+                }
+            }
+            Err(unauthorized("缺少 Authorization: Bearer <token>"))
+        }
+    }
 }
 
 /// S6 认证桥：从 `X-Delegated-User-Token: Bearer <jwt>` 解出委托的终端用户上下文。

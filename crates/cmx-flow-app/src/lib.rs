@@ -26,6 +26,7 @@ pub mod observe;
 pub mod openapi;
 pub mod resp;
 pub mod simulate;
+pub mod sse;
 pub mod stats;
 pub mod tenancy;
 pub mod tenant;
@@ -67,6 +68,8 @@ where
         flow_routes_inner::<S>()
             // SSE 实时事件流（仅 v1；第三方 UI 增量刷新替轮询）。
             .route("/events", get(events::sse_events))
+            // SSE 一次性票据（jwt 模式下 EventSource 无法带 header 的解法；POST 带 header 正常验签）。
+            .route("/sse/ticket", post(sse::issue_ticket))
             // 设计器协同 M1（感知层）：协同 SSE + presence（仅 v1）。
             .route("/design/collab", get(collab::collab_sse))
             .route("/design/presence/join", post(collab::presence_join))

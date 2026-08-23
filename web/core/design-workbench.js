@@ -168,6 +168,53 @@ async function apiJson (url, options = {}) {
   return j && typeof j === 'object' && 'data' in j ? j.data : j
 }
 
+// SSE 连接（带 jwt 一次性票据）。浏览器原生 EventSource 不能带 Authorization header，
+// 故 jwt 模式下先用带 header 的 POST 换一张短期一次性票据，再拼进 SSE URL（?ticket=）。
+// off 模式下后端忽略票据、走 header ctx，前端统一走此路径，无需探测鉴权模式。
+// listeners = { eventName: fn(dataObj) }；onopen 可选。返回一个 handle：{ close() }。
+// 断线（原生 EventSource 自动重连会用旧票 401）→ 由 onerror 关闭后重新铸票重连，带节流+次数守卫防风暴。
+function openSse (path, listeners, onopen) {
+  const wc = !(CFG.fetchInit && CFG.fetchInit.credentials === 'omit')
+  const handle = { es: null, closed: false, retries: 0, timer: null }
+  const MAX_RETRIES = 6
+  const connect = async () => {
+    if (handle.closed) return
+    let ticket = ''
+    try {
+      const t = await apiJson('/api/flow/v1/sse/ticket', { method: 'POST' })
+      ticket = (t && t.ticket) || ''
+    } catch { /* 铸票失败（如未鉴权）→ 无票裸连，off 模式仍可用 */ }
+    if (handle.closed) return
+    try {
+      const sep = path.includes('?') ? '&' : '?'
+      const url = (CFG.apiBase || '') + path + (ticket ? sep + 'ticket=' + enc(ticket) : '')
+      const es = new EventSource(url, { withCredentials: wc })
+      handle.es = es
+      for (const [name, fn] of Object.entries(listeners || {})) {
+        es.addEventListener(name, (m) => { try { fn(JSON.parse(m.data)) } catch { /* ignore */ } })
+      }
+      es.onopen = () => { handle.retries = 0; if (!handle.closed && onopen) onopen() }
+      es.onerror = () => {
+        // 票据单次消费，原生重连会带旧票 401 → 关掉自己，重新铸票重连（节流退避 + 次数上限）。
+        try { es.close() } catch { /* ignore */ }
+        handle.es = null
+        if (handle.closed || handle.retries >= MAX_RETRIES) return
+        handle.retries++
+        const delay = Math.min(1000 * handle.retries, 5000)
+        handle.timer = setTimeout(connect, delay)
+      }
+    } catch { /* EventSource 不可用则降级（调用方另有心跳等兜底） */ }
+  }
+  connect()
+  return {
+    close () {
+      handle.closed = true
+      if (handle.timer) { clearTimeout(handle.timer); handle.timer = null }
+      if (handle.es) { try { handle.es.close() } catch { /* ignore */ } handle.es = null }
+    },
+  }
+}
+
 function toast (msg) {
   state.message = msg
   // 简易：写到每个 host 的 toast 区
@@ -3087,12 +3134,12 @@ async function bootCanvas (root, host) {
       state.__badgeRaf = requestAnimationFrame(() => { state.__badgeRaf = null; renderNodeBadges() })
       refreshOutline() // 元素改名/属性变 → 大纲项文案随之更新
     })
-    // 结构变化（增删节点/连线）→ 大纲重算 + 缩略图重建。事件很密，去抖到下一帧。
+    // 结构变化（增删节点/连线）→ 大纲重算 + 缩略图重建 + 协同 M3 广播。事件很密，去抖到下一帧。
     for (const ev of ['shape.added', 'shape.removed', 'connection.added', 'connection.removed', 'root.set']) {
-      state.modeler.on(ev, () => { refreshOutline(); scheduleMinimapRender() })
+      state.modeler.on(ev, (e) => { captureStructOp(ev, e && e.element); refreshOutline(); scheduleMinimapRender() })
     }
-    // 元素移动/改尺寸 → 缩略图重建（拖节点后位置变）。
-    state.modeler.on('elements.changed', () => scheduleMinimapRender())
+    // 元素移动/改尺寸 → 缩略图重建 + 协同 M3 广播位移（拖节点后位置变）。
+    state.modeler.on('elements.changed', (e) => { captureMoveOps(e && e.elements); scheduleMinimapRender() })
     // 画布视口变化（平移/缩放）→ 只重定位缩略图里的视口小方框（轻量，高频）。
     state.modeler.on('canvas.viewbox.changed', () => scheduleMinimapViewport())
     // 导入完成（载入定义 / 钻入子流程 / 新建）→ 挂载并重建缩略图。
@@ -4067,15 +4114,15 @@ function startCollab (defKey, baseUpdatedAt) {
   c.sessionId = c.sessionId || ('s-' + Math.random().toString(36).slice(2, 10))
   collabPost('join', { selection: selectedId() })
   try {
-    const wc = !(CFG.fetchInit && CFG.fetchInit.credentials === 'omit')
-    const es = new EventSource((CFG.apiBase || '') + '/api/flow/v1/design/collab?defKey=' + enc(defKey), { withCredentials: wc })
-    es.addEventListener('presence', (m) => { try { onPresence(JSON.parse(m.data)) } catch { /* ignore */ } })
-    es.addEventListener('draft.saved', (m) => { try { onDraftSaved(JSON.parse(m.data)) } catch { /* ignore */ } })
-    es.addEventListener('op', (m) => { try { onRemoteOp(JSON.parse(m.data)) } catch { /* ignore */ } })
-    // 连接就绪后再 join 一次：首个 join 在流建立前发出会丢自己的初始 roster（对方后续 select 才补上）——
-    // onopen 时补发，确保加入者在流活跃后立刻收到完整 roster（含自己）。
-    es.onopen = () => { if (state.collab.on && state.collab.defKey === defKey) collabPost('join', { selection: selectedId() }) }
-    c.es = es
+    // 协同 SSE：经 openSse 走一次性票据（jwt 模式可用；off 模式后端忽略票据）。
+    c.es = openSse('/api/flow/v1/design/collab?defKey=' + enc(defKey), {
+      presence: (d) => onPresence(d),
+      'draft.saved': (d) => onDraftSaved(d),
+      op: (d) => onRemoteOp(d),
+    }, () => {
+      // 连接就绪后再 join 一次：首个 join 在流建立前发出会丢自己的初始 roster——onopen 补发。
+      if (state.collab.on && state.collab.defKey === defKey) collabPost('join', { selection: selectedId() })
+    })
   } catch { /* EventSource 不可用则降级为仅心跳 */ }
   c.hbTimer = setInterval(() => collabPost('heartbeat', { selection: selectedId() }), 10000)
   if (!window.__flowCollabUnload) {
@@ -4115,12 +4162,123 @@ function broadcastOp (elementId, prop, value) {
   }).catch(() => {})
 }
 
+// ————————————————————— 协同 M3：结构级增删/移动实时合并 —————————————————————
+//
+// 捕获本端 bpmn-js 结构事件（增删节点/连线、移动）→ 广播足以在对端重放的 op；对端 applyStructOp
+// 经 modeling API 重建等价元素。导入/远端回放自触发的事件用 __applying/__loadingDiagram 守卫挡掉。
+// 幂等：create 若已存在则跳、remove 若已无则跳；move 用 `${id}::pos`→seq 的 LWW。冲突取务实 last-writer。
+
+// 结构 op 是否应广播（协同开、非回放中、非载图中、非子流程钻入）。
+function structBroadcastable () {
+  const c = state.collab
+  return c.on && c.defKey && c.sessionId && !c.__applying && !state.__loadingDiagram && !state.subNav
+}
+// 发一条结构 op（fire-and-forget，服务端盖 seq 广播）。
+function postStructOp (op, extra) {
+  const c = state.collab
+  apiJson('/api/flow/v1/design/op', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ defKey: c.defKey, sessionId: c.sessionId, user: c.user, op, elementId: extra.elementId || '', props: extra }),
+  }).catch(() => {})
+}
+// 捕获 shape/connection 增删事件 → 广播。
+function captureStructOp (evName, el) {
+  if (!structBroadcastable() || !el || !el.id) return
+  if (el.id === '__implicitroot' || (el.type && el.type.indexOf('Root') >= 0)) return  // 根不广播
+  const bo = el.businessObject || {}
+  if (evName === 'shape.added') {
+    if (el.type === 'label') return  // 外部标签随宿主元素创建，不单独广播
+    postStructOp('createShape', {
+      elementId: el.id, bpmnType: el.type,
+      x: el.x, y: el.y, w: el.width, h: el.height,
+      parentId: (el.parent && el.parent.id) || null,
+      name: bo.name || null,
+    })
+  } else if (evName === 'connection.added') {
+    postStructOp('createConnection', {
+      elementId: el.id, bpmnType: el.type || 'bpmn:SequenceFlow',
+      sourceId: (el.source && el.source.id) || (bo.sourceRef && bo.sourceRef.id) || null,
+      targetId: (el.target && el.target.id) || (bo.targetRef && bo.targetRef.id) || null,
+      waypoints: (el.waypoints || []).map((w) => ({ x: w.x, y: w.y })),
+    })
+  } else if (evName === 'shape.removed' || evName === 'connection.removed') {
+    postStructOp('removeElements', { elementId: el.id, elementIds: [el.id] })
+  }
+}
+// 捕获移动/尺寸变化 → 广播每个元素的终位（连线由端点自动重算，不单独广播）。
+function captureMoveOps (els) {
+  if (!structBroadcastable() || !Array.isArray(els)) return
+  for (const el of els) {
+    if (!el || !el.id || el.waypoints) continue  // 连线跳过（跟随端点）
+    if (el.type === 'label' || el.type === 'root' || (el.type && el.type.indexOf('Root') >= 0)) continue
+    if (typeof el.x !== 'number' || typeof el.y !== 'number') continue
+    postStructOp('moveShape', { elementId: el.id, x: el.x, y: el.y, w: el.width, h: el.height })
+  }
+}
+
+// 对端回放一条结构 op。全程 __applying/__loadingDiagram 守卫（防回声 + 不标脏/不清 marker）。
+function applyStructOp (p) {
+  const c = state.collab
+  const m = state.modeler; if (!m || state.subNav) return
+  let modeling, reg, elementFactory, bpmnFactory, canvas
+  try {
+    modeling = m.get('modeling'); reg = m.get('elementRegistry')
+    elementFactory = m.get('elementFactory'); bpmnFactory = m.get('bpmnFactory'); canvas = m.get('canvas')
+  } catch { return }
+  const prevLoad = state.__loadingDiagram
+  c.__applying = true; state.__loadingDiagram = true
+  try {
+    if (p.op === 'createShape') {
+      if (reg.get(p.elementId)) return  // 幂等：已存在
+      const parent = (p.parentId && reg.get(p.parentId)) || canvas.getRootElement()
+      const bo = bpmnFactory.create((p.bpmnType || 'bpmn:Task').replace(/^bpmn:/, 'bpmn:'))
+      bo.id = p.elementId
+      if (p.name != null) bo.name = p.name
+      const shape = elementFactory.createShape({ type: p.bpmnType || 'bpmn:Task', businessObject: bo, id: p.elementId, width: p.w || 100, height: p.h || 80 })
+      const pos = { x: (p.x || 0) + (p.w || 100) / 2, y: (p.y || 0) + (p.h || 80) / 2 }  // modeling.createShape 取中心点
+      modeling.createShape(shape, pos, parent)
+    } else if (p.op === 'createConnection') {
+      if (reg.get(p.elementId)) return
+      const src = p.sourceId && reg.get(p.sourceId)
+      const tgt = p.targetId && reg.get(p.targetId)
+      if (!src || !tgt) return  // 端点未就绪（乱序到达）→ 跳过，宽容
+      const bo = bpmnFactory.create((p.bpmnType || 'bpmn:SequenceFlow').replace(/^bpmn:/, 'bpmn:'))
+      bo.id = p.elementId
+      const conn = modeling.createConnection(src, tgt, { type: p.bpmnType || 'bpmn:SequenceFlow', businessObject: bo, id: p.elementId }, src.parent || canvas.getRootElement())
+      if (conn && p.waypoints && p.waypoints.length >= 2) { try { modeling.updateWaypoints(conn, p.waypoints.map((w) => ({ x: w.x, y: w.y }))) } catch {} }
+    } else if (p.op === 'removeElements') {
+      const ids = p.elementIds || [p.elementId]
+      const els = ids.map((id) => reg.get(id)).filter(Boolean)
+      if (els.length) modeling.removeElements(els)
+    } else if (p.op === 'moveShape') {
+      // 位移 LWW：同元素只应用更大 seq。
+      const k = p.elementId + '::pos'
+      if (typeof p.seq === 'number') { if ((c.opSeen[k] || 0) >= p.seq) return; c.opSeen[k] = p.seq }
+      const el = reg.get(p.elementId)
+      if (!el) return  // 已删元素上的移动 → 存在性守卫跳过
+      const dx = (p.x || 0) - el.x, dy = (p.y || 0) - el.y
+      if (dx !== 0 || dy !== 0) modeling.moveShape(el, { x: dx, y: dy })
+    }
+  } catch { /* 单 op 失败不阻断后续 */ }
+  finally { c.__applying = false; state.__loadingDiagram = prevLoad }
+  refreshOutline(); scheduleMinimapRender()
+  if (state.__badgeRaf) cancelAnimationFrame(state.__badgeRaf)
+  state.__badgeRaf = requestAnimationFrame(() => { state.__badgeRaf = null; renderNodeBadges() })
+}
+
+
 // SSE: 远端属性 op → 对象级 LWW 合并到本端画布。自己的回声按 origin 忽略；旧 seq 丢弃。
 function onRemoteOp (ev) {
   const c = state.collab
   const p = ev && ev.payload
-  if (!p || p.op !== 'updateProperties' || !p.elementId) return
+  if (!p || !p.elementId && !p.op) return
   if (p.origin === c.sessionId) return  // 自己的回声，忽略
+  // 协同 M3：结构级 op（create/delete/move）走独立回放路径。字段在 props 里（后端信封 {op,elementId,props,seq,origin}）。
+  if (p.op === 'createShape' || p.op === 'createConnection' || p.op === 'removeElements' || p.op === 'moveShape') {
+    applyStructOp({ ...(p.props || {}), op: p.op, elementId: p.elementId || (p.props && p.props.elementId), seq: p.seq })
+    return
+  }
+  if (p.op !== 'updateProperties' || !p.elementId) return
   const m = state.modeler; if (!m) return
   let reg; try { reg = m.get('elementRegistry') } catch { return }
   const el = reg.get(p.elementId)
@@ -4580,7 +4738,8 @@ function styleCss () {
 
 // 门户壳 export default（CFG 默认值=今天：同源 fetch + /portal/vendor/bpmn-js 资产）；
 // S5 组件壳 import { configure, mount } 覆盖 apiBase/authHeaders/bpmnBase 后自挂 shadowRoot。
-export { configure, mount }
+// __state 导出：调试/自动化测试可读模块级 state（如取 modeler 驱动结构编辑）。非门户契约，勿依赖。
+export { configure, mount, state as __state }
 export default {
   defaultView: 'content',
   views: {
