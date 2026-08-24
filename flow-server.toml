@@ -6,7 +6,8 @@
 # 认证/数据源段（[auth]/[datasource]）由 flow-server main.rs 的 apply_toml_env() 读出并注入
 # FLOW_* 环境变量——auth.rs/tenant.rs 仍读环境变量，本文件是其 toml 承载。
 
-# —— chassis 框架级 ——
+# —— chassis 框架级（[server] 段，与门户 dev.toml 统一形态；旧顶层散字段仍兼容）——
+[server]
 host = "0.0.0.0"
 port = 8091
 log_dir = "logs"
