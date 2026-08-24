@@ -1,17 +1,19 @@
 //! JWT 认证中间件（S2，claim 信任模式）。
 //!
-//! flow 只信任 token 声明（不连远程 IdP）：中间件验 JWT 签名（HS256/RS256，密钥来自环境变量），
-//! 解出 `tenant`/`sub`(user)/`roles` claim，包进 [`crate::tenant::scope`]——请求内所有 DB 走该租户库。
+//! flow 只信任 token 声明（不连远程 IdP）：中间件验 JWT 签名（HS256/RS256，密钥经 ConfigManager
+//! 读 flow-server.toml 的 `[auth]` 段 ← env `AUTH__*` 覆盖），解出 `tenant`/`sub`(user)/`roles`
+//! claim，包进 [`crate::tenant::scope`]——请求内所有 DB 走该租户库。
 //!
-//! 模式（`FLOW_AUTH_MODE`）：
+//! 模式（`auth.mode`）：
 //!   - `off`（默认）：不验签。租户取 `X-Tenant` 头或默认租户；用户取 `X-User` 头。开发/单租户零门槛。
 //!   - `jwt`：强制验签。`Authorization: Bearer <jwt>` 缺失/坏签/过期 → 401。
 //!
-//! 密钥（jwt 模式）：
-//!   - `FLOW_JWT_ALG = HS256 | RS256`（默认 HS256）。
-//!   - HS256：`FLOW_JWT_SECRET`（对称密钥）。
-//!   - RS256：`FLOW_JWT_PUBLIC_KEY`（PEM 公钥）。
-//!   - `FLOW_JWT_TENANT_CLAIM`（默认 "tenant"）/`FLOW_JWT_ROLES_CLAIM`（默认 "roles"）自定 claim 名。
+//! 密钥（jwt 模式；同 `[auth]` 段）：
+//!   - `auth.jwt_alg = HS256 | RS256`（默认 HS256）。
+//!   - HS256：`auth.jwt_secret`（对称密钥）。
+//!   - RS256：`auth.jwt_public_key`（PEM 公钥）。
+//!   - `auth.jwt_tenant_claim`（默认 "tenant"）/`auth.jwt_roles_claim`（默认 "roles"）自定 claim 名。
+//!   - `auth.api_keys = "k1:tenantA,k2:tenantB"`（服务间 key:租户映射，S3）。
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,14 +35,14 @@ enum AuthMode {
     Jwt,
 }
 
-/// 进程级认证配置（一次从环境读定）。
+/// 进程级认证配置（一次经 ConfigManager 读定；启动后改配置需重启）。
 struct AuthConfig {
     mode: AuthMode,
     alg: Algorithm,
     decoding_key: Option<DecodingKey>,
     tenant_claim: String,
     roles_claim: String,
-    /// 服务间 API Key → 租户映射（S3）。`FLOW_API_KEYS="k1:tenantA,k2:tenantB"`。
+    /// 服务间 API Key → 租户映射（S3）。`auth.api_keys="k1:tenantA,k2:tenantB"`。
     api_keys: std::collections::HashMap<String, String>,
 }
 
@@ -60,62 +62,64 @@ pub fn auth_middleware_active() -> bool {
 
 fn auth_config() -> &'static AuthConfig {
     AUTH.get_or_init(|| {
-        let mode = match std::env::var("FLOW_AUTH_MODE").as_deref() {
-            Ok(m) if m.trim().eq_ignore_ascii_case("jwt") => AuthMode::Jwt,
+        // ConfigManager 直读 [auth] 段（toml ← AUTH__* env 覆盖）；未初始化（单测/独立组件场景）
+        // → 空配置 = off 模式（对齐 cmx-mdm-app auth.rs 蓝本）。
+        let get = |key: &str| {
+            cmx_utils::ConfigManager::try_global()
+                .and_then(|cm| cm.get_string(key).ok())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        let mode = match get("auth.mode").as_deref() {
+            Some(m) if m.eq_ignore_ascii_case("jwt") => AuthMode::Jwt,
             _ => AuthMode::Off,
         };
-        let alg = match std::env::var("FLOW_JWT_ALG").as_deref() {
-            Ok(a) if a.trim().eq_ignore_ascii_case("RS256") => Algorithm::RS256,
+        let alg = match get("auth.jwt_alg").as_deref() {
+            Some(a) if a.eq_ignore_ascii_case("RS256") => Algorithm::RS256,
             _ => Algorithm::HS256,
         };
         // 解码密钥（jwt 模式才需要；off 模式不用）。
         let decoding_key = if mode == AuthMode::Jwt {
             match alg {
-                Algorithm::RS256 => std::env::var("FLOW_JWT_PUBLIC_KEY").ok().and_then(|pem| {
+                Algorithm::RS256 => get("auth.jwt_public_key").and_then(|pem| {
                     DecodingKey::from_rsa_pem(pem.as_bytes())
-                        .map_err(|e| tracing::error!(error = %e, "FLOW_JWT_PUBLIC_KEY 解析失败"))
+                        .map_err(|e| tracing::error!(error = %e, "auth.jwt_public_key 解析失败"))
                         .ok()
                 }),
-                _ => std::env::var("FLOW_JWT_SECRET")
-                    .ok()
-                    .map(|s| DecodingKey::from_secret(s.as_bytes())),
+                _ => get("auth.jwt_secret").map(|s| DecodingKey::from_secret(s.as_bytes())),
             }
         } else {
             None
         };
         if mode == AuthMode::Jwt && decoding_key.is_none() {
-            tracing::error!("FLOW_AUTH_MODE=jwt 但缺密钥（FLOW_JWT_SECRET / FLOW_JWT_PUBLIC_KEY），所有请求将 401");
+            tracing::error!("auth.mode=jwt 但缺密钥（auth.jwt_secret / auth.jwt_public_key），所有请求将 401");
         }
         AuthConfig {
             mode,
             alg,
             decoding_key,
-            tenant_claim: std::env::var("FLOW_JWT_TENANT_CLAIM")
-                .unwrap_or_else(|_| "tenant".to_string()),
-            roles_claim: std::env::var("FLOW_JWT_ROLES_CLAIM")
-                .unwrap_or_else(|_| "roles".to_string()),
-            api_keys: parse_api_keys(),
+            tenant_claim: get("auth.jwt_tenant_claim").unwrap_or_else(|| "tenant".to_string()),
+            roles_claim: get("auth.jwt_roles_claim").unwrap_or_else(|| "roles".to_string()),
+            api_keys: parse_api_keys(get("auth.api_keys").unwrap_or_default()),
         }
     })
 }
 
-/// 解析 `FLOW_API_KEYS="k1:tenantA,k2:tenantB"` → {k1→tenantA, k2→tenantB}。
+/// 解析 `auth.api_keys="k1:tenantA,k2:tenantB"` → {k1→tenantA, k2→tenantB}。
 /// 无冒号的 key 绑定默认租户。
-fn parse_api_keys() -> std::collections::HashMap<String, String> {
+fn parse_api_keys(raw: String) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
-    if let Ok(raw) = std::env::var("FLOW_API_KEYS") {
-        for entry in raw.split(',') {
-            let entry = entry.trim();
-            if entry.is_empty() {
-                continue;
+    for entry in raw.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        match entry.split_once(':') {
+            Some((k, t)) => {
+                map.insert(k.trim().to_string(), t.trim().to_string());
             }
-            match entry.split_once(':') {
-                Some((k, t)) => {
-                    map.insert(k.trim().to_string(), t.trim().to_string());
-                }
-                None => {
-                    map.insert(entry.to_string(), DEFAULT_TENANT.to_string());
-                }
+            None => {
+                map.insert(entry.to_string(), DEFAULT_TENANT.to_string());
             }
         }
     }
@@ -253,7 +257,7 @@ fn verify_jwt(req: &Request, cfg: &AuthConfig) -> Result<TenantCtx, Response> {
 /// S6 认证桥：从 `X-Delegated-User-Token: Bearer <jwt>` 解出委托的终端用户上下文。
 ///
 /// 平台经 FlowProxyModule 出站时，把当前登录用户的原始 JWT 放此头（对齐 remote_importers 的
-/// `apply_auth_headers`）。这里**始终验签**（无论 FLOW_AUTH_MODE）——委托令牌是终端用户身份的
+/// `apply_auth_headers`）。这里**始终验签**（无论 auth.mode）——委托令牌是终端用户身份的
 /// 唯一凭据，不能无签信任。无密钥（未配 JWT）或验签失败 → 返回 None（退化为纯服务调用，不 401，
 /// 因服务身份本身已由 API Key 验过）。
 fn delegated_user_ctx(req: &Request, cfg: &AuthConfig) -> Option<TenantCtx> {

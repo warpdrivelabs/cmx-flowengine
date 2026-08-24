@@ -1,22 +1,35 @@
-# cmx-flow-server 配置示例（可选）。
+# cmx-flow-server 配置示例（可选）。复制为 flow-server.toml 使用。
 #
-# 加载顺序：本文件（路径由 CONFIG_FILE 指定，回退 FLOW_CONFIG，或默认 ./flow-server.toml）→ 环境变量覆盖。
-# 环境变量优先级最高。框架级 + 认证/数据源均可写 toml（认证/数据源段由 main.rs apply_toml_env
-# 注入 FLOW_* 环境变量；env 已显式设置则覆盖 toml）。
+# 加载顺序：本文件（路径由 CONFIG_FILE 指定，或默认 ./flow-server.toml）→ 环境变量覆盖。
+# 环境变量优先级最高（SERVER__HOST/SERVER__PORT/SERVER__LOG_DIR/SERVER__LOG_LEVEL/
+# SERVER__GRACEFUL_TIMEOUT_SECS 为 chassis 框架级覆盖，命名与 ConfigManager `__` 约定同名；
+# 业务段经 ConfigManager 读，AUTH__* 等可覆盖）。
 
-# —— chassis 框架级（FLOW_ 前缀环境变量可覆盖：FLOW_HOST/FLOW_PORT/FLOW_LOG_DIR/…）——
+# —— chassis 框架级（[server] 段，全平台统一形态）——
+[server]
 host = "0.0.0.0"
 port = 8091
 log_dir = "logs"
 log_level = "info"                 # RUST_LOG 未设时用
 graceful_timeout_secs = 10
 
-# —— 数据源（toml 段；→ FLOW_PG_URL / IAM_PG_URL）——
-[datasource]
-# flow_pg_url = "postgres://postgres:postgres@127.0.0.1:5432/fico"   # 运行态 + 定义库
-# iam_pg_url  = "postgres://postgres:postgres@127.0.0.1:5432/cmx"    # 候选人/组织库（pg 模式）
+# —— 数据源（标准 [[databases]] 段，与门户 dev.toml 同构；BaseConfig 直读）——
+# db_id 与引擎常量对齐：fico-db=运行态+定义库（default）；primary=候选人/组织库（IAM，非 default）。
+[[databases]]
+db_id = "fico-db"
+db_name = "流程引擎库"
+db_type = "postgres"
+db_url = "postgres://postgres:postgres@127.0.0.1:5432/fico"
+default = true
 
-# —— 认证（toml 段；→ FLOW_AUTH_MODE/FLOW_JWT_*/FLOW_API_KEYS/FLOW_TENANCY）——
+[[databases]]
+db_id = "primary"
+db_name = "候选人/组织库"
+db_type = "postgres"
+db_url = "postgres://postgres:postgres@127.0.0.1:5432/cmx"
+default = false
+
+# —— 认证（[auth] 段，ConfigManager 直读；env 覆盖 AUTH__* 如 AUTH__JWT_SECRET）——
 # 平台经 FlowProxyModule 转发时注入 X-API-Key + X-Delegated-User-Token（委托令牌始终验签）。
 [auth]
 # mode = "off" | "jwt"            # off(默认)=X-Tenant 头/默认租户；jwt=验签取 claim。生产务必 jwt
@@ -29,11 +42,16 @@ graceful_timeout_secs = 10
 #                                  ★命中即免 JWT；须 = 平台 [service_auth].outgoing_api_key
 # tenancy = "single" | "multi"    # 多租户 db-per-tenant 隔离（默认 single 单库）
 
+# —— 页面资产（[assets] 段：引擎自持 native/html 页面投递目录；env 覆盖 ASSETS__UI_NATIVE_DIR/ASSETS__UI_HTML_DIR）——
+[assets]
+ui_native_dir = "web/ui-native"
+ui_html_dir   = "web/ui-html"
+
 # —— 平台对接对齐清单（S6，最关键）——
-# 门户走独立微服务模式（平台 dev-local.toml 配了 [center_client.urls].flow）时，两个值必须对齐，
+# 门户走独立微服务模式（平台 dev.toml 配了 [center_client.services].flow）时，两个值必须对齐，
 # 否则平台代理请求被 flow-server 判 401 → 门户跳登录：
 #   1. [auth].api_keys 的 key   = 平台 [service_auth].outgoing_api_key
-#   2. [auth].jwt_secret        = 平台签发 JWT 的密钥（cmx-auth JwtConfig 默认或 dev-local 自定义）
+#   2. [auth].jwt_secret        = 平台签发 JWT 的密钥（cmx-auth JwtConfig 默认或 dev 自定义）
 # 真实配置见同目录 flow-server.toml。
 
 # —— flow 专属（仍用环境变量；toml 未覆盖这些）——
@@ -42,11 +60,9 @@ graceful_timeout_secs = 10
 # FLOW_SUBFLOW_MODE  = "mock" | "http" | "pg"   （+ FLOW_SUBFLOW_URL）
 # FLOW_DELEGATE_MODE = "mock" | "http" | "pg"   （+ FLOW_DELEGATE_URL）
 # 出站生命周期 webhook（S1）：FLOW_WEBHOOK_URLS / FLOW_WEBHOOK_SIGNING_KEY / FLOW_WEBHOOK_MAX_RETRIES
-# 多租户库 URL（multi 时）：FLOW_TENANT_DB_URL_TEMPLATE / FLOW_TENANT_<T>_PG_URL 等
+# 多租户库 URL（multi 时，R3）：FLOW_TENANT_DB_URL_TEMPLATE / FLOW_TENANT_<T>_PG_URL 等
 #
 # —— headless 对外契约（S3）——
 # 端点：/api/flow/v1/*（正式契约）+ /api/flow/*（旧,兼容并存）。
 # 文档：/api/flow/v1/openapi.json + /api/flow/v1/docs（swagger UI，免认证）。
 # 实时：/api/flow/v1/events（SSE 生命周期事件流，按租户过滤）。
-
-

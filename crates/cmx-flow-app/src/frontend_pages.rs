@@ -8,7 +8,9 @@
 //! 信封走 flow-app 自持的 [`crate::resp`]（不借 cmx-api-types，与引擎其余 handler 一致；
 //! `{code,msg,data}` 及 404/business 码均对齐门户 cmx-api-types）。
 //! rev = xxhash64(bytes, 0) → 16-hex（字节对齐门户 cmx-jsonstore::content_rev）。
-//! 目录 env：native `FLOW_UI_DIR`（默认 `web/ui-native`）、html `FLOW_UI_HTML_DIR`（默认 `web/ui-html`）。
+//! 目录走统一 [assets] 段（ConfigManager，toml ← env 合并）：native `assets.ui_native_dir`
+//! （默认 `web/ui-native`）、html `assets.ui_html_dir`（默认 `web/ui-html`）；env 直读兜底
+//! `ASSETS__UI_NATIVE_DIR` / `ASSETS__UI_HTML_DIR`。
 
 use std::path::PathBuf;
 
@@ -56,10 +58,28 @@ struct IndexFile {
     pages: Vec<IndexEntry>,
 }
 
-/// native UI 目录（env `FLOW_UI_DIR`，默认 `web/ui-native`）。
+/// 解析页面资产目录（统一 [assets] 段）：ConfigManager（toml ← env 合并）→ env 直读兜底 → 默认。
+fn assets_dir(cfg_key: &str, env_key: &str, default: &str) -> PathBuf {
+    if let Some(cm) = cmx_utils::ConfigManager::try_global()
+        && let Ok(v) = cm.get_string(cfg_key)
+    {
+        let v = v.trim();
+        if !v.is_empty() {
+            return PathBuf::from(v);
+        }
+    }
+    if let Ok(v) = std::env::var(env_key) {
+        let v = v.trim();
+        if !v.is_empty() {
+            return PathBuf::from(v);
+        }
+    }
+    PathBuf::from(default)
+}
+
+/// native UI 目录（`assets.ui_native_dir`，默认 `web/ui-native`）。
 fn ui_dir() -> PathBuf {
-    let d = std::env::var("FLOW_UI_DIR").unwrap_or_else(|_| "web/ui-native".to_string());
-    PathBuf::from(d)
+    assets_dir("assets.ui_native_dir", "ASSETS__UI_NATIVE_DIR", "web/ui-native")
 }
 
 /// 读页面索引（`<ui_dir>/index.json`）。失败 → 空集（降级，绝不 500 整个服务）。
@@ -171,12 +191,11 @@ pub async fn list_native_pages(Query(q): Query<PageQuery>) -> Result<Json<ApiRes
 // ----------------------------------------------------------------------------
 // id 为 domain.app.module.page 命名空间；单页响应 = {id,name,details,domain,app,module,doc,relPath,
 // rev,html}，rev=xxhash64(html)。流程拥有 fi.cmxfico.gl.flow-pay-review-form（待办办理表单）。
-// 目录 env FLOW_UI_HTML_DIR 默认 web/ui-html。字节对齐门户 cmx-form/pages/html.rs::read_full_from_row。
+// 目录 `assets.ui_html_dir` 默认 web/ui-html。字节对齐门户 cmx-form/pages/html.rs::read_full_from_row。
 // ============================================================================
 
 fn html_dir() -> PathBuf {
-    let d = std::env::var("FLOW_UI_HTML_DIR").unwrap_or_else(|_| "web/ui-html".to_string());
-    PathBuf::from(d)
+    assets_dir("assets.ui_html_dir", "ASSETS__UI_HTML_DIR", "web/ui-html")
 }
 
 #[derive(Debug, Clone, Deserialize)]

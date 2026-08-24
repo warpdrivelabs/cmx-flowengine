@@ -42,7 +42,7 @@ cargo test -p cmx-flow-tests
 
 # 独立运行 demo（需本地 PG；默认 fico + cmx 两库）
 FICO_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/fico \
-IAM_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/cmx \
+DEMO_IAM_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/cmx \
   cargo run -p cmx-flow-demo
 # 浏览器打开 http://127.0.0.1:8090
 ```

@@ -88,7 +88,7 @@ async fn main() {
     let url = std::env::var("FICO_PG_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@127.0.0.1:5432/fico".to_string());
     register_datasource(DB_ID, &url, true).await;
-    let iam_url = std::env::var("IAM_PG_URL")
+    let iam_url = std::env::var("DEMO_IAM_PG_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@127.0.0.1:5432/cmx".to_string());
     register_datasource(IAM_DB_ID, &iam_url, false).await;
 

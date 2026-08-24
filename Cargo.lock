@@ -730,6 +730,7 @@ dependencies = [
  "cmx-flow-identity",
  "cmx-flow-model",
  "cmx-flow-store-pg",
+ "cmx-utils",
  "cmx-web-monitor",
  "jsonwebtoken",
  "serde",

@@ -352,24 +352,33 @@ curl -X POST http://flow:8091/api/flow/v1/forms \
 
 ## 8.13 配置文件
 
-加载顺序：`.env`（dotenvy 从 cwd）→ `flow-server.toml`（`CONFIG_FILE` → `FLOW_CONFIG` → 默认 `./flow-server.toml`）→ 环境变量覆盖（env 优先级最高）。
+加载顺序：`.env`（dotenvy 从 cwd）→ `flow-server.toml`（`CONFIG_FILE` → 默认 `./flow-server.toml`）→ 环境变量覆盖（env 优先级最高；框架键 `SERVER__*`、业务键 `AUTH__*` 族，均与 ConfigManager `__` 约定同名）。
 
 `flow-server.toml` 示例：
 
 ```toml
-# —— chassis 框架级（FLOW_ 前缀环境变量可覆盖）——
+# —— chassis 框架级（[server] 段；env 覆盖 SERVER__HOST/SERVER__PORT/...，与 ConfigManager `__` 约定同名）——
+[server]
 host = "0.0.0.0"
 port = 8091
 log_dir = "logs"
 log_level = "info"
 graceful_timeout_secs = 10
 
-# —— 数据源（→ FLOW_PG_URL / IAM_PG_URL）——
-[datasource]
-flow_pg_url = "postgres://postgres:postgres@127.0.0.1:5432/fico"   # 运行态 + 定义库
-iam_pg_url  = "postgres://postgres:postgres@127.0.0.1:5432/cmx"    # 候选人/组织库
+# —— 数据源（标准 [[databases]] 段；BaseConfig 直读；缺段启动失败）——
+[[databases]]
+db_id = "fico-db"
+db_type = "postgres"
+db_url = "postgres://postgres:postgres@127.0.0.1:5432/fico"   # 运行态 + 定义库
+default = true
 
-# —— 认证（→ FLOW_AUTH_MODE/FLOW_JWT_*/FLOW_API_KEYS/FLOW_TENANCY）——
+[[databases]]
+db_id = "primary"
+db_type = "postgres"
+db_url = "postgres://postgres:postgres@127.0.0.1:5432/cmx"    # 候选人/组织库
+default = false
+
+# —— 认证（[auth] 扁平段；ConfigManager 直读，env 覆盖 AUTH__*）——
 [auth]
 mode = "jwt"                    # off（默认）| jwt。生产务必 jwt
 jwt_alg = "HS256"               # HS256 | RS256

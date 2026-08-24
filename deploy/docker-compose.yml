@@ -41,25 +41,16 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      # —— 数据源 ——
-      FLOW_PG_URL: postgres://postgres:postgres@postgres:5432/fico
-      IAM_PG_URL: postgres://postgres:postgres@postgres:5432/cmx
-      # —— 端口 ——
-      FLOW_PORT: "8091"
-      # —— 认证（S2/S3）：生产务必 jwt；密钥与平台签发方共享 ——
-      FLOW_AUTH_MODE: jwt
-      FLOW_JWT_ALG: HS256
-      FLOW_JWT_SECRET: shared-with-platform-change-me
-      FLOW_JWT_TENANT_CLAIM: tenant
-      FLOW_JWT_ROLES_CLAIM: roles
-      # —— 服务间 API Key（S3/S6）：平台 FlowProxy 用它做服务身份 ——
-      # 冒号后是无委托令牌时的回退租户；多租户下真实租户取委托 JWT 的 claim。
-      FLOW_API_KEYS: "cmx_sk_platform_to_flow:default"
-      # —— 身份适配器（S1）：候选人/组织回连平台 IAM（http）或直连库(pg)或 mock ——
+      # 配置统一走挂载的 toml（[server]/[[databases]]/[auth]/[assets] 段，见
+      # deploy/flow-server.docker.toml）；env 只做覆盖（框架键 SERVER__*，业务键 AUTH__* 族）。
+      CONFIG_FILE: /app/flow-server.toml
+      # —— 身份适配器（S1，env-only）：候选人/组织回连平台 IAM（http）或直连库(pg)或 mock ——
       FLOW_IDENTITY_MODE: mock
       # 若回连平台 IAM 查询服务：
       # FLOW_IDENTITY_MODE: http
       # FLOW_IDENTITY_URL: http://host.docker.internal:8080/api/iam/flow-identity
+    volumes:
+      - ./flow-server.docker.toml:/app/flow-server.toml:ro
     ports:
       - "8091:8091"
 

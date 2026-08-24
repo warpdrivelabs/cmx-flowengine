@@ -1,0 +1,43 @@
+# cmx-flow-server 容器编排专用配置（docker-compose.yml 挂载为 /app/flow-server.toml）。
+# 与仓根 flow-server.toml 唯一差异：db_url 主机为 compose 服务名 postgres、认证对齐编排演示值。
+# 配置制度与全平台统一：[server] 框架键 + [[databases]] 数据源 + [auth] 认证 + [assets] 页面资产；
+# env 只做覆盖（框架键 SERVER__*，业务键 AUTH__* 族）。
+
+[server]
+host = "0.0.0.0"
+port = 8091
+log_dir = "logs"
+log_level = "info"
+graceful_timeout_secs = 10
+
+# —— 数据源（标准 [[databases]] 段；BaseConfig 直读；db_id 与引擎常量对齐）——
+# fico-db=运行态+定义库（default=true）；primary=IAM 候选人库（compose initdb 建的 cmx 库）。
+[[databases]]
+db_id = "fico-db"
+db_name = "流程引擎库"
+db_type = "postgres"
+db_url = "postgres://postgres:postgres@postgres:5432/fico"
+default = true
+
+[[databases]]
+db_id = "primary"
+db_name = "候选人/组织库"
+db_type = "postgres"
+db_url = "postgres://postgres:postgres@postgres:5432/cmx"
+default = false
+
+# —— 认证（S2/S3）：生产务必 jwt；密钥与平台签发方共享 ——
+[auth]
+mode = "jwt"
+jwt_alg = "HS256"
+jwt_secret = "shared-with-platform-change-me"
+jwt_tenant_claim = "tenant"
+jwt_roles_claim = "roles"
+# 服务间 API Key（S3/S6）：平台 FlowProxy 用它做服务身份。
+# 冒号后是无委托令牌时的回退租户；多租户下真实租户取委托 JWT 的 claim。
+api_keys = "cmx_sk_platform_to_flow:default"
+
+# —— 页面资产（[assets] 段：引擎自持 native/html 页面投递目录）——
+[assets]
+ui_native_dir = "web/ui-native"
+ui_html_dir   = "web/ui-html"

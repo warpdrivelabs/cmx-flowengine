@@ -168,10 +168,8 @@ cargo test -p cmx-flow-tests      # 引擎端到端测试（内存态，无需 P
 ./flow.sh                         # debug/增量
 ./flow.sh --release               # release
 
-# 方式 B：手动带环境变量
-FLOW_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/fico \
-IAM_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/cmx \
-  cargo run -p cmx-flow-server
+# 方式 B：手动 cargo（配置读 cwd 的 flow-server.toml，路径可用 CONFIG_FILE 指定）
+cargo run -p cmx-flow-server
 
 # 健康探测
 curl http://127.0.0.1:8091/api/flow/v1/definitions
@@ -179,8 +177,8 @@ curl http://127.0.0.1:8091/api/flow/v1/definitions
 
 启动做的事（`cmx-flow-server` 有序初始化钩子）：
 1. `dotenvy` 自动加载 cwd 的 `.env`（须从 `cmx-flowengine/` 目录启动）。
-2. 加载 `flow-server.toml`（`CONFIG_FILE` → `FLOW_CONFIG` → 默认 `./flow-server.toml`），toml 的 `[auth]`/`[datasource]` 段注入 `FLOW_*` 环境变量（env 优先）。
-3. 钩子 `datasources`：注册 `FLOW_DB_ID`(fico-db) + `IAM_DB_ID`(primary) 数据源。
+2. 加载 `flow-server.toml`（`CONFIG_FILE` → 默认 `./flow-server.toml`）：`[server]` 段走 chassis（env 覆盖 `SERVER__*`，与 ConfigManager `__` 约定同名），`[[databases]]`/`[auth]` 经 ConfigManager 直读（env 覆盖 `AUTH__*` 族；缺 `[[databases]]` 启动失败）。
+3. 钩子 `datasources`：注册 `FLOW_DB_ID`(fico-db) + `IAM_DB_ID`(primary) 数据源（`[[databases]]` 配置驱动）。
 4. 钩子 `engine`：建表 + 注入 resolver/router + 装载已发布定义 + 起 5 秒定时器 poller。
 5. 挂路由：`/`（大盘，免认证）、`/api/flow/v1/*` + `/api/flow/*`（认证）、`/api/flow/v1/docs`（Swagger，免认证）、`/_mon`（技术监控）。
 
@@ -188,7 +186,7 @@ curl http://127.0.0.1:8091/api/flow/v1/definitions
 
 ```bash
 FICO_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/fico \
-IAM_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/cmx \
+DEMO_IAM_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/cmx \
   cargo run -p cmx-flow-demo
 # 浏览器打开 http://127.0.0.1:8090
 ```

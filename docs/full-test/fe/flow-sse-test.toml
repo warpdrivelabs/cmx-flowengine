@@ -1,0 +1,14 @@
+# sse_jwt_ticket.cjs 起服用最小配置（collab/ticket 纯内存，不依赖 PG 通路）。
+# 端口经 SERVER__PORT env 覆盖；jwt 模式经 AUTH__* env 覆盖（见脚本）。
+# [[databases]] 缺段会启动失败（严格报错），故提供两个占位库（池懒连接，测试不触库）。
+[[databases]]
+db_id = "fico-db"
+db_type = "postgres"
+db_url = "postgres://postgres:postgres@127.0.0.1:5432/fico"
+default = true
+
+[[databases]]
+db_id = "primary"
+db_type = "postgres"
+db_url = "postgres://postgres:postgres@127.0.0.1:5432/cmx"
+default = false

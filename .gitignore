@@ -15,3 +15,6 @@
 
 # 测试套件临时转录文件
 *.tmp
+
+# 本地真实连接配置（不入库；入库模板见 flow-server.toml / flow-server.toml.example）
+flow-server-dev.toml

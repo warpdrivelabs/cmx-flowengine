@@ -5,10 +5,10 @@
 #
 # 构建（在 cmx-flowengine 目录）：
 #   docker build -f deploy/Dockerfile -t cmx-flow-server:latest .
-# 运行：
+# 运行（配置统一走 toml；env 只做覆盖，框架键前缀 CMX_*，业务键 AUTH__*）：
 #   docker run -p 8091:8091 \
-#     -e FLOW_PG_URL=postgres://user:pass@pg:5432/fico \
-#     -e IAM_PG_URL=postgres://user:pass@pg:5432/cmx \
+#     -v $PWD/flow-server.toml:/app/flow-server.toml:ro \
+#     -e CONFIG_FILE=/app/flow-server.toml \
 #     cmx-flow-server:latest
 
 # ---- builder ----
@@ -39,8 +39,9 @@ WORKDIR /app
 # 静态资产：headless 契约不需要前端；可嵌组件（S5 web/）按需另行托管（CDN / nginx）。
 COPY --from=builder /build/target/release/cmx-flow-server /app/cmx-flow-server
 
-# 默认端口（可用 FLOW_PORT 覆盖）。
+# 默认端口（可用 CMX_PORT 覆盖）。
 EXPOSE 8091
 
-# distroless 无 shell，直接 exec 二进制。配置全走环境变量（见 flow-server.toml.example）。
+# distroless 无 shell，直接 exec 二进制。配置统一走 toml（见 flow-server.toml.example），
+# env 只做覆盖。
 ENTRYPOINT ["/app/cmx-flow-server"]

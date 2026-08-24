@@ -42,14 +42,14 @@
 
 ## 6.3 鉴权
 
-`FLOW_AUTH_MODE`：
+`auth.mode`（toml `[auth]` 段，env 覆盖 `AUTH__MODE`）：
 
 | 模式 | 说明 | 请求头 |
 |------|------|--------|
 | `off`（默认） | 无验签，租户/用户取头 | `X-Tenant: <t>`、`X-User: <u>` |
 | `jwt` | 必须带 JWT | `Authorization: Bearer <jwt>`（HS256/RS256） |
 
-- **服务间调用**：`X-Api-Key: <key>`（由 `FLOW_API_KEYS="k1:tenantA,k2:tenantB"` 映射到租户），命中即免 JWT。
+- **服务间调用**：`X-Api-Key: <key>`（由 `[auth].api_keys = "k1:tenantA,k2:tenantB"` 映射到租户），命中即免 JWT。
 - **委托用户令牌**：`X-Delegated-User-Token: Bearer <jwt>`（S6，始终验签，把待办归到真实登录用户）。
 - 401 体：`{"code":401,"msg":"缺少 Authorization: Bearer <token>" | "JWT 校验失败: ..." | "无效 API Key"}`。
 

@@ -3,11 +3,9 @@
 # 覆盖 A7 外部 worker、A9 迁移、P1 异步、A8 错误边界、A3 事件子流程。
 #
 # 前置：起服务须带 FLOW_ENABLE_E2E_DELEGATES=1 才会注册 e2eOkDelegate/e2eBpmnErr/e2eAlwaysFail
-# （P1/A8/A3 用），生产默认不注册。示例：
-#   FLOW_ENABLE_E2E_DELEGATES=1 FLOW_AUTH_MODE=off \
-#   FLOW_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/fico \
-#   IAM_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/cmx \
-#   FLOW_PORT=8091 ./target/debug/cmx-flow-server &
+# （P1/A8/A3 用），生产默认不注册。配置统一走 flow-server.toml（[server]/[[databases]]/[auth]），
+# env 只做覆盖（框架键 SERVER__* / 业务键 AUTH__*）。示例：
+#   FLOW_ENABLE_E2E_DELEGATES=1 AUTH__MODE=off ./target/debug/cmx-flow-server &
 set -u
 BASE="http://localhost:8091/api/flow"
 PASS=0; FAIL=0

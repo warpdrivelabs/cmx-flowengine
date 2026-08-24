@@ -32,6 +32,8 @@ cmx-flow-identity = { workspace = true }
 # infra（跨 workspace path 进 cmx-container）
 cmx-database-pg = { workspace = true }
 cmx-core = { workspace = true }
+# 配置中台（ConfigManager）：页面资产目录 assets_ui_* / [auth] 段直读（toml ← env 合并）
+cmx-utils = { workspace = true }
 
 # Web 框架（handler 提取器 + Router；信封自持不借 cmx-api）
 axum = { workspace = true }

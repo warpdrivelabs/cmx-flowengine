@@ -14,7 +14,7 @@ S6 是独立流程微服务路线（S0→S6）的**收口**：把 S0–S5 抽出
 
 ```
 平台出站三层头（对齐 remote_importers::apply_auth_headers）：
-  X-API-Key: cmx_sk_platform_to_flow      ← 平台服务身份（FLOW_API_KEYS 命中）
+  X-API-Key: cmx_sk_platform_to_flow      ← 平台服务身份（[auth].api_keys 命中）
   X-Delegated-User-Token: Bearer <用户JWT> ← 当前登录用户原始令牌（真实办理人）
   X-Request-Id: <链路ID>
 
@@ -24,7 +24,7 @@ S6 是独立流程微服务路线（S0→S6）的**收口**：把 S0–S5 抽出
     └ 无委托令牌 → 纯服务调用 { tenant=key绑定, roles=["service"] } （S3 语义）
 ```
 
-**关键**：多租户下一个服务 key 服务多个平台租户，故租户**优先取委托令牌的 tenant claim**，而非 key 绑定租户。委托令牌**始终验签**（`FLOW_JWT_SECRET` 须与平台签发方一致），验签失败退化为纯服务调用（不 401，服务身份已验）。
+**关键**：多租户下一个服务 key 服务多个平台租户，故租户**优先取委托令牌的 tenant claim**，而非 key 绑定租户。委托令牌**始终验签**（`auth.jwt_secret` 须与平台签发方一致），验签失败退化为纯服务调用（不 401，服务身份已验）。
 
 抽了 `decode_claims(token, cfg)` 供 Bearer 与委托令牌两路复用。5 个单测覆盖：解 claim、错密钥拒签、委托令牌覆盖 key 租户、裸令牌容忍、缺/坏令牌退化。
 
@@ -67,9 +67,13 @@ outgoing_api_key = "cmx_sk_platform_to_flow"   # 注入 X-API-Key
 
 flow-server 侧对应（见 `flow-server.toml.example`）：
 ```
-FLOW_AUTH_MODE=jwt  FLOW_JWT_SECRET=<与平台一致>
-FLOW_API_KEYS="cmx_sk_platform_to_flow:default"
-FLOW_TENANCY=multi  FLOW_TENANT_DB_URL_TEMPLATE=postgres://…/flow_{tenant}
+# flow-server.toml（或 env 覆盖 AUTH__*）：
+[auth]
+mode = "jwt"
+jwt_secret = "<与平台一致>"
+api_keys = "cmx_sk_platform_to_flow:default"
+tenancy = "multi"
+# multi 租户库 URL 模板仍走 env：FLOW_TENANT_DB_URL_TEMPLATE=postgres://…/flow_{tenant}
 ```
 
 ## 部署（deploy/）

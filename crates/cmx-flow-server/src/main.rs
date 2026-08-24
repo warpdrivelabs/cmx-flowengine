@@ -5,19 +5,18 @@
  * banner。main 只填 ServiceSpec——flow 路由 + 两个启动钩子（注册数据源、起引擎定时器 poller）+
  * flow 专属 banner/配色，交 chassis::run 装配。零 cmx-api 依赖。
  *
- * 配置（chassis 框架级用 FLOW_ 前缀；flow 专属用各自变量）：
- *   FLOW_HOST / FLOW_PORT（默认 0.0.0.0:8091）/ FLOW_LOG_DIR / FLOW_LOG_LEVEL / FLOW_CONFIG(toml)
- *   FLOW_PG_URL / IAM_PG_URL（数据源）
- *   FLOW_IDENTITY_MODE / FLOW_SUBFLOW_MODE / FLOW_DELEGATE_MODE + *_URL（S1 适配器选择）
+ * 配置（flow-server.toml，路径由 CONFIG_FILE 指定；[server] 框架键 env 覆盖 SERVER__*，与 ConfigManager `__` 约定同名）：
+ *   [server] host/port/log_dir/log_level/graceful_timeout_secs（默认 0.0.0.0:8091）
+ *   [[databases]] 标准数据源段 ×2（fico-db=运行态+定义库 default=true；primary=IAM 候选人/组织库；
+ *   缺段/缺库启动失败，无内置 URL 兜底）
+ *   [auth] 段 → cmx-flow-app 认证中间件 ConfigManager 直读（env 覆盖 AUTH__*）
+ *   适配器仍走 env：FLOW_IDENTITY_MODE / FLOW_SUBFLOW_MODE / FLOW_DELEGATE_MODE + *_URL（S1）
  *
  * 用法：
- *   FLOW_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/fico \
- *   IAM_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/cmx \
- *     cargo run -p cmx-flow-server
+ *   cargo run -p cmx-flow-server   # 读 cwd 的 flow-server.toml（或 CONFIG_FILE 指定）
  *   curl http://127.0.0.1:8091/api/flow/definitions
  */
 
-use cmx_database_pg::{DbConfig, DbType};
 use cmx_flow_app::openapi::flow_openapi;
 use cmx_flow_app::{
     FLOW_DB_ID, IAM_DB_ID, flow_routes, flow_routes_v1, spawn_async_job_poller, spawn_timer_poller,
@@ -35,83 +34,10 @@ const FLOW_ART: &str = r#"
 ╚═╝     ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝    ╚═╝     ╚══════╝ ╚═════╝  ╚══╝╚══╝
 "#;
 
-/// flow-server.toml 里的认证 + 数据源段（全可选；缺省即不注入，回退 auth.rs 默认/内置）。
-///
-/// 背景：auth.rs / tenant.rs 全走 `std::env::var("FLOW_*")` 懒读，chassis 的 toml 只解析框架级
-/// 字段（端口/日志），不碰认证。故这里补一层：把 toml 的 `[auth]`/`[datasource]` 段读出，在任何
-/// 请求前 `set_var` 注入对应 FLOW_* 环境变量——**仅当该 env 未由外部显式设置时**，保持既有
-/// 「环境变量覆盖 toml」优先级。实现「用 toml 配置文件承载认证」而不改 auth.rs。
-#[derive(serde::Deserialize, Default)]
-struct FlowFileConfig {
-    #[serde(default)]
-    auth: AuthSection,
-    #[serde(default)]
-    datasource: DatasourceSection,
-}
-
-#[derive(serde::Deserialize, Default)]
-struct AuthSection {
-    mode: Option<String>,             // → FLOW_AUTH_MODE
-    jwt_alg: Option<String>,          // → FLOW_JWT_ALG
-    jwt_secret: Option<String>,       // → FLOW_JWT_SECRET
-    jwt_public_key: Option<String>,   // → FLOW_JWT_PUBLIC_KEY
-    jwt_tenant_claim: Option<String>, // → FLOW_JWT_TENANT_CLAIM
-    jwt_roles_claim: Option<String>,  // → FLOW_JWT_ROLES_CLAIM
-    api_keys: Option<String>,         // → FLOW_API_KEYS
-    tenancy: Option<String>,          // → FLOW_TENANCY
-}
-
-#[derive(serde::Deserialize, Default)]
-struct DatasourceSection {
-    flow_pg_url: Option<String>, // → FLOW_PG_URL
-    iam_pg_url: Option<String>,  // → IAM_PG_URL
-}
-
-/// 读 flow-server.toml 的 `[auth]`/`[datasource]` 段，注入 FLOW_* 环境变量。
-/// 路径来源与 chassis 统一：`CONFIG_FILE`（与门户一致）→ 回退 `FLOW_CONFIG` → 默认 `flow-server.toml`。
-/// env 已显式设置的键不覆盖（env 优先）。
-fn apply_toml_env() {
-    let path = std::env::var("CONFIG_FILE")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| std::env::var("FLOW_CONFIG").ok().filter(|s| !s.trim().is_empty()))
-        .unwrap_or_else(|| "flow-server.toml".to_string());
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return, // 文件不存在：跳过，回退纯环境变量/默认
-    };
-    let file: FlowFileConfig = match toml::from_str(&text) {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!(path = %path, error = %e, "flow-server.toml 解析失败，认证段忽略，回退环境变量");
-            return;
-        }
-    };
-    // env 未设时才注入（保持「环境变量覆盖 toml」优先级）。
-    let set_if_absent = |key: &str, val: &Option<String>| {
-        if let Some(v) = val {
-            if !v.trim().is_empty() && std::env::var(key).is_err() {
-                // SAFETY: 启动早期、单线程、任何请求/引擎初始化之前设置进程环境变量。
-                unsafe { std::env::set_var(key, v) }
-            }
-        }
-    };
-    set_if_absent("FLOW_AUTH_MODE", &file.auth.mode);
-    set_if_absent("FLOW_JWT_ALG", &file.auth.jwt_alg);
-    set_if_absent("FLOW_JWT_SECRET", &file.auth.jwt_secret);
-    set_if_absent("FLOW_JWT_PUBLIC_KEY", &file.auth.jwt_public_key);
-    set_if_absent("FLOW_JWT_TENANT_CLAIM", &file.auth.jwt_tenant_claim);
-    set_if_absent("FLOW_JWT_ROLES_CLAIM", &file.auth.jwt_roles_claim);
-    set_if_absent("FLOW_API_KEYS", &file.auth.api_keys);
-    set_if_absent("FLOW_TENANCY", &file.auth.tenancy);
-    set_if_absent("FLOW_PG_URL", &file.datasource.flow_pg_url);
-    set_if_absent("IAM_PG_URL", &file.datasource.iam_pg_url);
-}
-
 #[tokio::main]
 async fn main() -> cmx_web_chassis::Result<()> {
-    // 统一启动契约（与门户 cmx-platform-app 一致）：自动读 cwd 的 .env → FLOW_* 环境变量。
-    // 必须在 ChassisConfig::load / apply_toml_env（都读 env）之前，故置于 main 首行。
+    // 统一启动契约（与门户 cmx-platform-app 一致）：自动读 cwd 的 .env（CONFIG_FILE 等）。
+    // 必须在 ChassisConfig::load / init_infra（都读 env）之前，故置于 main 首行。
     dotenvy::dotenv().ok();
 
     // 基础设施装配（与门户 run_platform 同一制度）：本地 toml ← Nacos 远程配置中心 ← env
@@ -122,12 +48,9 @@ async fn main() -> cmx_web_chassis::Result<()> {
         .await
         .map_err(|e| cmx_web_chassis::ChassisError::Config(format!("基础设施初始化失败: {e}")))?;
 
-    // 框架级配置：FLOW_ 前缀环境变量 + 可选 flow-server.toml，默认端口 8091。
-    let mut cfg = ChassisConfig::load("flow", "FLOW", "flow-server.toml");
-    // 认证/数据源：读同一 toml 的 [auth]/[datasource] 段 → set_var 注入 FLOW_*（env 未设时）。
-    // 必须在 auth_middleware 首次触发（AuthConfig 懒构造读 env）之前——此处 main 顶部即满足。
-    apply_toml_env();
-    if std::env::var("FLOW_PORT").is_err() && cfg.port == 8080 {
+    // 框架级配置：[server] 段 + SERVER__* env 覆盖（与 ConfigManager `__` 约定同名）+ 可选 flow-server.toml，默认端口 8091。
+    let mut cfg = ChassisConfig::load("flow", "flow-server.toml");
+    if std::env::var("SERVER__PORT").is_err() && cfg.port == 8080 {
         cfg.port = 8091; // 未显式配端口时用 flow 默认（避开平台 8080 / demo 8090）。
     }
 
@@ -188,25 +111,33 @@ async fn main() -> cmx_web_chassis::Result<()> {
         .nest_api(false) // 已自行 nest /api，避免 chassis 再包一层。
         .router(app_router)
         .state(())
-        // 钩子① 注册数据源（db_id 对齐 core 常量，否则引擎单例找不到源）。
-        // 经 cmx-service-base 共享注册原语（与 portal 同一 register_pg_datasources），
-        // URL 仍从 flow 既有的 FLOW_PG_URL/IAM_PG_URL env 读（带默认兜底），保留 flow 契约。
+        // 钩子① 注册数据源——平台封装：BaseConfig（标准 [[databases]] 段，ConfigManager 三源
+        // 合并）+ 共享注册原语 register_pg_datasources。要求有 default 库 + fico-db/primary
+        // 两个 db_id 齐备（引擎单例按常量寻址）；缺段/缺库启动失败（无内置 URL 兜底）。
         .init("datasources", |_meta| {
             Box::pin(async {
-                let flow_url = std::env::var("FLOW_PG_URL").unwrap_or_else(|_| {
-                    "postgres://postgres:postgres@127.0.0.1:5432/fico".to_string()
-                });
-                let iam_url = std::env::var("IAM_PG_URL").unwrap_or_else(|_| {
-                    "postgres://postgres:postgres@127.0.0.1:5432/cmx".to_string()
-                });
-                let configs = vec![
-                    flow_db_config(FLOW_DB_ID, &flow_url, true),
-                    flow_db_config(IAM_DB_ID, &iam_url, false),
-                ];
-                cmx_service_base::register_pg_datasources(&configs)
+                let base = cmx_service_base::BaseConfig::from_config_manager()
+                    .map_err(|e| anyhow::anyhow!("读取 [[databases]] 配置失败: {e}"))?;
+                if base.databases.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "flow-server.toml 未配置 [[databases]]（需 db_id=\"{FLOW_DB_ID}\"(default) + \"{IAM_DB_ID}\" 两库）"
+                    ));
+                }
+                if !base.databases.iter().any(|d| d.default) {
+                    return Err(anyhow::anyhow!("[[databases]] 缺少 default=true 的库"));
+                }
+                for id in [FLOW_DB_ID, IAM_DB_ID] {
+                    if !base.databases.iter().any(|d| d.db_id == id) {
+                        return Err(anyhow::anyhow!(
+                            "[[databases]] 缺少 db_id=\"{id}\"（引擎按常量寻址）"
+                        ));
+                    }
+                }
+                let ids: Vec<&str> = base.databases.iter().map(|d| d.db_id.as_str()).collect();
+                cmx_service_base::register_pg_datasources(&base.databases)
                     .await
                     .map_err(|e| anyhow::anyhow!("注册数据源失败: {e}"))?;
-                tracing::info!(flow_db = FLOW_DB_ID, iam_db = IAM_DB_ID, "✅ 数据源已注册");
+                tracing::info!(databases = ?ids, "✅ 流程引擎 tokio-pg 数据源已注册（[[databases]] 配置驱动）");
                 Ok(())
             })
         })
@@ -230,24 +161,4 @@ async fn main() -> cmx_web_chassis::Result<()> {
     // 否则 Err 路径会跳过注销（实例要等 Nacos 心跳超时才摘除）。
     cmx_service_base::shutdown_infra().await;
     result
-}
-
-/// 构造一个 flow PG 数据源配置（db_id/default 语义 flow 特有，url 从 env 来）。注册交
-/// cmx-service-base 的共享 `register_pg_datasources` 原语。
-fn flow_db_config(db_id: &str, url: &str, default: bool) -> DbConfig {
-    DbConfig {
-        db_type: DbType::Postgres,
-        db_url: url.to_string(),
-        db_id: db_id.to_string(),
-        db_name: None,
-        db_schema: Some("public".to_string()),
-        default,
-        pool_config: Default::default(),
-        health_check_interval: 60,
-        health_check_timeout: 5,
-        domain_code: None,
-        application_code: None,
-        module_code: None,
-        source_type: Some("default".to_string()),
-    }
 }

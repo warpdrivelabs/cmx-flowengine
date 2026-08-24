@@ -11,7 +11,7 @@
 BASE="http://127.0.0.1:8091/api/flow/v1"
 # 鉴权：走 off 模式头路径（X-Tenant 定租户；X-User 定调用者身份，满足 T0/T0b 任务端点授权）。
 # 不用 X-API-Key——它在 auth 中间件里优先命中服务身份分支(current_user=None)，会短路掉读 X-User 的
-# off 路径，导致 complete/reject 等因「缺少用户身份」被拒。故服务器须 FLOW_AUTH_MODE=off 起。
+# off 路径，导致 complete/reject 等因「缺少用户身份」被拒。故服务器须 auth.mode=off（默认）起。
 K="X-Tenant: default"
 CT="Content-Type: application/json"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

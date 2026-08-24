@@ -1,6 +1,6 @@
 // SSE JWT 一次性票据验证（feature ①）。
 //
-// 起一个 FLOW_AUTH_MODE=jwt 的独立 flow-server（:8097），验证：
+// 起一个 auth.mode=jwt 的独立 flow-server（:8097），验证：
 //   ① 无票据裸连 /design/collab → 401（jwt 模式 EventSource 无 header 会被拒）。
 //   ② 带 header 的 POST /sse/ticket 铸票成功；带 ?ticket= 连 SSE → 200 且收到 keep-alive/事件。
 //   ③ 票据单次消费：同票二次连接 → 401。
@@ -64,8 +64,9 @@ const results = []
 const A = (id, ok, detail) => { results.push({ id, ok: !!ok, detail }); console.log(`${ok ? '✅' : '❌'} ${id}${ok ? '' : '  << ' + detail}`) }
 
 ;(async () => {
-  // 起 jwt 模式 server（DB env 用默认；collab/ticket 纯内存，不依赖 PG 通路）。
-  const env = { ...process.env, FLOW_PORT: String(PORT), FLOW_AUTH_MODE: 'jwt', FLOW_JWT_ALG: 'HS256', FLOW_JWT_SECRET: SECRET }
+  // 起 jwt 模式 server（配置走同目录 flow-sse-test.toml；jwt/端口经 AUTH__* / SERVER__PORT env 覆盖；
+  // collab/ticket 纯内存，不依赖 PG 通路）。
+  const env = { ...process.env, CONFIG_FILE: path.join(__dirname, 'flow-sse-test.toml'), SERVER__PORT: String(PORT), AUTH__MODE: 'jwt', AUTH__JWT_ALG: 'HS256', AUTH__JWT_SECRET: SECRET }
   const srv = spawn(BIN, [], { env, stdio: 'ignore' })
   srv.on('error', (e) => { console.error('server spawn failed', e); process.exit(2) })
 

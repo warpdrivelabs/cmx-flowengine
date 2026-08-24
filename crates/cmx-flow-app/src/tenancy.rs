@@ -4,8 +4,9 @@
 //! 并在首访某租户时懒注册数据源。**默认 single 模式 = 只有默认租户、用宿主预注册的 fico-db/primary，
 //! 行为完全等价 S1 之前的单库形态（零回归）**。
 //!
-//! 环境变量：
-//!   - `FLOW_TENANCY = single | multi`（默认 single）。single 下所有请求都归默认租户。
+//! 配置（模式经 ConfigManager 直读；multi 的 URL 模板仍走 env，R3 未实现、保持 env-only）：
+//!   - `auth.tenancy = single | multi`（toml [auth] 段 ← env `AUTH__TENANCY` 覆盖；默认 single）。
+//!     single 下所有请求都归默认租户。
 //!   - multi 下租户库 URL 由二选一给出：
 //!       · `FLOW_TENANT_DB_URL_TEMPLATE = "postgres://…/flow_{tenant}"`（`{tenant}` 占位）
 //!       · 或 `FLOW_TENANT_<T>_PG_URL`（每租户显式，覆盖模板）
@@ -38,7 +39,8 @@ impl TenancyConfig {
     }
 
     fn from_env() -> Self {
-        let multi = std::env::var("FLOW_TENANCY")
+        let multi = cmx_utils::ConfigManager::try_global()
+            .and_then(|cm| cm.get_string("auth.tenancy").ok())
             .map(|v| v.trim().eq_ignore_ascii_case("multi"))
             .unwrap_or(false);
         Self {
