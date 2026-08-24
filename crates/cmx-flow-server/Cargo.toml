@@ -17,6 +17,8 @@ path = "src/main.rs"
 [dependencies]
 # 平台中立核（引擎单例 + 全部 handler + flow_routes::<S>() + 信封）
 cmx-flow-app = { workspace = true }
+# 页面只读投递（native+html 通用路由装配）
+cmx-form = { workspace = true }
 # 通用 HTTP 服务骨架（配置/日志/中间件/优雅关闭/banner + ServiceSpec/run）
 cmx-web-chassis = { workspace = true }
 # 通用技术监控（注入 flow 身份读取器；技术页 /_mon 由 chassis 自动挂）

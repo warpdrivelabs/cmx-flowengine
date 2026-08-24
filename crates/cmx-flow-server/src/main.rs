@@ -77,7 +77,10 @@ async fn main() -> cmx_web_chassis::Result<()> {
         // 前端页只读投递（native + html）：流程微服务自持自己的 3 native + 1 html 页，字节对齐门户
         // 信封，供门户 F3 反代取页请求；独立运行时也自投递自己的界面。免认证（静态内容，且门户
         // 反代注入服务身份），故挂在 authed 之外、与 swagger 同层。
-        .merge(cmx_flow_app::frontend_pages::frontend_pages_routes::<()>());
+        // 资产目录遵循规范 v2；错误体经 FlowError 保持历史 code=4 语义。
+        .merge(cmx_form::serve::frontend_pages_routes::<(), cmx_flow_app::FlowError>(
+            cmx_form::serve::PageServeConfig::from_assets(),
+        ));
     let app_router = axum::Router::new()
         // 根路径 → 业务监控大盘（流程域：实例/待办/定义/协作…；免认证，轮询 /api/flow/v1/stats）。
         .route("/", axum::routing::get(cmx_flow_app::dashboard::dashboard))

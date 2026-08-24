@@ -103,5 +103,16 @@ impl IntoResponse for FlowError {
     }
 }
 
+/// 页面投递内部错误 → 自持信封（保持历史错误体字节：BadRequest→business code=1，
+/// NotFound→404 code=4，与原 frontend_pages.rs 语义一致）。
+impl From<cmx_form::serve::PageServeError> for FlowError {
+    fn from(e: cmx_form::serve::PageServeError) -> Self {
+        match e {
+            cmx_form::serve::PageServeError::BadRequest(m) => Self::business(m),
+            cmx_form::serve::PageServeError::NotFound(m) => Self::not_found(m),
+        }
+    }
+}
+
 /// handler 结果别名（对齐抽核前 `cmx_api::Result`）。
 pub type Result<T> = core::result::Result<T, FlowError>;

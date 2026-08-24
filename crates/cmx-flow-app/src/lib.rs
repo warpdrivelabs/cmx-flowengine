@@ -19,7 +19,6 @@ pub mod dashboard;
 pub mod decisions;
 pub mod engine;
 pub mod events;
-pub mod frontend_pages;
 pub mod handlers;
 pub mod identity;
 pub mod observe;
