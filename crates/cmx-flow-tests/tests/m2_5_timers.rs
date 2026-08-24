@@ -61,7 +61,7 @@ fn build(bpmn: &str) -> (Engine<InMemoryStore>, InMemoryStore, TestClock) {
     let store = InMemoryStore::new();
     let clock = TestClock::new(t0());
     let def = compile(bpmn).expect("应能编译");
-    let mut engine = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
+    let engine = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
     engine.deploy(def).expect("部署应成功");
     (engine, store, clock)
 }
@@ -199,7 +199,7 @@ async fn timer_survives_restart_and_fires_from_store() {
     let def = compile(INTERRUPTING_BPMN).unwrap();
 
     let instance_id = {
-        let mut e1 = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
+        let e1 = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
         e1.deploy(def.clone()).unwrap();
         let started = e1
             .start_process("timed_approve", Variables::new(), None)
@@ -209,7 +209,7 @@ async fn timer_survives_restart_and_fires_from_store() {
     };
 
     // 「重启」：全新 Engine，同 store，同（共享）时钟。
-    let mut e2 = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
+    let e2 = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
     e2.deploy(def).unwrap();
 
     // 拨快超时 → 新 Engine 从库恢复作业并触发。

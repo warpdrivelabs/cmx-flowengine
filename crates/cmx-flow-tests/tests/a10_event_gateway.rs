@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use chrono::{Duration, TimeZone, Utc};
 use cmx_flow_bpmn::compile;
-use cmx_flow_engine::{Engine, InMemoryStore, InstanceState, TestClock, Variables};
+use cmx_flow_engine::{Engine, InMemoryStore, TestClock, Variables};
 use cmx_flow_model::{RuntimeStore, TokenState};
 
 /// 「审批 or 超时」竞速：

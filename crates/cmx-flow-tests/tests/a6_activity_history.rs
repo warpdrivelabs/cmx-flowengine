@@ -20,7 +20,7 @@ fn t0() -> chrono::DateTime<chrono::Utc> {
 fn build(bpmn: &str) -> (Engine<InMemoryStore>, InMemoryStore, TestClock) {
     let store = InMemoryStore::new();
     let clock = TestClock::new(t0());
-    let mut engine = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
+    let engine = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
     let def = compile(bpmn).expect("应编译");
     engine.deploy(def).expect("部署");
     (engine, store, clock)

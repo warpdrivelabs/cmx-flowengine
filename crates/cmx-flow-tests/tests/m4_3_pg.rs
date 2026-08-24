@@ -80,7 +80,7 @@ async fn pg_add_sign_persists_and_resumes_after_restart() {
 
     // 进程 1：起流程 → 前加签王五 → 退出。
     let (iid, task_id, temp_id) = {
-        let mut e1 = Engine::new(store.clone());
+        let e1 = Engine::new(store.clone());
         e1.deploy(def.clone()).unwrap();
         let s = e1
             .start_process("pg_transfer", Variables::new(), Some("PG-TR-001".into()))
@@ -130,7 +130,7 @@ async fn pg_add_sign_persists_and_resumes_after_restart() {
     };
 
     // 进程 2（重启）：从库恢复 → 王五办结临时 → 原任务恢复 → 张三办结 → 完成。
-    let mut e2 = Engine::new(store.clone());
+    let e2 = Engine::new(store.clone());
     e2.deploy(def).unwrap();
     // 恢复的加签结构完整。
     let snap = e2.store().load_snapshot(&iid).await.unwrap();

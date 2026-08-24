@@ -92,7 +92,7 @@ async fn pg_boundary_timer_persists_and_fires_after_restart() {
 
     // —— 进程 1：起流程，停在经理审批，定时器作业落库，然后「退出」 —— //
     let instance_id = {
-        let mut e1 = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
+        let e1 = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
         e1.deploy(def.clone()).unwrap();
         let started = e1
             .start_process(
@@ -121,7 +121,7 @@ async fn pg_boundary_timer_persists_and_fires_after_restart() {
     };
 
     // —— 进程 2（全新 Engine，模拟重启）：拨快超时 → 从库触发 —— //
-    let mut e2 = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
+    let e2 = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
     e2.deploy(def).unwrap();
     clock.advance(Duration::hours(25));
     let fired = e2.trigger_due_timers(100).await.unwrap();
@@ -164,7 +164,7 @@ async fn pg_complete_before_timeout_removes_job_from_db() {
     store.ensure_schema().await.expect("建表应成功");
     let def = compile(INTERRUPTING_BPMN).unwrap();
     let clock = TestClock::new(t0());
-    let mut engine = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
+    let engine = Engine::with_clock(store.clone(), Arc::new(clock.clone()));
     engine.deploy(def).unwrap();
 
     let started = engine

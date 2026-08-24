@@ -86,7 +86,7 @@ async fn pg_countersign_persists_and_recovers_after_restart() {
 
     // —— 进程 1：启动会签，办结 1 个（1/5 < 0.5，未达过半），落库后「退出」 —— //
     let (instance_id, first_task_id) = {
-        let mut engine = Engine::new(store.clone());
+        let engine = Engine::new(store.clone());
         engine.deploy(def.clone()).unwrap();
         let mut vars = Variables::new();
         vars.set("approvers", json!(["a", "b", "c", "d", "e"]));
@@ -122,7 +122,7 @@ async fn pg_countersign_persists_and_recovers_after_restart() {
 
     // —— 进程 2（全新 Engine，模拟重启）：从 PG 恢复，继续办结到过半 —— //
     {
-        let mut engine2 = Engine::new(store.clone());
+        let engine2 = Engine::new(store.clone());
         engine2.deploy(def.clone()).unwrap();
 
         // 从库恢复快照，取剩余待办。
@@ -184,7 +184,7 @@ async fn pg_cancel_archives_to_history() {
     let store = PgRuntimeStore::new(&db_id);
     store.ensure_schema().await.expect("建表应成功");
     let def = compile(MAJORITY_BPMN).unwrap();
-    let mut engine = Engine::new(store);
+    let engine = Engine::new(store);
     engine.deploy(def).unwrap();
 
     let mut vars = Variables::new();

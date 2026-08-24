@@ -42,7 +42,7 @@ const TGT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 async fn setup() -> (Engine<InMemoryStore>, InMemoryStore, String) {
     let store = InMemoryStore::new();
-    let mut engine = Engine::new(store.clone());
+    let engine = Engine::new(store.clone());
     engine.deploy(compile(SRC).expect("编译src")).expect("部署src");
     engine.deploy(compile(TGT).expect("编译tgt")).expect("部署tgt");
     let started = engine
