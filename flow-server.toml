@@ -54,5 +54,5 @@ api_keys = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6:default"
 
 # —— 页面资产（[assets] 段：引擎自持 native/html 页面投递目录；env 覆盖 ASSETS__UI_NATIVE_DIR/ASSETS__UI_HTML_DIR）——
 [assets]
-ui_native_dir = "web/ui-native"
-ui_html_dir   = "web/ui-html"
+ui_native_dir = "../cmx-container/assets/flow/web/ui-native"
+ui_html_dir = "../cmx-container/assets/flow/web/ui-html"
