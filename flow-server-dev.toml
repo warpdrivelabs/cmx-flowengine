@@ -1,0 +1,59 @@
+# cmx-flow-server 实际配置（认证对齐平台，供独立微服务模式使用）。
+#
+# 加载顺序：本文件（路径由 CONFIG_FILE 指定，或默认 ./flow-server.toml）→ 环境变量覆盖。
+# 环境变量优先级最高（[server] 框架键覆盖 SERVER__*，与 ConfigManager `__` 约定同名；业务键见各段注释）。
+#
+# [auth] 段由 cmx-flow-app 认证中间件经 ConfigManager 直读；[[databases]] 由 BaseConfig 直读；
+# 两者均支持 env 覆盖（AUTH__* / AUTH__JWT_SECRET 等）。
+
+# —— chassis 框架级（[server] 段，与门户 dev.toml 统一形态；旧顶层散字段已废弃不生效）——
+[server]
+host = "0.0.0.0"
+port = 8091
+log_dir = "logs"
+log_level = "info"
+graceful_timeout_secs = 10
+
+# —— 数据源（标准 [[databases]] 段；BaseConfig 直读；db_id 与引擎常量对齐）——
+# fico-db=运行态+定义库（default=true）；primary=候选人/组织库（IAM，非 default）。
+[[databases]]
+db_id = "fico-db"
+db_name = "流程引擎库"
+db_type = "postgres"
+# 历史备查：192.168.137.80:5432/db2（postgres:postgres）/ 192.168.157.46:5432/cmx_fico
+db_url = "postgres://dbuser_dba:9lWsRQY4i4VToPpkHcCRFzki@192.168.1.14:5432/cmx_fico"
+default = true
+
+[[databases]]
+db_id = "primary"
+db_name = "候选人/组织库"
+db_type = "postgres"
+# 历史备查：192.168.137.80:5432/db1（postgres:postgres）/ 192.168.157.46:5432/cmxlocal
+db_url = "postgres://dbuser_dba:9lWsRQY4i4VToPpkHcCRFzki@192.168.1.14:5432/cmxlocal"
+default = false
+
+# —— 认证（与平台对齐；平台经 FlowProxyModule 转发时注入 X-API-Key + X-Delegated-User-Token）——
+[auth]
+mode = "jwt"                # 生产务必 jwt（off 模式租户取 X-Tenant 头，越权隐患）
+jwt_alg = "HS256"           # 与平台 JwtConfig 算法一致
+
+# ★ 委托令牌始终验签，此密钥必须 = 平台签发 JWT 的密钥。
+#   平台真源：cmx-container 未配 [auth.jwt] 段 → 用 JwtConfig 默认
+#   (crates/libs/cmx-infra/cmx-auth/src/config.rs 的 JwtConfig 默认 secret)。
+#   若平台 dev-local.toml 配了自定义 auth.jwt.secret，改成那个值。
+jwt_secret = "a7k9m2p4x8q1w5e3r6t0y7u2i9o4p1"
+jwt_tenant_claim = "tenant"
+jwt_roles_claim = "roles"
+
+# ★ 服务间 API Key（命中即免 JWT 验签，key:回退租户）。
+#   必须 = 平台 [service_auth].outgoing_api_key（cmx-container/dev-local.toml）。
+#   平台代理注入 X-API-Key 为此值，命中后走服务身份 + 委托令牌取真实办理人。
+api_keys = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6:default"
+
+# 多租户（默认单库；db-per-tenant 隔离时设 multi）
+# tenancy = "single"
+
+# —— 页面资产（[assets] 段：引擎自持 native/html 页面投递目录；env 覆盖 ASSETS__UI_NATIVE_DIR/ASSETS__UI_HTML_DIR）——
+[assets]
+ui_native_dir = "../cmx-container/assets/flow/web/ui-native"
+ui_html_dir = "../cmx-container/assets/flow/web/ui-html"
