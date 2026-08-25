@@ -110,6 +110,8 @@ impl From<cmx_form::serve::PageServeError> for FlowError {
         match e {
             cmx_form::serve::PageServeError::BadRequest(m) => Self::business(m),
             cmx_form::serve::PageServeError::NotFound(m) => Self::not_found(m),
+            // F3-save 写路径落盘失败：按业务错误透出（code=1）
+            cmx_form::serve::PageServeError::Io(m) => Self::business(m),
         }
     }
 }
