@@ -42,7 +42,7 @@ const COUNTERSIGN_BPMN: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 fn engine_for(bpmn: &str) -> (Engine<InMemoryStore>, InMemoryStore) {
     let store = InMemoryStore::new();
     let def = compile(bpmn).expect("应能编译");
-    let mut engine = Engine::new(store.clone());
+    let engine = Engine::new(store.clone());
     engine.deploy(def).expect("部署应成功");
     (engine, store)
 }

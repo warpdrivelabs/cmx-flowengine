@@ -99,7 +99,7 @@ async fn pg_subflow_persists_and_recovers() {
 
     // —— 进程 1：起主流程 → 子实例落库，然后「退出」 —— //
     let (main_id, sub_id, review_task) = {
-        let mut e1 = Engine::new(store.clone());
+        let e1 = Engine::new(store.clone());
         e1.deploy(main_def.clone()).unwrap();
         e1.deploy(sub_def.clone()).unwrap();
         let mut vars = Variables::new();
@@ -147,7 +147,7 @@ async fn pg_subflow_persists_and_recovers() {
     };
 
     // —— 进程 2（全新 Engine，模拟重启）：从库办结子任务 → 唤醒主流程 —— //
-    let mut e2 = Engine::new(store.clone());
+    let e2 = Engine::new(store.clone());
     e2.deploy(main_def).unwrap();
     e2.deploy(sub_def).unwrap();
 

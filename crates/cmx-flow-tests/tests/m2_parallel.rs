@@ -34,7 +34,7 @@ const PARALLEL_BPMN: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 fn build() -> (Engine<InMemoryStore>, InMemoryStore) {
     let store = InMemoryStore::new();
     let def = compile(PARALLEL_BPMN).expect("并行会签应能编译");
-    let mut engine = Engine::new(store.clone());
+    let engine = Engine::new(store.clone());
     engine.deploy(def).expect("部署应成功");
     (engine, store)
 }

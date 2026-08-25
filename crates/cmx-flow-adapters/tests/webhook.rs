@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::{
-    Json, Router,
+    Router,
     extract::State,
     http::{HeaderMap, StatusCode},
     routing::post,

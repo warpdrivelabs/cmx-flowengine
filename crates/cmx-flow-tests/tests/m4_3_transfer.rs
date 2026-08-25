@@ -26,7 +26,7 @@ const BPMN: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 async fn start() -> (Engine<InMemoryStore>, InMemoryStore, String, String) {
     let store = InMemoryStore::new();
     let def = compile(BPMN).expect("应能编译");
-    let mut engine = Engine::new(store.clone());
+    let engine = Engine::new(store.clone());
     engine.deploy(def).expect("部署应成功");
     let s = engine
         .start_process("approve", Variables::new(), None)

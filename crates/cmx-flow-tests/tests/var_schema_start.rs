@@ -31,7 +31,7 @@ fn flow(schema_json: &str, validation_attr: &str) -> String {
 
 fn engine(xml: &str) -> (Engine<InMemoryStore>, InMemoryStore) {
     let store = InMemoryStore::new();
-    let mut e = Engine::new(store.clone());
+    let e = Engine::new(store.clone());
     e.deploy(compile(xml).expect("编译")).expect("部署");
     (e, store)
 }

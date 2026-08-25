@@ -214,7 +214,7 @@ async fn no_resolver_falls_back_to_static_assignee() {
     // 含 candidateGroups 但未注入 resolver → 退回静态 assignee（这里 assignee 也空 → 任务无办理人但不崩）。
     let store = InMemoryStore::new();
     let def = compile(ROLE_BPMN).unwrap();
-    let mut engine = Engine::new(store.clone());
+    let engine = Engine::new(store.clone());
     engine.deploy(def).unwrap();
     // 注意：不 set_resolver。
     let started = engine

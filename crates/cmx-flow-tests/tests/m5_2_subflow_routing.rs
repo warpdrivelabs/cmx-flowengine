@@ -203,7 +203,7 @@ async fn routed_subflow_completes_and_returns_to_main() {
 async fn logical_key_without_router_incidents_not_leaks() {
     // 用逻辑 key 但未注入路由器 → 不再抛错留僵尸实例，而是把挂载点令牌转 Incident（可见可恢复）。
     let store = InMemoryStore::new();
-    let mut engine = Engine::new(store.clone());
+    let engine = Engine::new(store.clone());
     for xml in [MAIN_BPMN, SUB_HQ, SUB_BRANCH] {
         engine.deploy(compile(xml).unwrap()).unwrap();
     }

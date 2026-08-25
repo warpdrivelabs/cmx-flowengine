@@ -46,7 +46,7 @@ const LENIENT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 fn engine_with(xml: &str) -> (Engine<InMemoryStore>, InMemoryStore) {
     let store = InMemoryStore::new();
-    let mut e = Engine::new(store.clone());
+    let e = Engine::new(store.clone());
     e.deploy(compile(xml).expect("编译")).expect("部署");
     (e, store)
 }

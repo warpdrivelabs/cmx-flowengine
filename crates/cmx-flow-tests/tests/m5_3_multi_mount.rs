@@ -109,7 +109,7 @@ const LEGAL_REVIEW: &str = r#"<definitions xmlns="http://www.omg.org/spec/BPMN/2
 #[tokio::test]
 async fn serial_multi_mount_runs_two_different_subflows_in_order() {
     let store = InMemoryStore::new();
-    let mut engine = Engine::new(store.clone());
+    let engine = Engine::new(store.clone());
     for xml in [SERIAL_MAIN, ORDER_REVIEW, LEGAL_REVIEW] {
         engine.deploy(compile(xml).unwrap()).unwrap();
     }
@@ -223,7 +223,7 @@ const RISK_SUB: &str = r#"<definitions xmlns="http://www.omg.org/spec/BPMN/20100
 #[tokio::test]
 async fn parallel_multi_mount_runs_two_different_subflows_concurrently() {
     let store = InMemoryStore::new();
-    let mut engine = Engine::new(store.clone());
+    let engine = Engine::new(store.clone());
     for xml in [PARALLEL_MAIN, FINANCE_SUB, RISK_SUB] {
         engine.deploy(compile(xml).unwrap()).unwrap();
     }

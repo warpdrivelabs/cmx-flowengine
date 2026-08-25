@@ -58,7 +58,7 @@ const SUB_INSTANT_BPMN: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 fn engine_with(main: &str, sub: &str) -> (Engine<InMemoryStore>, InMemoryStore) {
     let store = InMemoryStore::new();
-    let mut engine = Engine::new(store.clone());
+    let engine = Engine::new(store.clone());
     engine
         .deploy(compile(main).expect("主流程编译"))
         .expect("部署主流程");
@@ -263,7 +263,7 @@ async fn nested_subflows() {
         <sequenceFlow id="f1" sourceRef="t" targetRef="e"/><endEvent id="e"/>
       </process></definitions>"#;
     let store = InMemoryStore::new();
-    let mut engine = Engine::new(store.clone());
+    let engine = Engine::new(store.clone());
     for xml in [L1, L2, L3] {
         engine.deploy(compile(xml).unwrap()).unwrap();
     }

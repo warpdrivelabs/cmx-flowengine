@@ -53,7 +53,7 @@ fn approval_matrix() -> DecisionTable {
 
 fn engine_with() -> (Engine<InMemoryStore>, InMemoryStore) {
     let store = InMemoryStore::new();
-    let mut engine = Engine::new(store.clone());
+    let engine = Engine::new(store.clone());
     engine.deploy(compile(RULE_FLOW).expect("编译")).expect("部署");
     engine.register_decision(approval_matrix());
     (engine, store)
@@ -114,7 +114,7 @@ async fn small_amount_routes_to_normal_via_default() {
 async fn unregistered_decision_is_tolerant() {
     // 决策表未注册 → 不写变量、不硬失败，走 default 分支（宽容）。
     let store = InMemoryStore::new();
-    let mut engine = Engine::new(store.clone());
+    let engine = Engine::new(store.clone());
     engine.deploy(compile(RULE_FLOW).expect("编译")).expect("部署");
     // 不注册决策表。
     let started = engine

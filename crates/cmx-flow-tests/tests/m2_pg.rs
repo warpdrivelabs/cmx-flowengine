@@ -66,7 +66,7 @@ async fn pg_parallel_fork_join_and_history() {
     store.ensure_schema().await.expect("建表应成功");
 
     let def = compile(PARALLEL_BPMN).unwrap();
-    let mut engine = Engine::new(store);
+    let engine = Engine::new(store);
     engine.deploy(def).unwrap();
 
     // 启动 → fork 出两个并行任务。

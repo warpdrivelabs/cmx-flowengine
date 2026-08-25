@@ -20,7 +20,7 @@ const FLOW: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 fn engine_with() -> (Engine<InMemoryStore>, InMemoryStore) {
     let store = InMemoryStore::new();
-    let mut engine = Engine::new(store.clone());
+    let engine = Engine::new(store.clone());
     engine.deploy(compile(FLOW).expect("编译")).expect("部署");
     (engine, store)
 }
