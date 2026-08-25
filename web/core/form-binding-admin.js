@@ -1,6 +1,6 @@
 /**
  * 表单注册表管理工作台 —— native_pages 四区（002 号债务落地，方案见
- * .trae/documents/20260819_cmx-flowengine_表单注册表维护页面方案.md）。
+ * documents/20260819_cmx-flowengine_表单注册表维护页面方案.md）。
  *
  * 对标 identity-workbench：一个四区页管 cmx_flow_form_binding 全部绑定（workspace/html/native）。
  *   explorer：kind 筛选 tab（全部/workspace/html/native）+ 关键字过滤 + 绑定卡片列表 + 新增。
