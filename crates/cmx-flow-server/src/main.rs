@@ -117,6 +117,7 @@ async fn main() -> cmx_web_chassis::Result<()> {
         // 钩子① 注册数据源——平台封装：BaseConfig（标准 [[databases]] 段，ConfigManager 三源
         // 合并）+ 共享注册原语 register_pg_datasources。要求有 default 库 + fico-db/primary
         // 两个 db_id 齐备（引擎单例按常量寻址）；缺段/缺库启动失败（无内置 URL 兜底）。
+        // 注册建池即首连验证——库不可达同样终止启动（fail-fast）。
         .init("datasources", |_meta| {
             Box::pin(async {
                 let base = cmx_service_base::BaseConfig::from_config_manager()
@@ -144,17 +145,17 @@ async fn main() -> cmx_web_chassis::Result<()> {
                 Ok(())
             })
         })
-        // 钩子② 起定时器 poller（内部 flow() fail-fast 构建引擎单例：建表 + 注入 resolver/router +
-        // 装载定义）。非致命：DB/schema 不可用只 warn，服务仍起（端点返错便于诊断）。
+        // 钩子② 起定时器 poller（内部 flow() 构建引擎单例：建表 + 注入 resolver/router +
+        // 装载定义）与异步 Job 执行器（SKIP LOCKED 集群安全）。DB 不可达已在钩子① 探活
+        // fail-fast；此处失败（建表/装载等）同样终止启动——带病启动端点只会全返错。
         .init("engine", |_meta| {
             Box::pin(async {
-                if let Err(e) = spawn_timer_poller().await {
-                    tracing::warn!(error = %e, "流程引擎初始化失败（DB/schema 不可用？端点将返错）");
-                }
-                // P1：起异步 Job 执行器（SKIP LOCKED 集群安全）。非致命，与定时器 poller 同处理。
-                if let Err(e) = spawn_async_job_poller().await {
-                    tracing::warn!(error = %e, "异步 Job 执行器启动失败（DB/schema 不可用？异步服务任务不会推进）");
-                }
+                spawn_timer_poller()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("流程引擎初始化失败: {e}"))?;
+                spawn_async_job_poller()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("异步 Job 执行器启动失败: {e}"))?;
                 Ok(())
             })
         });
