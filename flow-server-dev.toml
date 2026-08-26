@@ -22,7 +22,7 @@ db_name = "流程引擎库"
 db_type = "postgres"
 # 历史备查：192.168.137.80:5432/db2（postgres:postgres）/ 192.168.157.46:5432/cmx_fico
 #db_url = "postgres://dbuser_dba:9lWsRQY4i4VToPpkHcCRFzki@192.168.1.14:5432/cmx_fico"
-db_url = "postgres://postgres:postgres@192.168.1.100:5432/fico"
+db_url = "postgres://postgres:postgres@192.168.1.100:5433/fico"
 default = true
 
 [[databases]]
@@ -31,7 +31,7 @@ db_name = "候选人/组织库"
 db_type = "postgres"
 # 历史备查：192.168.137.80:5432/db1（postgres:postgres）/ 192.168.157.46:5432/cmxlocal
 #db_url = "postgres://dbuser_dba:9lWsRQY4i4VToPpkHcCRFzki@192.168.1.14:5432/cmxlocal"
-db_url = "postgres://postgres:postgres@192.168.1.100:5432/cmx"
+db_url = "postgres://postgres:postgres@192.168.1.100:5433/cmx"
 default = false
 
 # —— 认证（与平台对齐；平台经 FlowProxyModule 转发时注入 X-API-Key + X-Delegated-User-Token）——
