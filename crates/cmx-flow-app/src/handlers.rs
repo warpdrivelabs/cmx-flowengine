@@ -268,7 +268,7 @@ pub async fn save_definition_draft(
     let actor = req
         .updated_by
         .clone()
-        .or_else(crate::tenant::current_user)
+        .or_else(crate::tenant::current_display_user)
         .filter(|s| !s.is_empty());
     let outcome = rt
         .def_svc
@@ -698,7 +698,7 @@ pub async fn start_instance(
             .get("initiator")
             .and_then(|v| v.as_str())
             .map(str::to_string)
-            .or_else(crate::tenant::current_user);
+            .or_else(crate::tenant::current_display_user);
         let vh = diff_var_changes(
             &result.instance_id,
             &init_vars_json,
@@ -1245,7 +1245,8 @@ pub async fn complete_task(
             }
         }
     }
-    let operator = req.operator.clone().or_else(crate::tenant::current_user);
+    // 兜底用展示名（username 优先、id 兜底）——审批留痕是给人看的人名列。
+    let operator = req.operator.clone().or_else(crate::tenant::current_display_user);
     let mut vars = Variables::from_json(req.variables.clone());
     if let Some(d) = &req.decision {
         vars.set("lastDecision", json!(d));

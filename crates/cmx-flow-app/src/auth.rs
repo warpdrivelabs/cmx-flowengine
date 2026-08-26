@@ -308,7 +308,19 @@ fn decode_claims(token: &str, cfg: &AuthConfig) -> Result<TenantCtx, String> {
         _ => Vec::new(),
     };
 
-    Ok(TenantCtx::new(tenant).with_user(claims.sub).with_roles(roles))
+    // username claim → 展示名（平台 AccessClaims 自带；缺省 None，留痕经
+    // current_display_user 回退用户 id，避免把 id 当姓名写台账）。
+    let username = claims
+        .extra
+        .get("username")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    Ok(TenantCtx::new(tenant)
+        .with_user(claims.sub)
+        .with_username(username)
+        .with_roles(roles))
 }
 
 fn header_str(req: &Request, name: &str) -> Option<String> {
