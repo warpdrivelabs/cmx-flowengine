@@ -316,10 +316,19 @@ fn decode_claims(token: &str, cfg: &AuthConfig) -> Result<TenantCtx, String> {
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    // nickname claim → 昵称（平台 2026-08 起签发；旧令牌无 → None，展示经
+    // current_display_nickname 自然落到 username）。
+    let nickname = claims
+        .extra
+        .get("nickname")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     Ok(TenantCtx::new(tenant)
         .with_user(claims.sub)
         .with_username(username)
+        .with_nickname(nickname)
         .with_roles(roles))
 }
 

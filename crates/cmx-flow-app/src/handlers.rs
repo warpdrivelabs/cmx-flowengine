@@ -1285,6 +1285,7 @@ pub async fn complete_task(
     );
     record_var_history(&rt, &vh).await;
     // F3：意见留痕（有意见/决策/办理人才记）。失败仅告警，不影响办结结果。
+    // user_name/nick_name 为办理人姓名快照（写入时点定版，人员改名不影响历史展示）。
     if req.comment.is_some() || req.decision.is_some() || operator.is_some() {
         let _ = crate::biz_link::insert_task_comment(
             &rt,
@@ -1292,6 +1293,8 @@ pub async fn complete_task(
             &task_id,
             &node_bpmn_id,
             operator,
+            crate::tenant::current_display_user(),
+            crate::tenant::current_display_nickname(),
             req.decision.clone(),
             req.comment.clone(),
         )
@@ -1429,6 +1432,8 @@ pub async fn reject_task(
             &task_id,
             &node_bpmn_id,
             req.from_user.clone(),
+            crate::tenant::current_display_user(),
+            crate::tenant::current_display_nickname(),
             Some("return".to_string()),
             req.reason.clone(),
         )

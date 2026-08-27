@@ -29,6 +29,9 @@ pub struct TenantCtx {
     /// 当前用户名（JWT `username` claim；可空——旧令牌/第三方精简令牌无）。留痕/审计
     /// 展示用 [`current_display_user`] 取「用户名优先、id 兜底」，勿拿 user 直接当姓名。
     pub username: Option<String>,
+    /// 当前用户昵称（JWT `nickname` claim；可空——旧令牌未签发该 claim）。展示名首选：
+    /// [`current_display_nickname`] 供审批留痕/快照列取「昵称优先、username 兜底」。
+    pub nickname: Option<String>,
     /// 当前用户角色（JWT roles；可空）。
     pub roles: Vec<String>,
 }
@@ -40,6 +43,7 @@ impl TenantCtx {
             tenant: tenant.into(),
             user: None,
             username: None,
+            nickname: None,
             roles: Vec::new(),
         }
     }
@@ -49,6 +53,10 @@ impl TenantCtx {
     }
     pub fn with_username(mut self, username: Option<String>) -> Self {
         self.username = username;
+        self
+    }
+    pub fn with_nickname(mut self, nickname: Option<String>) -> Self {
+        self.nickname = nickname;
         self
     }
     pub fn with_roles(mut self, roles: Vec<String>) -> Self {
@@ -86,6 +94,20 @@ pub fn current_display_user() -> Option<String> {
                 .clone()
                 .filter(|s| !s.trim().is_empty())
                 .or_else(|| c.user.clone())
+        })
+        .ok()
+        .flatten()
+}
+
+/// 昵称优先的展示名：`nickname` claim → `username` claim，均无则 None（不回退 id——
+/// 供审批意见 nick_name 快照列等场景，宁缺勿假）。昵称为空/旧令牌未签发时自然落到 username。
+pub fn current_display_nickname() -> Option<String> {
+    TENANT
+        .try_with(|c| {
+            c.nickname
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| c.username.clone().filter(|s| !s.trim().is_empty()))
         })
         .ok()
         .flatten()

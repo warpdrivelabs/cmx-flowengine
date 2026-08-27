@@ -56,6 +56,10 @@ pub const DDL_STATEMENTS: &[&str] = &[
         created_at   TIMESTAMPTZ  NOT NULL
     )"#,
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_task_comment_instance ON cmx_flow_task_comment (instance_id)",
+    // 方案 B：办理人姓名快照列（写入时点定版）——人员后续改名/删号不影响历史审批记录展示。
+    // user_name = username 口径展示名；nick_name = 昵称优先的展示名。仅新数据有值，存量留 NULL。
+    "ALTER TABLE cmx_flow_task_comment ADD COLUMN IF NOT EXISTS user_name VARCHAR(128)",
+    "ALTER TABLE cmx_flow_task_comment ADD COLUMN IF NOT EXISTS nick_name VARCHAR(128)",
     // —— F4：表单注册表（formKey → 表单页坐标；接新表单从写代码降为配一行） —— //
     r#"CREATE TABLE IF NOT EXISTS cmx_flow_form_binding (
         form_key     VARCHAR(128) PRIMARY KEY,
@@ -231,18 +235,23 @@ pub async fn task_has_candidate(
 }
 
 /// 办结时插一行意见留痕。
+///
+/// `user_id` = 办理人标识（谁办结/审批的）；`user_name` / `nick_name` 为写入时点姓名快照
+/// （人员改名/删号后历史仍可正确展示），缺省存 NULL 兼容旧调用形态。
 pub async fn insert_task_comment(
     _rt: &FlowRuntime,
     instance_id: &str,
     task_id: &str,
     node_bpmn_id: &str,
     operator: Option<String>,
+    user_name: Option<String>,
+    nick_name: Option<String>,
     decision: Option<String>,
     comment: Option<String>,
 ) -> Result<(), String> {
     let sql = "INSERT INTO cmx_flow_task_comment \
-        (id, instance_id, task_id, node_bpmn_id, user_id, decision, comment, created_at) \
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)";
+        (id, instance_id, task_id, node_bpmn_id, user_id, user_name, nick_name, decision, comment, created_at) \
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)";
     let params = SqlParams::DataValues(vec![
         DataValue::String(Uuid::new_v4().to_string()),
         DataValue::String(instance_id.to_string()),
@@ -253,6 +262,8 @@ pub async fn insert_task_comment(
             Some(node_bpmn_id.to_string())
         }),
         opt_str(operator.filter(|s| !s.trim().is_empty())), // user_id：办理人（谁办结/审批的）
+        opt_str(user_name.filter(|s| !s.trim().is_empty())),
+        opt_str(nick_name.filter(|s| !s.trim().is_empty())),
         opt_str(decision),
         opt_str(comment),
         DataValue::DateTime(Utc::now()),
@@ -266,7 +277,7 @@ pub async fn insert_task_comment(
 /// 列某实例的全部审批意见（按时间正序，供表单审批区展示历史）。
 pub async fn comments_of_instance(instance_id: &str) -> Result<Vec<Value>, String> {
     let sql = format!(
-        "SELECT task_id, node_bpmn_id, user_id, decision, comment, created_at \
+        "SELECT task_id, node_bpmn_id, user_id, user_name, nick_name, decision, comment, created_at \
          FROM cmx_flow_task_comment WHERE instance_id = '{}' ORDER BY created_at",
         esc(instance_id)
     );
@@ -280,6 +291,8 @@ pub async fn comments_of_instance(instance_id: &str) -> Result<Vec<Value>, Strin
             "taskId": get_str(row, schema, "task_id"),
             "nodeBpmnId": get_opt(row, schema, "node_bpmn_id"),
             "userId": get_opt(row, schema, "user_id"),
+            "userName": get_opt(row, schema, "user_name"),
+            "nickName": get_opt(row, schema, "nick_name"),
             "decision": get_opt(row, schema, "decision"),
             "comment": get_opt(row, schema, "comment"),
             "createdAt": get_ts_rfc3339(row, schema, "created_at"),
