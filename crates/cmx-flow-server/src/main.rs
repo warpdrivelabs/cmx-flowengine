@@ -122,21 +122,15 @@ async fn main() -> cmx_web_chassis::Result<()> {
             Box::pin(async {
                 let base = cmx_service_base::BaseConfig::from_config_manager()
                     .map_err(|e| anyhow::anyhow!("读取 [[databases]] 配置失败: {e}"))?;
-                if base.databases.is_empty() {
-                    return Err(anyhow::anyhow!(
-                        "flow-server.toml 未配置 [[databases]]（需 db_id=\"{FLOW_DB_ID}\"(default) + \"{IAM_DB_ID}\" 两库）"
-                    ));
-                }
-                if !base.databases.iter().any(|d| d.default) {
-                    return Err(anyhow::anyhow!("[[databases]] 缺少 default=true 的库"));
-                }
-                for id in [FLOW_DB_ID, IAM_DB_ID] {
-                    if !base.databases.iter().any(|d| d.db_id == id) {
-                        return Err(anyhow::anyhow!(
-                            "[[databases]] 缺少 db_id=\"{id}\"（引擎按常量寻址）"
-                        ));
-                    }
-                }
+                cmx_service_base::validate_databases(
+                    &base.databases,
+                    &cmx_service_base::DatasourceRules {
+                        required_db_ids: &[FLOW_DB_ID, IAM_DB_ID],
+                        require_default: true,
+                        require_biz: false,
+                    },
+                )
+                .map_err(|e| anyhow::anyhow!("数据源校验失败（需 db_id=\"{FLOW_DB_ID}\"(default) + \"{IAM_DB_ID}\" 两库）: {e}"))?;
                 let ids: Vec<&str> = base.databases.iter().map(|d| d.db_id.as_str()).collect();
                 cmx_service_base::register_pg_datasources(&base.databases)
                     .await

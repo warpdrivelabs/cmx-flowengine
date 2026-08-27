@@ -107,21 +107,21 @@ pub async fn simulate_definition(Json(req): Json<SimulateReq>) -> Result<Json<Ap
                 .key
                 .as_deref()
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| FlowError::business("simulate 需 bpmnXml 或 key+version"))?;
+                .ok_or_else(|| FlowError::business_error("simulate 需 bpmnXml 或 key+version"))?;
             let v = req
                 .version
-                .ok_or_else(|| FlowError::business("按 key 模拟须给 version"))?;
+                .ok_or_else(|| FlowError::business_error("按 key 模拟须给 version"))?;
             rt.def_svc
                 .get_version(k, v)
                 .await
-                .map_err(|e| FlowError::business(format!("取版本失败: {e}")))?
+                .map_err(|e| FlowError::business_error(format!("取版本失败: {e}")))?
                 .map(|r| r.bpmn_xml)
-                .ok_or_else(|| FlowError::business(format!("定义 {k} v{v} 不存在")))?
+                .ok_or_else(|| FlowError::business_error(format!("定义 {k} v{v} 不存在")))?
         }
     };
 
     // 2) 编译 XML → IR（丢弃编译不过的定义，报可读错误）。
-    let def = compile(&xml).map_err(|e| FlowError::business(format!("编译失败: {e}")))?;
+    let def = compile(&xml).map_err(|e| FlowError::business_error(format!("编译失败: {e}")))?;
 
     // 3) 决策表 key→表（本轮①已落库；从 decision_store 装载，供 businessRuleTask 查表）。
     let mut decisions: HashMap<String, DecisionTable> = HashMap::new();

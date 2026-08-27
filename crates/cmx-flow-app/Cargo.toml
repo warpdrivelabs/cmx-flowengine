@@ -32,6 +32,8 @@ cmx-flow-identity = { workspace = true }
 
 # 页面只读投递（native/html-pages 通用路由，替代原 frontend_pages.rs；错误体经 FlowError 渲染）
 cmx-form = { workspace = true }
+# 引擎应用层横切件：tenant 上下文唯一真源（本仓 src/tenant.rs 已缩为 re-export shim）
+cmx-engine-kit = { workspace = true }
 # infra（跨 workspace path 进 cmx-container）
 cmx-database-pg = { workspace = true }
 cmx-core = { workspace = true }

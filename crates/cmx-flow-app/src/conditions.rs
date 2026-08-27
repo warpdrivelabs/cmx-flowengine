@@ -39,7 +39,7 @@ pub async fn eval(Json(req): Json<EvalReq>) -> Result<Json<ApiResp<Value>>> {
             "result": b,
             "truthy": b,
         })))),
-        Err(e) => Err(FlowError::business(format!("条件求值失败: {e}"))),
+        Err(e) => Err(FlowError::business_error(format!("条件求值失败: {e}"))),
     }
 }
 

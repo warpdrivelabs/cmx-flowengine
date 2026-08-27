@@ -21,10 +21,10 @@ use crate::resp::{ApiResp, FlowError, Result};
 
 /// POST /decisions —— 注册/更新一张决策表（先落库，再热注册到运行引擎）。
 pub async fn register_decision(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
-    let table = decision_from_json(&body).map_err(|e| FlowError::business(e.to_string()))?;
+    let table = decision_from_json(&body).map_err(|e| FlowError::business_error(e.to_string()))?;
     let errs = table.validate();
     if !errs.is_empty() {
-        return Err(FlowError::business(format!("决策表校验未过: {}", errs.join("; "))));
+        return Err(FlowError::business_error(format!("决策表校验未过: {}", errs.join("; "))));
     }
     let updated_by = body
         .get("updatedBy")
@@ -37,7 +37,7 @@ pub async fn register_decision(Json(body): Json<Value>) -> Result<Json<ApiResp<V
     rt.decision_store
         .upsert(&table, updated_by.as_deref())
         .await
-        .map_err(FlowError::business)?;
+        .map_err(FlowError::business_error)?;
     // 再热注册到运行引擎（求值即时生效）。
     rt.engine.register_decision(table);
     Ok(Json(ApiResp::ok(
@@ -52,7 +52,7 @@ pub async fn list_decisions() -> Result<Json<ApiResp<Value>>> {
         .decision_store
         .list_meta()
         .await
-        .map_err(FlowError::business)?;
+        .map_err(FlowError::business_error)?;
     let items: Vec<Value> = metas
         .into_iter()
         .map(|m| {
@@ -77,7 +77,7 @@ pub async fn delete_decision(Path(key): Path<String>) -> Result<Json<ApiResp<Val
     rt.decision_store
         .delete(&key)
         .await
-        .map_err(FlowError::business)?;
+        .map_err(FlowError::business_error)?;
     rt.engine.unregister_decision(&key);
     Ok(Json(ApiResp::ok(json!({ "key": key, "deleted": true }))))
 }
@@ -89,11 +89,11 @@ pub async fn get_decision(Path(key): Path<String>) -> Result<Json<ApiResp<Value>
         .decision_store
         .get(&key)
         .await
-        .map_err(FlowError::business)?
+        .map_err(FlowError::business_error)?
         .ok_or_else(|| FlowError::not_found(format!("决策表不存在: {key}")))?;
     // DecisionTable 派生 Serialize（rules/hit_policy 等），直接转 JSON 返回。
     let body = serde_json::to_value(&table)
-        .map_err(|e| FlowError::business(format!("决策表序列化失败: {e}")))?;
+        .map_err(|e| FlowError::business_error(format!("决策表序列化失败: {e}")))?;
     Ok(Json(ApiResp::ok(body)))
 }
 
@@ -101,14 +101,14 @@ pub async fn get_decision(Path(key): Path<String>) -> Result<Json<ApiResp<Value>
 ///
 /// table 为内联决策表 JSON（设计器调试），variables 为样例变量。纯函数，不注册、不落库。
 pub async fn evaluate_decision(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
-    let table_json = body.get("table").ok_or_else(|| FlowError::business("缺少 table"))?;
-    let table = decision_from_json(table_json).map_err(|e| FlowError::business(e.to_string()))?;
+    let table_json = body.get("table").ok_or_else(|| FlowError::business_error("缺少 table"))?;
+    let table = decision_from_json(table_json).map_err(|e| FlowError::business_error(e.to_string()))?;
     let vars = Variables::from_json(body.get("variables").cloned().unwrap_or(json!({})));
     match eval_decision(&table, &vars) {
         Ok(res) => Ok(Json(ApiResp::ok(json!({
             "matchedRules": res.matched_rules,
             "outputs": res.outputs.to_json(),
         })))),
-        Err(e) => Err(FlowError::business(format!("决策求值失败: {e}"))),
+        Err(e) => Err(FlowError::business_error(format!("决策求值失败: {e}"))),
     }
 }

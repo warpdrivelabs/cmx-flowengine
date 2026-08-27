@@ -316,7 +316,7 @@ fn as_int(v: &DataValue) -> Option<i64> {
 /// 便于未来扩展错误路径（当前全降级，不产生错误）。
 #[allow(dead_code)]
 fn _stats_err(msg: impl Into<String>) -> FlowError {
-    FlowError::business(msg)
+    FlowError::business_error(msg)
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -538,7 +538,7 @@ pub async fn stats_detail(Query(q): Query<DetailQuery>) -> Result<Json<ApiResp<V
             "待触发定时器明细",
         ),
         other => {
-            return Err(FlowError::business(format!("未知下钻维度: {other}")));
+            return Err(FlowError::business_error(format!("未知下钻维度: {other}")));
         }
     };
 

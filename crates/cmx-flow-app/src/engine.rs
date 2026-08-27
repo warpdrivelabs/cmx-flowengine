@@ -535,7 +535,7 @@ impl JavaDelegate for RiskDelegate {
 
 /// 把任意错误消息桥成 FlowError（同抽核前 BizError 桥语义：业务错误）。
 fn bridge(msg: String) -> crate::resp::FlowError {
-    crate::resp::FlowError::business(msg)
+    crate::resp::FlowError::business_error(msg)
 }
 
 // ———————— E2E/测试用 delegate（真机验证服务任务三条路径） ————————

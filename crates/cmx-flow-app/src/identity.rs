@@ -22,7 +22,7 @@ use crate::resp::{ApiResp, FlowError, Result};
 
 /// 解析 entity 段 → Entity，未知则业务错误。
 fn parse_entity(seg: &str) -> Result<Entity> {
-    Entity::from_str(seg).ok_or_else(|| FlowError::business(format!("未知身份实体: {seg}")))
+    Entity::from_str(seg).ok_or_else(|| FlowError::business_error(format!("未知身份实体: {seg}")))
 }
 
 /// 取内建身份 store（绑当前租户 IAM 库；local 模式 fid_* 表建在该库）。
@@ -45,7 +45,7 @@ pub async fn list(Path(entity): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let rows = store()
         .list(e)
         .await
-        .map_err(|err| FlowError::business(format!("查询失败: {err}")))?;
+        .map_err(|err| FlowError::business_error(format!("查询失败: {err}")))?;
     Ok(Json(ApiResp::ok(json!({ "items": rows }))))
 }
 
@@ -55,7 +55,7 @@ pub async fn upsert(
     Json(body): Json<Value>,
 ) -> Result<Json<ApiResp<Value>>> {
     if !identity_is_local() {
-        return Err(FlowError::business(
+        return Err(FlowError::business_error(
             "当前为外接身份模式（external），内建身份只读；如需内建请设 FLOW_IDENTITY_MODE=local",
         ));
     }
@@ -63,20 +63,20 @@ pub async fn upsert(
     let id = store()
         .upsert(e, &body)
         .await
-        .map_err(|err| FlowError::business(format!("保存失败: {err}")))?;
+        .map_err(|err| FlowError::business_error(format!("保存失败: {err}")))?;
     Ok(Json(ApiResp::ok(json!({ "id": id }))))
 }
 
 /// DELETE /identity/{entity}/{id} —— 软删除。
 pub async fn delete(Path((entity, id)): Path<(String, String)>) -> Result<Json<ApiResp<Value>>> {
     if !identity_is_local() {
-        return Err(FlowError::business("当前为外接身份模式（external），内建身份只读"));
+        return Err(FlowError::business_error("当前为外接身份模式（external），内建身份只读"));
     }
     let e = parse_entity(&entity)?;
     store()
         .delete(e, &id)
         .await
-        .map_err(|err| FlowError::business(format!("删除失败: {err}")))?;
+        .map_err(|err| FlowError::business_error(format!("删除失败: {err}")))?;
     Ok(Json(ApiResp::ok(json!({ "deleted": id }))))
 }
 
@@ -86,7 +86,7 @@ pub async fn set_user_roles(
     Json(body): Json<Value>,
 ) -> Result<Json<ApiResp<Value>>> {
     if !identity_is_local() {
-        return Err(FlowError::business("当前为外接身份模式（external），内建身份只读"));
+        return Err(FlowError::business_error("当前为外接身份模式（external），内建身份只读"));
     }
     let role_ids: Vec<String> = body
         .get("roleIds")
@@ -100,6 +100,6 @@ pub async fn set_user_roles(
     store()
         .set_user_roles(&user_id, &role_ids)
         .await
-        .map_err(|err| FlowError::business(format!("设置角色失败: {err}")))?;
+        .map_err(|err| FlowError::business_error(format!("设置角色失败: {err}")))?;
     Ok(Json(ApiResp::ok(json!({ "userId": user_id, "roleCount": role_ids.len() }))))
 }

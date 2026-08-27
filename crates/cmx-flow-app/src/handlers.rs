@@ -136,13 +136,13 @@ async fn emit_reassigned(rt: &FlowRuntime, instance_id: &str, task_id: &str, to_
 // ————————————————————— 错误桥 —————————————————————
 
 fn engine_err(e: cmx_flow_engine::Error) -> FlowError {
-    FlowError::business(e.to_string())
+    FlowError::business_error(e.to_string())
 }
 fn def_err(e: cmx_flow_def::DefError) -> FlowError {
-    FlowError::business(e.to_string())
+    FlowError::business_error(e.to_string())
 }
 fn msg_err(msg: String) -> FlowError {
-    FlowError::business(msg)
+    FlowError::business_error(msg)
 }
 
 /// 载入实例并返回视图信封（多个 handler 共用）。
@@ -852,7 +852,7 @@ pub async fn cancel_instance(
         let initiator = instance_initiator(&rt, &id).await?;
         match initiator {
             Some(init) if init != user => {
-                return Err(FlowError::business(format!(
+                return Err(FlowError::business_error(format!(
                     "无权取消该实例（非发起人）"
                 )));
             }
@@ -897,13 +897,13 @@ pub async fn withdraw_instance(
             if let Some(init) = initiator
                 && init != user
             {
-                return Err(FlowError::business("无权取回该实例（非发起人）"));
+                return Err(FlowError::business_error("无权取回该实例（非发起人）"));
             }
             user
         }
         None => {
             if crate::auth::auth_middleware_active() {
-                return Err(FlowError::business(
+                return Err(FlowError::business_error(
                     "缺少用户身份，不能取回实例（需登录态或有效委托令牌）",
                 ));
             }
@@ -1040,7 +1040,7 @@ pub struct IdentityResolveReq {
 pub async fn resolve_identity(Json(req): Json<IdentityResolveReq>) -> Result<Json<Value>> {
     let _rt = flow().await?;
     let kind: CandidateKind = serde_json::from_value(json!(req.kind))
-        .map_err(|_| FlowError::business(format!("未知候选类型: {}", req.kind)))?;
+        .map_err(|_| FlowError::business_error(format!("未知候选类型: {}", req.kind)))?;
     let candidate = CandidateRef {
         kind,
         value: req.value.clone(),
@@ -1278,14 +1278,14 @@ pub async fn complete_task(
                     == Some(user.as_str())
                 || crate::biz_link::task_has_candidate(&rt, &task_id, &user).await;
             if !allowed {
-                return Err(FlowError::business(
+                return Err(FlowError::business_error(
                     "无权办理该任务：既非办理人也非候选",
                 ));
             }
         }
         None => {
             if crate::auth::auth_middleware_active() {
-                return Err(FlowError::business(
+                return Err(FlowError::business_error(
                     "缺少用户身份，不能办理任务（需登录态或有效委托令牌）",
                 ));
             }
@@ -2258,7 +2258,7 @@ pub async fn acquire_external_worker_jobs(
 ) -> Result<Json<ApiResp<Value>>> {
     let topic = match req.topic.as_deref().filter(|s| !s.is_empty()) {
         Some(t) => t.to_string(),
-        None => return Err(FlowError::business("external-worker 拉取必须指定 topic")),
+        None => return Err(FlowError::business_error("external-worker 拉取必须指定 topic")),
     };
     let rt = flow().await?;
     let jobs = rt
@@ -2417,7 +2417,7 @@ pub async fn get_instance_activities(
         .store()
         .list_activities_by_instance(&instance_id)
         .await
-        .map_err(|e| FlowError::business(format!("查询活动历史失败: {e}")))?;
+        .map_err(|e| FlowError::business_error(format!("查询活动历史失败: {e}")))?;
     let items: Vec<Value> = acts
         .iter()
         .map(|a| {
@@ -2564,7 +2564,7 @@ pub async fn list_dimension_entries(
             .dimension_specs
             .iter()
             .find(|d| d.dim_key == dim_key)
-            .ok_or_else(|| FlowError::business(format!("未注册的路由维度: {dim_key}")))?;
+            .ok_or_else(|| FlowError::business_error(format!("未注册的路由维度: {dim_key}")))?;
         rt.binding_store
             .list_dim_entries(&reg.spec, &reg.name_col, reg.parent_col.as_deref())
             .await
