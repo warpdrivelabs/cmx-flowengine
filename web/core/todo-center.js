@@ -336,7 +336,7 @@ function propertyHtml () {
   }).join('') || '<div class="todo-hint">（轨迹以令牌位置为准）</div>'
   const commentRows = state.comments.length
     ? state.comments.map((c) => `<div class="todo-cmt">
-        <div class="todo-cmt-head"><b>${esc(c.userId || '—')}</b>
+        <div class="todo-cmt-head"><b>${esc(displayUserName(c))}</b>
           <span class="todo-cmt-dec ${c.decision === 'reject' ? 'rej' : 'ok'}">${esc(commentDecisionText(c))}</span>
           <em>${esc(fmtTime(c.createdAt))}</em></div>
         <div class="todo-cmt-body">${esc(commentBodyText(c))}</div></div>`).join('')
@@ -347,6 +347,12 @@ function propertyHtml () {
       <div class="todo-sec">流程轨迹</div>${trailRows}
       <div class="todo-sec">审批意见</div>${commentRows}
     </div></section>`
+}
+
+// 办理人显示名：优先服务端姓名快照（nickName 昵称优先 / userName username 口径，
+// 20260827 起随意见落库），存量行无快照回退 userId。
+function displayUserName (c) {
+  return c.nickName || c.userName || c.userId || '—'
 }
 
 function isCreationComment (c) {

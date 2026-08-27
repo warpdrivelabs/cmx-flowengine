@@ -285,11 +285,17 @@ function contentHtml (st) {
   </section>`
 }
 
+// 办理人显示名：优先服务端姓名快照（nickName 昵称优先 / userName username 口径，
+// 20260827 起随意见落库），存量行无快照回退 userId。
+function displayUserName (c) {
+  return c.nickName || c.userName || c.userId || '—'
+}
+
 // 历程含制单节点留痕；decision/comment 为空时补业务动作，避免渲染成空卡片。
 function commentHistoryHtml (st) {
   return st.comments.length
     ? st.comments.map((c) => `<div class="tf-cmt">
-        <div class="tf-cmt-head"><b>${esc(c.userId || '—')}</b>
+        <div class="tf-cmt-head"><b>${esc(displayUserName(c))}</b>
           <span class="tf-dec ${c.decision === 'reject' ? 'rej' : 'ok'}">${esc(commentDecisionText(c))}</span>
           <em>${esc(fmtTime(c.createdAt))}</em></div>
         <div class="tf-cmt-body">${esc(commentBodyText(c))}</div></div>`).join('')
