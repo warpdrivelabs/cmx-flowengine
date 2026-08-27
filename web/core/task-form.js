@@ -260,13 +260,7 @@ function contentHtml (st) {
     .join('') || '<div class="tf-hint">无业务变量</div>'
   const bizRef = p.bizTable ? `<div class="tf-bizref"><ui5-icon name="document"></ui5-icon> ${esc(p.bizTable)} / ${esc(p.bizId)}</div>` : ''
 
-  const history = st.comments.length
-    ? st.comments.map((c) => `<div class="tf-cmt">
-        <div class="tf-cmt-head"><b>${esc(c.userId || '—')}</b>
-          <span class="tf-dec ${c.decision === 'reject' ? 'rej' : 'ok'}">${esc(c.decision || '')}</span>
-          <em>${esc(fmtTime(c.createdAt))}</em></div>
-        <div class="tf-cmt-body">${esc(c.comment || '')}</div></div>`).join('')
-    : '<div class="tf-hint">暂无审批意见</div>'
+  const history = commentHistoryHtml(st)
 
   const approveArea = approveAreaHtml(p, noComment)
 
@@ -289,6 +283,35 @@ function contentHtml (st) {
     </div>
     <div class="tf-toast"></div>
   </section>`
+}
+
+// 历程含制单节点留痕；decision/comment 为空时补业务动作，避免渲染成空卡片。
+function commentHistoryHtml (st) {
+  return st.comments.length
+    ? st.comments.map((c) => `<div class="tf-cmt">
+        <div class="tf-cmt-head"><b>${esc(c.userId || '—')}</b>
+          <span class="tf-dec ${c.decision === 'reject' ? 'rej' : 'ok'}">${esc(commentDecisionText(c))}</span>
+          <em>${esc(fmtTime(c.createdAt))}</em></div>
+        <div class="tf-cmt-body">${esc(commentBodyText(c))}</div></div>`).join('')
+    : '<div class="tf-hint">暂无审批意见</div>'
+}
+
+function isCreationComment (c) {
+  return String(c.nodeBpmnId || '').trim().toLowerCase() === 'apply'
+}
+
+function commentDecisionText (c) {
+  const decision = String(c.decision || '').trim()
+  if (decision) {
+    return ({ approve: '同意', reject: '驳回', return: '退回' })[decision.toLowerCase()] || decision
+  }
+  return isCreationComment(c) ? '制单' : '办理'
+}
+
+function commentBodyText (c) {
+  const comment = String(c.comment || '').trim()
+  if (comment) return comment
+  return isCreationComment(c) ? '制单提交' : '（未填写意见）'
 }
 
 // 审批动作区（同意/驳回/退回上一步/退回到…），content 与 property 两处共用——改一处即可，防漂移。
@@ -324,13 +347,7 @@ function trailHtml (st) {
     const done = (inst?.tasks || []).some((x) => x.nodeBpmnId === n.id && x.completed)
     return `<div class="tf-trail ${on ? 'cur' : (done ? 'done' : '')}"><span class="tf-dot"></span><b>${esc(n.name || n.id)}</b><em>${on ? '当前' : (done ? '已过' : '')}</em></div>`
   }).join('') || '<div class="tf-hint">（轨迹以令牌位置为准）</div>'
-  const history = st.comments.length
-    ? st.comments.map((c) => `<div class="tf-cmt">
-        <div class="tf-cmt-head"><b>${esc(c.userId || '—')}</b>
-          <span class="tf-dec ${c.decision === 'reject' ? 'rej' : 'ok'}">${esc(c.decision || '')}</span>
-          <em>${esc(fmtTime(c.createdAt))}</em></div>
-        <div class="tf-cmt-body">${esc(c.comment || '')}</div></div>`).join('')
-    : '<div class="tf-hint">暂无审批意见</div>'
+  const history = commentHistoryHtml(st)
   const approveArea = approveAreaHtml(p, noComment)
   return `<section class="tf">
     <div class="tf-prop-head"><b>${esc(inst?.businessKey || p.instanceId || '')}</b><small>${esc(p.formKey || '')} · ${esc(modeLabel(p.formMode))}</small></div>
@@ -478,9 +495,9 @@ function styleCss () {
   .tf-kv span{display:block;font-size:11px;color:var(--muted)} .tf-kv b{font-size:13px}
   .tf-history{max-height:220px;overflow:auto;margin-bottom:12px}
   .tf-cmt{border:1px solid var(--line-soft);border-radius:8px;padding:8px 10px;margin-bottom:7px;background:#fafbfc}
-  .tf-cmt-head{display:flex;align-items:center;gap:7px;font-size:12px} .tf-cmt-head b{color:var(--ink)}
-  .tf-dec{font-size:10px;font-weight:700;padding:1px 6px;border-radius:5px} .tf-dec.ok{color:var(--ok);background:#eaffef;border:1px solid #ace0b9} .tf-dec.rej{color:var(--red);background:#ffebe9;border:1px solid #ff8182}
-  .tf-cmt-head em{margin-left:auto;font-style:normal;font-size:11px;color:var(--muted)}
+  .tf-cmt-head{display:flex;flex-wrap:wrap;align-items:center;gap:5px 7px;font-size:12px} .tf-cmt-head b{flex:1 1 100%;min-width:0;overflow-wrap:anywhere;color:var(--ink)}
+  .tf-dec{flex:0 0 auto;font-size:10px;font-weight:700;padding:1px 6px;border-radius:5px;white-space:nowrap} .tf-dec.ok{color:var(--ok);background:#eaffef;border:1px solid #ace0b9} .tf-dec.rej{color:var(--red);background:#ffebe9;border:1px solid #ff8182}
+  .tf-cmt-head em{margin-left:auto;flex:0 0 auto;font-style:normal;font-size:11px;color:var(--muted);white-space:nowrap}
   .tf-cmt-body{font-size:12.5px;margin-top:4px}
   .tf-label{display:block;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:5px}
   .tf-comment{width:100%;min-height:70px;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;resize:vertical}
