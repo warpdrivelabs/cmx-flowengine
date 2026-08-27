@@ -337,9 +337,9 @@ function propertyHtml () {
   const commentRows = state.comments.length
     ? state.comments.map((c) => `<div class="todo-cmt">
         <div class="todo-cmt-head"><b>${esc(c.userId || '—')}</b>
-          <span class="todo-cmt-dec ${c.decision === 'reject' ? 'rej' : 'ok'}">${esc(c.decision || '')}</span>
+          <span class="todo-cmt-dec ${c.decision === 'reject' ? 'rej' : 'ok'}">${esc(commentDecisionText(c))}</span>
           <em>${esc(fmtTime(c.createdAt))}</em></div>
-        <div class="todo-cmt-body">${esc(c.comment || '')}</div></div>`).join('')
+        <div class="todo-cmt-body">${esc(commentBodyText(c))}</div></div>`).join('')
     : '<div class="todo-hint">暂无审批意见</div>'
   return `<section class="todo todo-prop">
     <div class="todo-prop-head"><b>${esc(t.businessKey || t.instanceId)}</b><small>${esc(t.nodeName || '')}</small></div>
@@ -347,6 +347,24 @@ function propertyHtml () {
       <div class="todo-sec">流程轨迹</div>${trailRows}
       <div class="todo-sec">审批意见</div>${commentRows}
     </div></section>`
+}
+
+function isCreationComment (c) {
+  return String(c.nodeBpmnId || '').trim().toLowerCase() === 'apply'
+}
+
+function commentDecisionText (c) {
+  const decision = String(c.decision || '').trim()
+  if (decision) {
+    return ({ approve: '同意', reject: '驳回', return: '退回' })[decision.toLowerCase()] || decision
+  }
+  return isCreationComment(c) ? '制单' : '办理'
+}
+
+function commentBodyText (c) {
+  const comment = String(c.comment || '').trim()
+  if (comment) return comment
+  return isCreationComment(c) ? '制单提交' : '（未填写意见）'
 }
 
 // ————————————————————— 事件绑定 —————————————————————
@@ -945,9 +963,9 @@ function styleCss () {
   .todo-trail-row.cur{color:var(--brand);font-weight:700} .todo-trail-row.done{color:var(--ok)}
   .todo-trail-dot{width:9px;height:9px;border-radius:50%;background:currentColor;flex:0 0 auto;box-shadow:0 0 0 3px color-mix(in srgb,currentColor 20%,transparent)} .todo-trail-row em{margin-left:auto;font-style:normal;font-size:10.5px;font-weight:600}
   .todo-cmt{border:1px solid var(--line-soft);border-radius:10px;padding:9px 11px;margin-bottom:8px;background:color-mix(in srgb,var(--ink) 2.5%,var(--tile))}
-  .todo-cmt-head{display:flex;align-items:center;gap:7px;font-size:12px} .todo-cmt-head b{color:var(--ink);font-weight:700}
-  .todo-cmt-dec{font-size:10px;font-weight:700;padding:1px 7px;border-radius:6px} .todo-cmt-dec.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,var(--tile));border:1px solid color-mix(in srgb,var(--ok) 40%,transparent)} .todo-cmt-dec.rej{color:var(--red);background:color-mix(in srgb,var(--red) 14%,var(--tile));border:1px solid color-mix(in srgb,var(--red) 40%,transparent)}
-  .todo-cmt-head em{margin-left:auto;font-style:normal;font-size:10.5px;color:var(--muted)}
+  .todo-cmt-head{display:flex;flex-wrap:wrap;align-items:center;gap:5px 7px;font-size:12px} .todo-cmt-head b{flex:1 1 100%;min-width:0;overflow-wrap:anywhere;color:var(--ink);font-weight:700}
+  .todo-cmt-dec{flex:0 0 auto;font-size:10px;font-weight:700;padding:1px 7px;border-radius:6px;white-space:nowrap} .todo-cmt-dec.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,var(--tile));border:1px solid color-mix(in srgb,var(--ok) 40%,transparent)} .todo-cmt-dec.rej{color:var(--red);background:color-mix(in srgb,var(--red) 14%,var(--tile));border:1px solid color-mix(in srgb,var(--red) 40%,transparent)}
+  .todo-cmt-head em{margin-left:auto;flex:0 0 auto;font-style:normal;font-size:10.5px;color:var(--muted);white-space:nowrap}
   .todo-cmt-body{font-size:12.5px;margin-top:5px;color:var(--ink)}
   .todo-hint{font-size:12px;color:var(--muted);padding:8px 0}
 
