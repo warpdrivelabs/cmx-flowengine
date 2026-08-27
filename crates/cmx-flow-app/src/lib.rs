@@ -23,6 +23,7 @@ pub mod handlers;
 pub mod identity;
 pub mod observe;
 pub mod openapi;
+pub mod publish_gate;
 pub mod resp;
 pub mod simulate;
 pub mod sse;

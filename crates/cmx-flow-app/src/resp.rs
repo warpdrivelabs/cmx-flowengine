@@ -7,7 +7,8 @@
 //! - `ApiResp<T>`：`{code,msg,data}` camelCase，`data` 为 None 时不序列化——与
 //!   cmx-api-types::ApiResp 序列化结果逐字节一致（省略 pagination 字段，本模块 handler 从不用它）。
 //! - `FlowError`：对齐 cmx-api-types::Error 的 IntoResponse——BusinessError → HTTP 200 +
-//!   `{code:1,msg}`；NotFound → 404；其余 → 500。本 crate 的 handler 只产 business/not_found 两类。
+//!   `{code:1,msg}`；NotFound → 404；其余 → 500。平台三类之外自持扩展 BadRequest
+//!   （→ 400 code=2，强校验 D1/D2：结构必填缺失 / 发布闸拒绝）。
 //! - `Result<T> = core::result::Result<T, FlowError>`。
 //!
 //! 这样 `Ok(Json(ApiResp::ok(x)))` 与 `Err(FlowError::business(m))` 在两壳（平台 cmx-flow-api /
@@ -48,6 +49,10 @@ impl<T> ApiResp<T> {
 pub enum FlowError {
     /// 业务错误（HTTP 200 + code=1）——对齐 cmx-api-types 的 BusinessError。
     Business(String),
+    /// 参数错误（HTTP 400 + code=2）：请求结构性缺失必填项（如缺 definitionKey、
+    /// 发布闸拒绝）。语义分界：缺 required = BadRequest，业务规则不满足 = Business；
+    /// 页面投递 PageServeError::BadRequest 仍按历史字节归 Business 不动。
+    BadRequest(String),
     /// 资源不存在（HTTP 404 + code=4）。
     NotFound(String),
     /// 兜底内部错误（HTTP 500 + code=5）。
@@ -59,14 +64,20 @@ impl FlowError {
     pub fn business(msg: impl Into<String>) -> Self {
         Self::Business(msg.into())
     }
+    /// 参数错误（结构必填缺失 → HTTP 400；强校验改造 D1/D2 引入）。
+    pub fn bad_request(msg: impl Into<String>) -> Self {
+        Self::BadRequest(msg.into())
+    }
     pub fn not_found(msg: impl Into<String>) -> Self {
         Self::NotFound(msg.into())
     }
 
     fn code(&self) -> u16 {
         match self {
-            // 对齐 cmx-api-types::ErrCode：BusinessError=1 / NotFound=4 / InternalError=5。
+            // 对齐 cmx-api-types::ErrCode：BusinessError=1 / NotFound=4 / InternalError=5；
+            // BadRequest=2 为本 crate 自持扩展档位。
             Self::Business(_) => 1,
+            Self::BadRequest(_) => 2,
             Self::NotFound(_) => 4,
             Self::Internal(_) => 5,
         }
@@ -75,13 +86,14 @@ impl FlowError {
         match self {
             // 对齐 cmx-api-types::Error::status_code：BusinessError → 200。
             Self::Business(_) => StatusCode::OK,
+            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
     fn message(&self) -> &str {
         match self {
-            Self::Business(m) | Self::NotFound(m) | Self::Internal(m) => m,
+            Self::Business(m) | Self::BadRequest(m) | Self::NotFound(m) | Self::Internal(m) => m,
         }
     }
 }

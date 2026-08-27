@@ -1019,3 +1019,47 @@ mod tests {
         assert!(compile(&flow_with_var_schema(json)).is_err(), "shape 违规应报错");
     }
 }
+
+#[cfg(test)]
+mod required_contract_tests {
+    use super::*;
+
+    /// 强校验 D3：mdm_cr_approval 式变量契约——required×4 + cmx:varValidation="strict"
+    /// （属性带 cmx 前缀，local_attr 取本地名应命中）。守护发布闸依赖的字段解析：
+    /// source START_PARAM / description / transparent 数组拼写一旦漂移即在此红。
+    #[test]
+    fn parses_required_contract_strict_like_mdm_definition() {
+        let json = r#"[
+          {"name":"initiator","type":"STRING","required":true,"source":"START_PARAM",
+           "description":"发起人 id"},
+          {"name":"docNo","type":"STRING","required":true,"description":"CR 业务单号"},
+          {"name":"bizTable","type":"STRING","required":true},
+          {"name":"bizId","type":"STRING","required":true}
+        ]"#;
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:flowable="http://flowable.org/bpmn"
+             xmlns:cmx="http://cmx/flow">
+  <process id="vs" name="契约样例" isExecutable="true" cmx:varValidation="strict">
+    <extensionElements><cmx:varSchema>{json}</cmx:varSchema></extensionElements>
+    <startEvent id="start"/>
+    <sequenceFlow id="s0" sourceRef="start" targetRef="t"/>
+    <userTask id="t" name="办理" flowable:assignee="u"/>
+    <sequenceFlow id="s1" sourceRef="t" targetRef="done"/>
+    <endEvent id="done"/>
+  </process>
+</definitions>"#
+        );
+        let def = compile(&xml).expect("mdm 式契约应编译");
+        assert_eq!(def.var_validation.as_deref(), Some("strict"));
+        let schema = def.var_schema.expect("应有 var_schema");
+        assert_eq!(schema.decls.len(), 4);
+        assert!(schema.decls.iter().all(|d| d.required), "四变量全 required");
+        assert_eq!(
+            schema.decls[0].source,
+            cmx_flow_model::VarSource::StartParam
+        );
+        assert_eq!(schema.decls[0].description.as_deref(), Some("发起人 id"));
+    }
+}

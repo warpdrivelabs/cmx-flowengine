@@ -505,12 +505,40 @@ async fn hot_load_version(rt: &FlowRuntime, key: &str, version: i32) -> bool {
     }
 }
 
+/// 强校验 D2：对一段 BPMN XML 过发布闸（compile → required×策略检查）。
+/// publish / activate 两入口共用；开关关闭时零影响直接放行。
+fn ensure_publishable_xml(xml: &str) -> Result<()> {
+    if !crate::publish_gate::gate_enabled() {
+        return Ok(());
+    }
+    let def = cmx_flow_bpmn::compile(xml)
+        .map_err(|e| FlowError::bad_request(format!("BPMN 编译失败: {e}")))?;
+    crate::publish_gate::check_required_needs_strict(
+        def.var_schema.as_ref(),
+        def.var_validation.as_deref(),
+    )
+    .map_err(FlowError::bad_request)
+}
+
 /// 设计器：发布（草稿 → 版本 +1）。**H1：发布即热装载到运行引擎，无需重启。**
 pub async fn publish_definition(
     Path(key): Path<String>,
     Json(req): Json<PublishReq>,
 ) -> Result<Json<ApiResp<Value>>> {
     let rt = flow().await?;
+    // 强校验 D2 发布闸：required×非 strict 拒绝发布（文案带出路）；在落库之前拦截，
+    // 历史 lenient+required 版本不回溯、重新发布时受闸。
+    {
+        let xml = rt
+            .def_svc
+            .get(&key)
+            .await
+            .map_err(def_err)?
+            .and_then(|r| r.draft_xml)
+            .ok_or_else(|| FlowError::bad_request(format!("无可发布的草稿: {key}")))?;
+        ensure_publishable_xml(&xml)?;
+    }
+
     let version = rt
         .def_svc
         .publish(&key, req.note, req.published_by)
@@ -558,6 +586,17 @@ pub async fn activate_definition_version(
     Path((key, version)): Path<(String, i32)>,
 ) -> Result<Json<ApiResp<Value>>> {
     let rt = flow().await?;
+    // 强校验 D2：activate 与 publish 同闸——直热装载历史版本不经 publish 校验，
+    // 必须在此过闸否则历史 lenient+required 版本可经版本管理回切绕过。
+    let ver_xml = rt
+        .def_svc
+        .get_version(&key, version)
+        .await
+        .map_err(def_err)?
+        .ok_or_else(|| FlowError::not_found(format!("版本不存在: {key}@{version}")))?
+        .bpmn_xml;
+    ensure_publishable_xml(&ver_xml)?;
+
     rt.def_svc
         .activate_version(&key, version)
         .await
@@ -660,11 +699,18 @@ impl StartReq {
 pub async fn start_instance(
     Json(req): Json<StartReq>,
 ) -> Result<Json<ApiResp<Value>>> {
-    let rt = flow().await?;
+    // 强校验 D1：definitionKey 结构必传——trim 判空一并拦截，不再静默回落 demo 流程
+    // credit_approval；拒绝语义为 BadRequest → HTTP 400。放运行时初始化（flow()）
+    // 之前，DB 不可达也不影响结构校验先行。
     let def_key = req
         .definition_key
         .clone()
-        .unwrap_or_else(|| "credit_approval".to_string());
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| {
+            FlowError::bad_request("缺少 definitionKey（不再回落 demo 流程 credit_approval）")
+        })?;
+    let rt = flow().await?;
 
     let mut vars = req.resolve_variables();
     // T0：initiator 缺失时从认证上下文兜底注入——「我发起的」过滤、撤销/取回护栏均按

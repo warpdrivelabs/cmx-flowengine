@@ -58,3 +58,7 @@ utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 # [unused] frontend_pages 已收编至 cmx-form::serve（rev 计算在 cmx-form 内）
 # xxhash-rust = { workspace = true }
+
+# 测试：oneshot 挂 flow_routes 断言 D1 结构校验的 HTTP 语义（不引 reqwest 不起服务器）
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
