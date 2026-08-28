@@ -298,7 +298,11 @@ function todoCard (t) {
 
 function fmtTime (iso) {
   if (!iso) return ''
-  return String(iso).replace('T', ' ').slice(0, 16)
+  // 后端时间统一为 RFC3339 UTC；展示层转浏览器本地时区，避免把 05:56Z 直接当本地 05:56。
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return String(iso).replace('T', ' ').slice(0, 16)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 // 多实例子任务的元素（②）→ 卡片上的紧凑标签：对象取代表字段(name/title/sku/label/code/id)，
@@ -316,36 +320,18 @@ function elementLabel (v) {
   return String(v)
 }
 
-// ————————————————————— property 区（轨迹 + 意见） —————————————————————
+// ————————————————————— property 区（统一流转时间线） —————————————————————
 
 function propertyHtml () {
   const t = state.selected
   if (!t) {
-    return `<section class="todo todo-prop"><div class="todo-prop-head"><b>流程轨迹</b><small>未选中</small></div>
-      <div class="todo-empty"><ui5-icon name="detail-view"></ui5-icon><span>点击一条待办<br>查看流程轨迹与意见</span></div></section>`
+    return `<section class="todo todo-prop"><div class="todo-prop-head"><b>流转记录</b><small>未选中</small></div>
+      <div class="todo-empty"><ui5-icon name="detail-view"></ui5-icon><span>点击一条待办<br>查看流转记录</span></div></section>`
   }
-  const tokens = state.trail?.tokens || []
-  const tasks = state.trail?.tasks || []
-  const cur = new Set(tokens.map((k) => k.nodeBpmnId))
-  const trailRows = (state.trail?.nodes || []).map((n) => {
-    const on = cur.has(n.id)
-    const done = tasks.some((x) => x.nodeBpmnId === n.id && x.completed)
-    return `<div class="todo-trail-row ${on ? 'cur' : (done ? 'done' : '')}">
-      <span class="todo-trail-dot"></span><b>${esc(n.name || n.id)}</b>
-      <em>${on ? '当前' : (done ? '已过' : '')}</em></div>`
-  }).join('') || '<div class="todo-hint">（轨迹以令牌位置为准）</div>'
-  const commentRows = state.comments.length
-    ? state.comments.map((c) => `<div class="todo-cmt">
-        <div class="todo-cmt-head"><b>${esc(displayUserName(c))}</b>
-          <span class="todo-cmt-dec ${c.decision === 'reject' ? 'rej' : 'ok'}">${esc(commentDecisionText(c))}</span>
-          <em>${esc(fmtTime(c.createdAt))}</em></div>
-        <div class="todo-cmt-body">${esc(commentBodyText(c))}</div></div>`).join('')
-    : '<div class="todo-hint">暂无审批意见</div>'
   return `<section class="todo todo-prop">
     <div class="todo-prop-head"><b>${esc(t.businessKey || t.instanceId)}</b><small>${esc(t.nodeName || '')}</small></div>
     <div class="todo-prop-body">
-      <div class="todo-sec">流程轨迹</div>${trailRows}
-      <div class="todo-sec">审批意见</div>${commentRows}
+      <div class="todo-sec">流转记录</div>${flowTimelineHtml()}
     </div></section>`
 }
 
@@ -355,8 +341,63 @@ function displayUserName (c) {
   return c.nickName || c.userName || c.userId || '—'
 }
 
+// UI5 Wizard 是“可交互向导 + 内容滚动区”，不适合右侧栏的只读流程历史；
+// 这里用 AntD Steps 的竖向语义重排：步骤只表达节点进度，意见作为步骤描述展示。
+function flowTimelineHtml () {
+  const nodes = state.trail?.nodes || []
+  const tokens = state.trail?.tokens || []
+  const tasks = state.trail?.tasks || []
+  const currentIds = new Set(tokens.map((k) => k.nodeBpmnId))
+  const nodeIds = new Set(nodes.map((n) => String(n.id || '')))
+  const rows = nodes.map((n, idx) => {
+    const id = String(n.id || '')
+    const isCurrent = currentIds.has(id)
+    const isDone = tasks.some((x) => x.nodeBpmnId === id && x.completed)
+    const status = isCurrent ? 'current' : (isDone ? 'done' : 'pending')
+    const statusText = isCurrent ? '当前' : (isDone ? '已完成' : '待处理')
+    const comments = state.comments.filter((c) => String(c.nodeBpmnId || '') === id)
+    return `<li class="todo-flow-node ${status}"${isCurrent ? ' aria-current="step"' : ''}>
+      <div class="todo-flow-rail"><span class="todo-flow-step">${flowStepIndicatorHtml(status, idx)}</span></div>
+      <div class="todo-flow-content">
+        <div class="todo-flow-title"><b>${esc(n.name || n.id)}</b><span class="todo-flow-state">${statusText}</span></div>
+        ${comments.length ? `<div class="todo-flow-comments">${comments.map(commentCardHtml).join('')}</div>` : ''}
+      </div>
+    </li>`
+  }).join('')
+  const otherComments = state.comments.filter((c) => {
+    const id = String(c.nodeBpmnId || '')
+    return !id || !nodeIds.has(id)
+  })
+  // unmatched 记录直接追加到时间线末尾：保留数据，不额外造一个类似节点名的分组标题。
+  const otherRows = otherComments.map((c) => `<li class="todo-flow-node other">
+    <div class="todo-flow-rail"><span class="todo-flow-step record"></span></div>
+    <div class="todo-flow-content">${commentCardHtml(c)}</div>
+  </li>`).join('')
+  return rows || otherRows
+    ? `<ol class="todo-flow">${rows}${otherRows}</ol>`
+    : '<div class="todo-hint">暂无流转记录</div>'
+}
+
+function flowStepIndicatorHtml (status, idx) {
+  if (status === 'done') return '<ui5-icon name="accept"></ui5-icon>'
+  return String(idx + 1)
+}
+
+function commentCardHtml (c) {
+  return `<div class="todo-cmt">
+    <div class="todo-cmt-head"><b>${esc(displayUserName(c))}</b>
+      <span class="todo-cmt-dec ${commentDecisionClass(c)}">${esc(commentDecisionText(c))}</span>
+      <em>${esc(fmtTime(c.createdAt))}</em></div>
+    <div class="todo-cmt-body">${esc(commentBodyText(c))}</div></div>`
+}
+
 function isCreationComment (c) {
   return String(c.nodeBpmnId || '').trim().toLowerCase() === 'apply'
+}
+
+function commentDecisionClass (c) {
+  const decision = String(c.decision || '').trim().toLowerCase()
+  return decision === 'reject' ? 'rej' : (decision === 'return' ? 'warn' : 'ok')
 }
 
 function commentDecisionText (c) {
@@ -959,20 +1000,38 @@ function styleCss () {
   .todo-empty{display:flex;flex-direction:column;align-items:center;gap:10px;color:var(--muted);font-size:12.5px;padding:56px 16px;text-align:center}
   .todo-empty ui5-icon{width:2rem;height:2rem;color:color-mix(in srgb,var(--muted) 60%,transparent)}
 
-  /* property 轨迹 + 意见 */
+  /* property：AntD Steps 语义的竖向只读步骤条 */
   .todo-prop-head{height:48px;flex:0 0 auto;display:flex;flex-direction:column;justify-content:center;padding:0 15px;border-bottom:1px solid var(--line-soft);background:var(--header)}
   .todo-prop-head b{font-size:14px;font-weight:700} .todo-prop-head small{display:block;font-size:10.5px;color:var(--muted);margin-top:1px}
   .todo-prop-body{padding:14px 15px;overflow:auto}
   .todo-sec{font-size:11px;font-weight:800;color:var(--brand);letter-spacing:.04em;text-transform:uppercase;margin:16px 0 9px;padding-bottom:6px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:6px}
   .todo-sec:first-child{margin-top:0}
-  .todo-trail-row{display:flex;align-items:center;gap:9px;padding:6px 0;font-size:12.5px;color:var(--muted)}
-  .todo-trail-row.cur{color:var(--brand);font-weight:700} .todo-trail-row.done{color:var(--ok)}
-  .todo-trail-dot{width:9px;height:9px;border-radius:50%;background:currentColor;flex:0 0 auto;box-shadow:0 0 0 3px color-mix(in srgb,currentColor 20%,transparent)} .todo-trail-row em{margin-left:auto;font-style:normal;font-size:10.5px;font-weight:600}
-  .todo-cmt{border:1px solid var(--line-soft);border-radius:10px;padding:9px 11px;margin-bottom:8px;background:color-mix(in srgb,var(--ink) 2.5%,var(--tile))}
-  .todo-cmt-head{display:flex;flex-wrap:wrap;align-items:center;gap:5px 7px;font-size:12px} .todo-cmt-head b{flex:1 1 100%;min-width:0;overflow-wrap:anywhere;color:var(--ink);font-weight:700}
-  .todo-cmt-dec{flex:0 0 auto;font-size:10px;font-weight:700;padding:1px 7px;border-radius:6px;white-space:nowrap} .todo-cmt-dec.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,var(--tile));border:1px solid color-mix(in srgb,var(--ok) 40%,transparent)} .todo-cmt-dec.rej{color:var(--red);background:color-mix(in srgb,var(--red) 14%,var(--tile));border:1px solid color-mix(in srgb,var(--red) 40%,transparent)}
-  .todo-cmt-head em{margin-left:auto;flex:0 0 auto;font-style:normal;font-size:10.5px;color:var(--muted);white-space:nowrap}
-  .todo-cmt-body{font-size:12.5px;margin-top:5px;color:var(--ink)}
+  .todo-flow{display:block;margin:0;padding:0 0 4px;list-style:none}
+  .todo-flow-node{display:grid;grid-template-columns:32px minmax(0,1fr);gap:0 12px;padding-bottom:16px}
+  .todo-flow-node:last-of-type{padding-bottom:0}
+  .todo-flow-rail{position:relative;display:flex;justify-content:center;z-index:1}
+  .todo-flow-step{width:28px;height:28px;display:grid;place-items:center;border-radius:50%;border:1px solid var(--line);background:var(--tile);color:var(--muted);font-size:11.5px;font-weight:700;flex:0 0 auto}
+  .todo-flow-step ui5-icon{width:.85rem;height:.85rem}
+  .todo-flow-node:not(:last-of-type) .todo-flow-rail::after{content:"";position:absolute;top:32px;bottom:0;width:2px;background:color-mix(in srgb,var(--ink) 32%,transparent);z-index:-1}
+  .todo-flow-node.done:not(:last-of-type) .todo-flow-rail::after{background:color-mix(in srgb,var(--ok) 58%,transparent)}
+  .todo-flow-node.done .todo-flow-step{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 48%,var(--line));background:var(--tile)}
+  .todo-flow-node.current .todo-flow-step{color:var(--sapButton_Emphasized_TextColor,var(--sapContent_ContrastTextColor,var(--sapBaseColor)));border-color:var(--brand);background:var(--brand)}
+  .todo-flow-node.pending .todo-flow-step{background:color-mix(in srgb,var(--ink) 3%,var(--tile))}
+  .todo-flow-node.other .todo-flow-step{width:10px;height:10px;margin:9px;border-style:dashed;background:transparent}
+  .todo-flow-content{min-width:0;padding-top:4px}
+  .todo-flow-title{display:flex;align-items:baseline;gap:8px;min-width:0}
+  .todo-flow-title b{flex:1 1 auto;min-width:0;font-size:13px;font-weight:600;color:var(--ink);overflow-wrap:anywhere}
+  .todo-flow-node.pending .todo-flow-title b{color:var(--muted)}
+  .todo-flow-node.current .todo-flow-title b{color:var(--brand);font-weight:700}
+  .todo-flow-state{flex:0 0 auto;font-size:10.5px;font-weight:600;color:var(--muted);white-space:nowrap}
+  .todo-flow-node.done .todo-flow-state{color:var(--ok)}
+  .todo-flow-node.current .todo-flow-state{color:var(--brand)}
+  .todo-flow-comments{display:flex;flex-direction:column;gap:7px;margin-top:8px}
+  .todo-cmt{border-radius:8px;padding:8px 10px;background:color-mix(in srgb,var(--ink) 3%,var(--tile));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ink) 7%,transparent)}
+  .todo-cmt-head{display:flex;align-items:center;gap:6px;font-size:11.5px;flex-wrap:wrap} .todo-cmt-head b{min-width:0;max-width:100%;overflow-wrap:anywhere;color:var(--ink);font-weight:650}
+  .todo-cmt-dec{flex:0 0 auto;font-size:10px;font-weight:700;padding:1px 6px;border-radius:999px;white-space:nowrap} .todo-cmt-dec.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent)} .todo-cmt-dec.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent)} .todo-cmt-dec.rej{color:var(--red);background:color-mix(in srgb,var(--red) 12%,transparent)}
+  .todo-cmt-head em{margin-left:auto;flex:0 0 auto;font-style:normal;font-size:10px;color:var(--muted);white-space:nowrap}
+  .todo-cmt-body{font-size:12px;line-height:1.45;margin-top:4px;color:var(--ink)}
   .todo-hint{font-size:12px;color:var(--muted);padding:8px 0}
 
   /* toast */
