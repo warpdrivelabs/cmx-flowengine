@@ -1,0 +1,38 @@
+# cmx-flow-server 本地联调配置（onto↔flow 跨服务真投递联调用）。
+# 用法：CONFIG_FILE=flow-server-local.toml cargo run -p cmx-flow-server
+# 指向与 onto 同一团队开发库 192.168.157.46/cmx_fico（flow_* 与 om_*/oo_* 前缀不冲突）。
+[server]
+host = "0.0.0.0"
+port = 8091
+log_dir = "logs"
+log_level = "info"
+graceful_timeout_secs = 10
+
+[[databases]]
+db_id = "fico-db"
+db_name = "流程引擎库"
+db_type = "postgres"
+db_url = "postgres://dbuser_dba:9lWsRQY4i4VToPpkHcCRFzki@192.168.157.46:5432/cmx_fico"
+default = true
+
+# 候选人/组织库：联调用简单流程不做候选人解析，复用同库即可（仅注册数据源，表未必被用）。
+[[databases]]
+db_id = "primary"
+db_name = "候选人/组织库"
+db_type = "postgres"
+db_url = "postgres://dbuser_dba:9lWsRQY4i4VToPpkHcCRFzki@192.168.157.46:5432/cmx_fico"
+default = false
+
+# 认证：保持与生产同款 jwt 模式 + 服务间 API Key（命中即免 JWT）。
+# onto dispatcher 以 ONTO_FLOW_API_KEY 注入同一 X-API-Key → 服务身份 tenant=default。
+[auth]
+mode = "jwt"
+jwt_alg = "HS256"
+jwt_secret = "a7k9m2p4x8q1w5e3r6t0y7u2i9o4p1"
+jwt_tenant_claim = "tenant"
+jwt_roles_claim = "roles"
+api_keys = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6:default"
+
+[assets]
+ui_native_dir = "../cmx-container/assets/flow/web/ui-native"
+ui_html_dir = "../cmx-container/assets/flow/web/ui-html"
