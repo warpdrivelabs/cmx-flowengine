@@ -68,6 +68,31 @@ async function apiJson (url, options = {}) {
   return j && typeof j === 'object' && 'data' in j ? j.data : j
 }
 
+function rememberUserSnapshots (users) {
+  try {
+    globalThis.__cmxFlowUsers = globalThis.__cmxFlowUsers || {}
+    for (const u of (users || [])) {
+      const id = String(u?.id || u?.userId || u?.user_id || '')
+      if (!id) continue
+      globalThis.__cmxFlowUsers[id] = {
+        nickName: u.nickName || u.nickname || '',
+        userName: u.userName || u.username || '',
+      }
+    }
+  } catch {}
+}
+
+async function loadUserSnapshots () {
+  try {
+    if (globalThis.__cmxFlowUsersLoaded) return
+    globalThis.__cmxFlowUsersLoaded = true
+    const rows = await apiJson('/api/iam/users/list', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pageSize: 200 }),
+    })
+    rememberUserSnapshots(Array.isArray(rows) ? rows : rows?.items || [])
+  } catch { /* 历史意见保留用户 ID */ }
+}
+
 function propsOf (ctx) {
   const p = (ctx && ctx.props) || (ctx && ctx.host && ctx.host.__props) || {}
   return {
@@ -77,12 +102,17 @@ function propsOf (ctx) {
     viewOnly: !!p.viewOnly,
     taskId: p.taskId || '',
     instanceId: p.instanceId || '',
+    businessKey: p.businessKey || '',
+    nodeBpmnId: p.nodeBpmnId || '',
+    nodeName: p.nodeName || '',
+    taskCreatedAt: p.taskCreatedAt || p.createdAt || '',
     bizTable: p.bizTable || '',
     bizId: p.bizId || '',
     domain: p.domain || '', application: p.application || '', module: p.module || '', file: p.file || '',
     apiPath: p.apiPath || '',
     // 发起态（mode:'start'）字段
     definitionKey: p.definitionKey || '', definitionName: p.definitionName || '', startFormKey: p.startFormKey || '',
+    consoleMode: p.consoleMode || 'platform',
     title: p.title || '任务表单',
   }
 }
@@ -96,13 +126,36 @@ const instances = {}
 function stOf (p) {
   const key = `${p.instanceId}@@${p.taskId}`
   if (!instances[key]) {
-    instances[key] = { props: p, inst: null, biz: null, comments: [], busy: false, hosts: new Set() }
+    instances[key] = {
+      props: p,
+      inst: null,
+      definition: null,
+      biz: null,
+      comments: [],
+      loading: false,
+      loadError: '',
+      busy: false,
+      busyAction: '',
+      submitted: false,
+      actionError: '',
+      draft: { comment: '' },
+      startDraft: {},
+      activeTab: 'handle',
+      menuOpen: false,
+      pendingAction: '',
+      returnTargets: null,
+      returnLoading: false,
+      returnError: '',
+      returnTarget: '',
+      returnTargetName: '',
+      hosts: new Set(),
+    }
   }
   instances[key].props = p
   return instances[key]
 }
 
-const fmtTime = (iso) => {
+function formatLocalDateTime (iso) {
   if (!iso) return ''
   // 后端时间统一为 RFC3339 UTC；展示层转浏览器本地时区，避免把 05:56Z 直接当本地 05:56。
   const d = new Date(iso)
@@ -110,6 +163,171 @@ const fmtTime = (iso) => {
   const p = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
+const fmtTime = formatLocalDateTime
+
+function displayActor (row) {
+  const id = String(row?.userId || row?.user_id || row?.assignee || '')
+  const cached = id ? globalThis.__cmxFlowUsers?.[id] : null
+  return row?.nickName || row?.userName || row?.nickname || row?.username || cached?.nickName || cached?.userName || row?.userId || row?.user_id || row?.assignee || '—'
+}
+
+const APPROVAL_ACTION_LABELS = {
+  approve: '同意',
+  reject: '驳回',
+  return: '退回',
+  submit: '制单',
+  complete: '办结',
+  transfer: '转签',
+  withdraw: '取回',
+  cancel: '撤销',
+}
+
+// 两个 native page 会分别加载一份模块；版本一致时复用先加载的纯视图模型，避免待办中心 / 办理页算法漂移。
+const APPROVAL_VIEW_MODEL_VERSION = '20260831-step-time-1'
+
+function normalizeApprovalAction (row, node) {
+  const raw = String(row?.decision ?? '').trim()
+  const key = raw.toLowerCase()
+  const id = String(node?.id || row?.nodeBpmnId || '').toLowerCase()
+  if (key && APPROVAL_ACTION_LABELS[key]) {
+    return { key, label: APPROVAL_ACTION_LABELS[key], tone: key === 'reject' ? 'rej' : (key === 'return' || key === 'withdraw' ? 'warn' : 'ok') }
+  }
+  if (key) return { key, label: raw, tone: 'ok' }
+  const isCreation = id === 'apply' || id === 'start' || String(node?.name || '').includes('发起')
+  return {
+    key: isCreation ? 'submit' : 'complete',
+    label: isCreation ? '制单' : '办理',
+    tone: isCreation ? 'ok' : 'ok',
+  }
+}
+
+function normalizeApprovalComment (row, node) {
+  const action = normalizeApprovalAction(row, node)
+  const text = String(row?.comment ?? '').trim()
+  return {
+    id: String(row?.id || row?.taskId || `${row?.nodeBpmnId || 'unknown'}-${row?.createdAt || row?.userId || Math.random()}`),
+    nodeId: String(row?.nodeBpmnId || ''),
+    taskId: String(row?.taskId || ''),
+    actor: displayActor(row),
+    action,
+    text: text || (action.key === 'submit' ? '制单提交' : '（未填写意见）'),
+    createdAt: row?.createdAt || '',
+    time: formatLocalDateTime(row?.createdAt),
+    raw: row,
+  }
+}
+
+function normalizeDefinition (definition) {
+  if (!definition || Array.isArray(definition)) return definition || null
+  return definition
+}
+
+function approvalGraphHasBranch (definition) {
+  const edges = Array.isArray(definition?.edges) ? definition.edges : []
+  const out = new Map()
+  for (const e of edges) {
+    const k = String(e?.from || '')
+    out.set(k, (out.get(k) || 0) + 1)
+  }
+  return Array.from(out.values()).some((n) => n > 1)
+}
+
+function buildApprovalSteps ({ instance, definition, comments, task }) {
+  const inst = instance || {}
+  const def = normalizeDefinition(definition)
+  const activeIds = new Set([
+    ...((inst.tokens || []).map((x) => String(x.nodeBpmnId || ''))),
+    ...((inst.activeNodes || []).map((x) => String(x || ''))),
+  ].filter(Boolean))
+  const tasks = inst.tasks || []
+  const completedIds = new Set(tasks.filter((x) => x.completed).map((x) => String(x.nodeBpmnId || '')).filter(Boolean))
+  // 只把真实执行证据（活动令牌 / 任务）补进节点轴；意见找不到节点时保留 unmatched，不伪造成步骤。
+  const observedIds = new Set([...activeIds, ...completedIds])
+  const hasBranch = approvalGraphHasBranch(def)
+
+  let nodes = []
+  if (Array.isArray(def?.nodes) && def.nodes.length) {
+    nodes = def.nodes
+      .filter((n) => String(n?.kind || '') === 'userTask' || observedIds.has(String(n?.id || '')))
+      .map((n) => ({ ...n, id: String(n.id || ''), source: 'definition' }))
+  } else if (Array.isArray(inst.nodes) && inst.nodes.length) {
+    nodes = inst.nodes.map((n) => ({ ...n, id: String(n.id || ''), source: 'instance' }))
+  } else {
+    const seen = new Set()
+    nodes = tasks
+      .map((x) => ({ id: String(x.nodeBpmnId || ''), name: x.name || x.nodeBpmnId, kind: 'userTask', source: 'observed' }))
+      .filter((n) => n.id && !seen.has(n.id) && seen.add(n.id))
+  }
+
+  const knownIds = new Set(nodes.map((n) => n.id))
+  for (const id of observedIds) {
+    if (knownIds.has(id)) continue
+    nodes.push({ id, name: tasks.find((x) => String(x.nodeBpmnId || '') === id)?.name || id, kind: 'userTask', source: 'observed' })
+    knownIds.add(id)
+  }
+
+  const normalizedComments = (comments || []).map((c) => normalizeApprovalComment(c, nodes.find((n) => n.id === String(c.nodeBpmnId || ''))))
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+  const mismatch = normalizedComments.some((c) => c.nodeId && !knownIds.has(c.nodeId))
+
+  const steps = nodes.map((node, index) => {
+    const current = activeIds.has(node.id)
+    const done = !current && completedIds.has(node.id)
+    const nodeComments = normalizedComments.filter((c) => c.nodeId === node.id)
+    const nodeTasks = tasks.filter((x) => String(x.nodeBpmnId || '') === node.id)
+    const actors = Array.from(new Set(nodeTasks.map((x) => x.assignee || x.ownerUserId).filter(Boolean)))
+    const uncertain = !current && !done && hasBranch
+    const isSelectedTaskNode = current && String(task?.nodeBpmnId || '') === node.id
+    const latestComment = nodeComments[nodeComments.length - 1] || null
+    const stepTime = current
+      ? (isSelectedTaskNode ? (task?.createdAt || task?.taskCreatedAt || '') : (latestComment?.createdAt || ''))
+      : (done ? (latestComment?.createdAt || '') : '')
+    return {
+      id: node.id,
+      name: node.name || node.id,
+      index,
+      status: current ? 'current' : (done ? 'done' : (uncertain ? 'possible' : 'pending')),
+      statusText: current ? '当前' : (done ? '已完成' : (uncertain ? '可能' : '待处理')),
+      time: stepTime,
+      timeText: formatLocalDateTime(stepTime),
+      timeLabel: current ? '到达时间' : (done ? '完成时间' : ''),
+      actors,
+      comments: nodeComments,
+      source: node.source,
+    }
+  })
+  const unmatchedActions = normalizedComments.filter((c) => !c.nodeId || !knownIds.has(c.nodeId))
+  return { steps, unmatchedActions, definitionMismatch: mismatch }
+}
+
+function buildApprovalViewModel ({ instance, definition, comments, task }) {
+  const inst = instance || {}
+  const def = normalizeDefinition(definition)
+  const built = buildApprovalSteps({ instance: inst, definition: def, comments, task })
+  const allActions = [
+    ...built.steps.flatMap((s) => s.comments),
+    ...built.unmatchedActions,
+  ].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+  const current = built.steps.find((s) => s.status === 'current')
+  return {
+    meta: {
+      businessKey: inst.businessKey || task?.businessKey || inst.id || task?.instanceId || '',
+      definitionName: def?.name || task?.definitionName || inst.definitionKey || task?.definitionKey || '',
+      instanceState: inst.state || task?.state || '',
+      currentNode: current?.name || task?.nodeName || task?.currentNode || '',
+    },
+    ...built,
+    latestAction: allActions[0] || null,
+  }
+}
+
+// 阶段一先在两个 native 页之间共享纯视图模型；后续迁入门户运行时时替换此注册点。
+try {
+  const existing = globalThis.__cmxFlowApprovalView
+  globalThis.__cmxFlowApprovalView = existing?.version === APPROVAL_VIEW_MODEL_VERSION
+    ? existing
+    : { version: APPROVAL_VIEW_MODEL_VERSION, buildApprovalViewModel }
+} catch {}
 
 // ————————————————————— native-page 入口 —————————————————————
 
@@ -124,12 +342,14 @@ function mount (ctx, view) {
     if (!root || !root.isConnected) return
     root.innerHTML = `<style>${styleCss()}</style>${viewHtml(st, view)}`
     bind(root, st, view, host)
+    restoreDraft(st, root)
   }
   requestAnimationFrame(async () => { render(); await loadAll(st); refreshAll(st) })
   return `<style>${styleCss()}</style>${viewHtml(st, view)}`
 }
 
 function refreshAll (st) {
+  captureDraft(st)
   for (const host of Array.from(st.hosts)) {
     if (!host || !host.isConnected) { st.hosts.delete(host); continue }
     const root = hostRoot(host)
@@ -137,6 +357,7 @@ function refreshAll (st) {
     const view = host.__tfView
     root.innerHTML = `<style>${styleCss()}</style>${viewHtml(st, view)}`
     bind(root, st, view, host)
+    restoreDraft(st, root)
   }
 }
 
@@ -150,18 +371,67 @@ function viewHtml (st, view) {
 
 // ————————————————————— 数据装载 —————————————————————
 
+const definitionCache = {}
+async function loadDefinition (definitionKey) {
+  if (!definitionKey) return null
+  if (definitionCache[definitionKey]) return definitionCache[definitionKey]
+  try {
+    const d = await apiJson('/api/flow/definitions')
+    for (const item of (d?.definitions || [])) {
+      definitionCache[item.key] = item
+    }
+  } catch { /* 定义不可用时按实例已发生路径降级 */ }
+  return definitionCache[definitionKey] || null
+}
+
 async function loadAll (st) {
   const p = st.props
-  if (p.mode === 'start') { st.inst = null; st.comments = []; return }
-  try {
-    if (p.instanceId) {
-      st.inst = await apiJson(`/api/flow/instances/${enc(p.instanceId)}`)
-      const c = await apiJson(`/api/flow/instances/${enc(p.instanceId)}/comments`)
-      st.comments = c.comments || []
-    }
-  } catch { st.inst = null; st.comments = [] }
+  if (p.mode === 'start') { st.inst = null; st.definition = null; st.comments = []; return }
+  st.loading = true
+  st.loadError = ''
+  refreshAll(st)
+  const requests = []
+  const instanceIndex = p.instanceId ? requests.push(apiJson(`/api/flow/instances/${enc(p.instanceId)}`).then((x) => x).catch(() => null)) - 1 : requests.push(Promise.resolve(null)) - 1
+  const commentsIndex = p.instanceId ? requests.push(apiJson(`/api/flow/instances/${enc(p.instanceId)}/comments`).catch(() => null)) - 1 : requests.push(Promise.resolve(null)) - 1
+  const values = await Promise.all([...requests, loadUserSnapshots()])
+  const inst = values[instanceIndex]
+  const commentEnvelope = values[commentsIndex]
+  if (inst && inst.id) {
+    st.inst = inst
+    st.comments = Array.isArray(commentEnvelope?.comments) ? commentEnvelope.comments : []
+    st.definition = await loadDefinition(inst.definitionKey || p.definitionKey)
+  } else {
+    st.inst = null
+    st.comments = []
+    st.definition = null
+    st.loadError = '流程实例或审批意见加载失败，请刷新重试'
+  }
+  st.loading = false
+  refreshAll(st)
   // 业务单据：F3 首版用变量投影 + 关联单据坐标兜底展示。真正拉 cf_* 行留 F4 接通用渲染。
   st.biz = null
+}
+
+function captureDraft (st) {
+  for (const host of Array.from(st.hosts)) {
+    const root = hostRoot(host)
+    if (!root) continue
+    const comment = root.querySelector?.('[data-comment]')
+    if (comment) st.draft.comment = comment.value || ''
+    const target = root.querySelector?.('[data-return-target]:checked')
+    if (target) st.returnTarget = target.value || ''
+    const startDraft = { ...(st.startDraft || {}) }
+    root.querySelectorAll?.('[data-sf]').forEach((el) => {
+      const key = el.getAttribute('data-sf')
+      if (key) startDraft[key] = el.value
+    })
+    st.startDraft = startDraft
+}
+}
+
+function restoreDraft (st, root) {
+  const comment = root.querySelector?.('[data-comment]')
+  if (comment) comment.value = st.draft.comment || ''
 }
 
 // ————————————————————— 发起态（mode:'start'）—————————————————————
@@ -177,21 +447,21 @@ function startContentHtml (st) {
       <div class="tf-panel">
         <div class="tf-panel-head"><ui5-icon name="add-document"></ui5-icon> 新建单据</div>
         <div class="tf-kvs">
-          ${startField('businessKey', '单号', '如 PAY-2026-0001')}
-          ${startField('applicant', '申请人', '用户 id')}
-          ${startField('amount', '金额', '数字', 'number')}
-          ${startField('bizId', '单据主键', '业务单据 id')}
+          ${startField(st, 'businessKey', '单号', '如 PAY-2026-0001')}
+          ${startField(st, 'applicant', '申请人', '用户 id')}
+          ${startField(st, 'amount', '金额', '数字', 'number')}
+          ${startField(st, 'bizId', '单据主键', '业务单据 id')}
         </div>
         <label class="tf-label" style="margin-top:12px">摘要</label>
-        <textarea class="tf-comment" data-sf="summary" placeholder="单据摘要（可空）"></textarea>
+        <textarea class="tf-comment" data-sf="summary" placeholder="单据摘要（可空）">${esc(st.startDraft?.summary || '')}</textarea>
         <div class="tf-hint" style="margin-top:8px">提交后按此建立单据引用并发起流程；重数据在业务表，此处只填驱动流转的关键字段。</div>
       </div>
     </div>
     <div class="tf-toast"></div>
   </section>`
 }
-function startField (key, label, ph, type) {
-  return `<div class="tf-kv"><span>${esc(label)}</span><input data-sf="${esc(key)}" type="${type || 'text'}" placeholder="${esc(ph)}" style="width:100%;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:6px;padding:5px 8px;margin-top:3px"></div>`
+function startField (st, key, label, ph, type) {
+  return `<div class="tf-kv"><span>${esc(label)}</span><input data-sf="${esc(key)}" type="${type || 'text'}" value="${esc(st.startDraft?.[key] || '')}" placeholder="${esc(ph)}" style="width:100%;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:6px;padding:5px 8px;margin-top:3px"></div>`
 }
 
 function startPropHtml (st) {
@@ -203,7 +473,7 @@ function startPropHtml (st) {
       <div class="tf-kv"><span>定义</span><b>${esc(p.definitionName || p.definitionKey)}</b></div>
       <div class="tf-kv" style="margin-top:8px"><span>起点表单</span><b>${esc(p.startFormKey || '（无）')}</b></div>
       <div class="tf-psec">操作</div>
-      <div class="tf-actions"><button class="tf-btn ok" data-start-submit>提交并发起</button></div>
+      <div class="tf-actions"><button class="tf-btn ok" data-start-submit ${st.busy ? 'disabled' : ''}>${st.busy ? '提交中…' : '提交并发起'}</button></div>
       <div class="tf-hint" style="margin-top:8px">从 content 表单收集字段作为流程变量，起实例后令牌进入首个环节。</div>
     </div>
     <div class="tf-toast"></div>
@@ -230,7 +500,9 @@ async function submitStart (st, host) {
   if (st.busy) return
   const p = st.props
   const fields = collectStartFields(st)
+  st.startDraft = { ...fields }
   st.busy = true
+  refreshAll(st)
   try {
     const bizId = fields.bizId || fields.businessKey || ('BIZ-' + (fields.applicant || 'x'))
     const variables = { ...fields, bizTable: p.bizTable || '', bizId }
@@ -249,6 +521,7 @@ async function submitStart (st, host) {
     setTimeout(() => closeSelf({ instanceId: 'start', taskId: p.definitionKey }), 600)
   } catch (e) {
     st.busy = false
+    refreshAll(st)
     toast(st, '发起失败: ' + e.message)
   }
 }
@@ -259,18 +532,14 @@ function contentHtml (st) {
   const p = st.props
   const vars = st.inst?.variables || {}
   const readOnly = p.formMode === 'readonly'
-  const noComment = p.formMode === 'readonly'
-  // 业务单据审阅（F3：变量 + 单据坐标的只读视图；F4 换动态字段渲染）
   const bizRows = Object.entries(vars)
     .filter(([k]) => !['bizTable', 'bizId'].includes(k))
     .map(([k, v]) => `<div class="tf-kv"><span>${esc(k)}</span><b>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</b></div>`)
-    .join('') || '<div class="tf-hint">无业务变量</div>'
+    .join('') || (st.loading ? '' : '<div class="tf-hint">无业务变量</div>')
   const bizRef = p.bizTable ? `<div class="tf-bizref"><ui5-icon name="document"></ui5-icon> ${esc(p.bizTable)} / ${esc(p.bizId)}</div>` : ''
-
-  const history = commentHistoryHtml(st)
-
-  const approveArea = approveAreaHtml(p, noComment)
-
+  const consoleNote = p.consoleMode === 'none'
+    ? '本表单绑定声明由业务表单自带审批动作，右侧仅提供只读流程轨迹。'
+    : '审批意见与办结动作统一在右侧「审批」区处理，避免同一动作出现两个入口。'
   return `<section class="tf">
     <div class="tf-bar">
       <div class="tf-bar-main"><b>${esc(p.title)}</b><span>${esc(p.formKey || '无绑定表单')} · ${esc(modeLabel(p.formMode))}</span></div>
@@ -280,71 +549,137 @@ function contentHtml (st) {
       <div class="tf-panel">
         <div class="tf-panel-head"><ui5-icon name="document-text"></ui5-icon> 业务单据${readOnly ? '（只读审阅）' : ''}</div>
         ${bizRef}
-        <div class="tf-kvs">${bizRows}</div>
+        <div class="tf-kvs">${st.loading ? '<div class="tf-hint">加载单据变量…</div>' : bizRows}</div>
+        ${st.loadError ? `<div class="tf-inline-error">${esc(st.loadError)}</div>` : ''}
       </div>
-      <div class="tf-panel">
-        <div class="tf-panel-head"><ui5-icon name="comment"></ui5-icon> 审批</div>
-        <div class="tf-history">${history}</div>
-        ${approveArea}
-      </div>
+      <div class="tf-panel-note"><ui5-icon name="information"></ui5-icon> ${esc(consoleNote)}</div>
     </div>
     <div class="tf-toast"></div>
   </section>`
 }
 
-// 办理人显示名：优先服务端姓名快照（nickName 昵称优先 / userName username 口径，
-// 20260827 起随意见落库），存量行无快照回退 userId。
-function displayUserName (c) {
-  return c.nickName || c.userName || c.userId || '—'
-}
-
-// 历程含制单节点留痕；decision/comment 为空时补业务动作，避免渲染成空卡片。
-function commentHistoryHtml (st) {
-  return st.comments.length
-    ? st.comments.map((c) => `<div class="tf-cmt">
-        <div class="tf-cmt-head"><b>${esc(displayUserName(c))}</b>
-          <span class="tf-dec ${commentDecisionClass(c)}">${esc(commentDecisionText(c))}</span>
-          <em>${esc(fmtTime(c.createdAt))}</em></div>
-        <div class="tf-cmt-body">${esc(commentBodyText(c))}</div></div>`).join('')
-    : '<div class="tf-hint">暂无审批意见</div>'
-}
-
-function isCreationComment (c) {
-  return String(c.nodeBpmnId || '').trim().toLowerCase() === 'apply'
-}
-
-function commentDecisionText (c) {
-  const decision = String(c.decision || '').trim()
-  if (decision) {
-    return ({ approve: '同意', reject: '驳回', return: '退回' })[decision.toLowerCase()] || decision
+function approvalViewModelOf (st) {
+  const shared = globalThis.__cmxFlowApprovalView?.buildApprovalViewModel
+  const input = {
+    instance: st.inst,
+    definition: st.definition,
+    comments: st.comments,
+    task: {
+      businessKey: st.props.businessKey,
+      definitionName: st.props.definitionName,
+      definitionKey: st.props.definitionKey,
+      instanceId: st.props.instanceId,
+      nodeBpmnId: st.props.nodeBpmnId,
+      nodeName: st.props.nodeName,
+      currentNode: st.props.nodeName,
+      createdAt: st.props.taskCreatedAt || '',
+      state: st.inst?.state,
+    },
   }
-  return isCreationComment(c) ? '制单' : '办理'
+  if (typeof shared === 'function' && globalThis.__cmxFlowApprovalView?.version === APPROVAL_VIEW_MODEL_VERSION && shared !== buildApprovalViewModel) return shared(input)
+  return buildApprovalViewModel(input)
 }
 
-function commentBodyText (c) {
-  const comment = String(c.comment || '').trim()
-  if (comment) return comment
-  return isCreationComment(c) ? '制单提交' : '（未填写意见）'
+function instanceStateText (state) {
+  return ({ ACTIVE: '进行中', COMPLETED: '已完成', TERMINATED: '已终止' })[state] || state || '—'
 }
 
-function commentDecisionClass (c) {
-  const decision = String(c.decision || '').trim().toLowerCase()
-  return decision === 'reject' ? 'rej' : (decision === 'return' ? 'warn' : 'ok')
+function approvalSummaryHtml (vm) {
+  const rows = [
+    ['流程', vm.meta.definitionName || '—'],
+    ['单据', vm.meta.businessKey || '—'],
+    ['当前节点', vm.meta.currentNode || '—'],
+    ['实例状态', instanceStateText(vm.meta.instanceState)],
+  ]
+  return `<div class="tf-summary">${rows.map(([k, v]) => `<div class="tf-summary-item"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</div>`
 }
 
-// 审批动作区（同意/驳回/退回上一步/退回到…），content 与 property 两处共用——改一处即可，防漂移。
-function approveAreaHtml (p, noComment) {
-  if (p.viewOnly) return ''  // 查看态：只看单据/轨迹 + 意见历史，不出任何办结动作
-  if (noComment) return '<div class="tf-actions"><button class="tf-btn ok" data-confirm>确认知悉（办结）</button></div>'
-  return `<label class="tf-label">我的意见</label>
-       <textarea class="tf-comment" data-comment placeholder="填写审批意见..."></textarea>
-       <div class="tf-actions">
-         <button class="tf-btn ok" data-approve>同意</button>
-         <button class="tf-btn danger" data-reject>驳回</button>
-         <button class="tf-btn" data-return title="退回到上一审批节点重新办理">退回上一步</button>
-         <button class="tf-btn" data-return-pick title="选择任意上游节点退回">退回到…</button>
-       </div>
-       <div class="tf-return-menu" data-return-menu hidden></div>`
+function approvalTimelineHtml (vm) {
+  const rows = vm.steps.map((step, idx) => `<li class="tf-flow-node ${step.status}"${step.status === 'current' ? ' aria-current="step"' : ''}>
+      <div class="tf-flow-rail"><span class="tf-flow-step">${flowStepIndicatorHtml(step.status, idx)}</span></div>
+      <div class="tf-flow-content">
+        <div class="tf-flow-title"><b>${esc(step.name)}</b><span class="tf-flow-state">${esc(step.statusText)}</span></div>
+        <div class="tf-flow-meta">
+          <span class="tf-flow-time" title="${esc(step.timeLabel || '时间')}${step.timeText ? '：' + esc(step.timeText) : ''}"><ui5-icon name="history"></ui5-icon>${esc(step.timeText || '—')}</span>
+          ${step.actors.length ? `<span class="tf-flow-actors">办理人：${step.actors.map((x) => esc(displayActor({ userId: x }))).join('、')}</span>` : ''}
+        </div>
+        ${step.comments.length ? `<div class="tf-flow-comments">${step.comments.map(commentCardHtml).join('')}</div>` : ''}
+      </div>
+    </li>`).join('')
+  const otherRows = vm.unmatchedActions.map((c) => `<li class="tf-flow-node other">
+      <div class="tf-flow-rail"><span class="tf-flow-step record"></span></div>
+      <div class="tf-flow-content">${commentCardHtml(c)}</div>
+    </li>`).join('')
+  const mismatch = vm.definitionMismatch ? '<div class="tf-inline-warn">当前定义与实例轨迹存在版本差异，未识别节点已按实际记录追加。</div>' : ''
+  return rows || otherRows
+    ? `<ol class="tf-flow">${rows}${otherRows}</ol>${mismatch}`
+    : '<div class="tf-hint">暂无流转记录</div>'
+}
+
+function flowStepIndicatorHtml (status, idx) {
+  if (status === 'done') return '<ui5-icon name="accept"></ui5-icon>'
+  return String(idx + 1)
+}
+
+function commentCardHtml (c) {
+  return `<div class="tf-cmt">
+    <div class="tf-cmt-head"><b>${esc(c.actor)}</b>
+      <span class="tf-dec ${c.action.tone}">${esc(c.action.label)}</span>
+      <em>${esc(c.time)}</em></div>
+    <div class="tf-cmt-body">${esc(c.text)}</div></div>`
+}
+
+function approvalActionLabel (st) {
+  if (st.busy) return '提交中…'
+  if (st.props.formMode === 'readonly') return '确认知悉（办结）'
+  if (st.pendingAction === 'reject') return '确认驳回'
+  if (st.pendingAction === 'return') return '确认退回'
+  if (st.pendingAction === 'return-pick') return `退回至：${returnTargetName(st) || '未选择'}`
+  return '同意'
+}
+
+function returnTargetName (st) {
+  return (st.returnTargets || []).find((x) => x.bpmnId === st.returnTarget)?.name || ''
+}
+
+function approveAreaHtml (st) {
+  const p = st.props
+  if (p.viewOnly || st.submitted) return ''
+  if (p.formMode === 'readonly') {
+    return `<div class="tf-actions"><button class="tf-btn ok" data-submit data-action="approve" ${st.busy ? 'disabled' : ''}>${esc(approvalActionLabel(st))}</button></div>
+      ${st.actionError ? `<div class="tf-inline-error">${esc(st.actionError)}</div>` : ''}`
+  }
+  const danger = st.pendingAction === 'reject' || st.pendingAction === 'return' || st.pendingAction === 'return-pick'
+  const actionHint = st.pendingAction === 'reject'
+    ? '驳回会记录本环节否定意见，请确认后提交。'
+    : (st.pendingAction ? '退回后任务会回到目标节点重新办理。' : '同意后流程进入下一节点；意见可留空。')
+  const required = st.pendingAction === 'reject' || st.pendingAction === 'return' || st.pendingAction === 'return-pick'
+  return `<label class="tf-label" for="tf-comment">${required ? '<i class="tf-required" aria-hidden="true">*</i>' : ''}我的意见${required ? '<span>（必填）</span>' : ''}</label>
+    <textarea id="tf-comment" class="tf-comment" data-comment placeholder="${required ? '填写审批意见（必填）...' : '填写审批意见...'}">${esc(st.draft.comment || '')}</textarea>
+    <div class="tf-action-hint">${esc(actionHint)}</div>
+    <div class="tf-actions">
+      <button class="tf-btn ${danger ? 'danger solid' : 'ok'}" data-submit data-action="${esc(st.pendingAction || 'approve')}" ${st.busy ? 'disabled' : ''}>${esc(approvalActionLabel(st))}</button>
+      ${st.pendingAction ? `<button class="tf-btn" data-cancel-action ${st.busy ? 'disabled' : ''}>取消</button>` : `<button class="tf-btn more" data-action-menu aria-haspopup="menu" aria-expanded="${st.menuOpen ? 'true' : 'false'}" ${st.busy ? 'disabled' : ''}>更多 <ui5-icon name="slim-arrow-down"></ui5-icon></button>`}
+    </div>
+    ${st.menuOpen ? `<div class="tf-action-menu" role="menu">
+      <button role="menuitem" data-choose-action="reject">驳回</button>
+      <button role="menuitem" data-choose-action="return">退回上一步</button>
+      <button role="menuitem" data-choose-action="return-pick">退回到指定节点</button>
+    </div>` : ''}
+    ${st.pendingAction === 'return-pick' ? returnPickerHtml(st) : ''}
+    ${st.actionError ? `<div class="tf-inline-error">${esc(st.actionError)}</div>` : ''}`
+}
+
+function returnPickerHtml (st) {
+  if (st.returnLoading) return '<div class="tf-return-menu"><div class="tf-hint">加载可退节点…</div></div>'
+  if (st.returnError) return `<div class="tf-return-menu"><div class="tf-inline-error">${esc(st.returnError)}</div><button class="tf-btn" data-reload-return>重试</button></div>`
+  const targets = st.returnTargets || []
+  if (!targets.length) return '<div class="tf-return-menu"><div class="tf-hint">无可退节点（会签任务或已是首环节）</div></div>'
+  return `<div class="tf-return-menu" role="radiogroup" aria-label="可退节点">
+    <div class="tf-return-head"><b>退回目标</b><small>任务将回到所选节点重新办理</small></div>
+    ${targets.map((t) => `<label class="tf-return-option"><input type="radio" name="tf-return-target" data-return-target value="${esc(t.bpmnId)}" ${st.returnTarget === t.bpmnId ? 'checked' : ''}>
+      <span><b>${esc(t.name || t.bpmnId)}</b><i>${t.isDirectPredecessor ? '直接前驱' : (t.distance ? `上${t.distance}步` : '上游节点')}</i></span></label>`).join('')}
+  </div>`
 }
 
 function modeLabel (m) {
@@ -357,77 +692,78 @@ function modeLabel (m) {
 
 function trailHtml (st) {
   const p = st.props
-  const inst = st.inst
-  const noComment = p.formMode === 'readonly'
-  const approveArea = approveAreaHtml(p, noComment)
+  const vm = approvalViewModelOf(st)
+  const canHandle = !p.viewOnly && !st.submitted
+  const activeTab = canHandle ? st.activeTab : 'trail'
+  const tabs = canHandle
+    ? `<div class="tf-tabs" role="tablist" aria-label="审批面板">
+        <button role="tab" data-tab="handle" aria-selected="${activeTab === 'handle' ? 'true' : 'false'}" class="${activeTab === 'handle' ? 'active' : ''}">办理</button>
+        <button role="tab" data-tab="trail" aria-selected="${activeTab === 'trail' ? 'true' : 'false'}" class="${activeTab === 'trail' ? 'active' : ''}">流转</button>
+      </div>`
+    : ''
+  let body = ''
+  if (st.loading) {
+    body = '<div class="tf-skeleton-list"><span></span><span></span><span></span></div>'
+  } else if (st.loadError && !vm.steps.length) {
+    body = `<div class="tf-inline-error">${esc(st.loadError)}</div><div class="tf-actions"><button class="tf-btn" data-reload>重新加载</button></div>`
+  } else if (activeTab === 'handle') {
+    body = `<div class="tf-current"><span>当前节点</span><b>${esc(vm.meta.currentNode || '—')}</b>${vm.latestAction ? `<small>最新动作：${esc(vm.latestAction.actor)} · ${esc(vm.latestAction.action.label)} · ${esc(vm.latestAction.time)}</small>` : ''}</div>${approveAreaHtml(st)}`
+  } else {
+    body = approvalTimelineHtml(vm)
+  }
+  const result = st.submitted
+    ? `<div class="tf-result ok"><ui5-icon name="status-positive"></ui5-icon><span>${esc(st.resultMessage || '操作已提交')}</span><button class="tf-btn" data-close-task>关闭</button></div>`
+    : ''
   return `<section class="tf">
-    <div class="tf-prop-head"><b>${esc(inst?.businessKey || p.instanceId || '')}</b><small>${esc(p.formKey || '')} · ${esc(modeLabel(p.formMode))}</small></div>
+    <div class="tf-prop-head"><b>${esc(vm.meta.businessKey || p.instanceId)}</b><small>${esc(vm.meta.definitionName || p.formKey || '')} · ${esc(instanceStateText(vm.meta.instanceState))}</small></div>
     <div class="tf-prop-body">
-      <div class="tf-psec">流转记录</div>${flowTimelineHtml(st)}
-      ${approveArea ? `<div class="tf-psec">审批动作</div>${approveArea}` : ''}
+      ${approvalSummaryHtml(vm)}
+      ${tabs}
+      ${body}
+      ${result}
     </div>
     <div class="tf-toast"></div>
   </section>`
 }
 
-// 与待办中心保持同一套 AntD Steps 语义：节点是主轴，意见挂在对应节点下。
-function flowTimelineHtml (st) {
-  const inst = st.inst
-  const nodes = inst?.nodes || []
-  const currentIds = new Set((inst?.tokens || []).map((k) => k.nodeBpmnId))
-  const nodeIds = new Set(nodes.map((n) => String(n.id || '')))
-  const rows = nodes.map((n, idx) => {
-    const id = String(n.id || '')
-    const isCurrent = currentIds.has(id)
-    const isDone = (inst?.tasks || []).some((x) => x.nodeBpmnId === id && x.completed)
-    const status = isCurrent ? 'current' : (isDone ? 'done' : 'pending')
-    const statusText = isCurrent ? '当前' : (isDone ? '已完成' : '待处理')
-    const comments = st.comments.filter((c) => String(c.nodeBpmnId || '') === id)
-    return `<li class="tf-flow-node ${status}"${isCurrent ? ' aria-current="step"' : ''}>
-      <div class="tf-flow-rail"><span class="tf-flow-step">${flowStepIndicatorHtml(status, idx)}</span></div>
-      <div class="tf-flow-content">
-        <div class="tf-flow-title"><b>${esc(n.name || n.id)}</b><span class="tf-flow-state">${statusText}</span></div>
-        ${comments.length ? `<div class="tf-flow-comments">${comments.map(commentCardHtml).join('')}</div>` : ''}
-      </div>
-    </li>`
-  }).join('')
-  const otherComments = st.comments.filter((c) => {
-    const id = String(c.nodeBpmnId || '')
-    return !id || !nodeIds.has(id)
-  })
-  const otherRows = otherComments.map((c) => `<li class="tf-flow-node other">
-    <div class="tf-flow-rail"><span class="tf-flow-step record"></span></div>
-    <div class="tf-flow-content">${commentCardHtml(c)}</div>
-  </li>`).join('')
-  return rows || otherRows
-    ? `<ol class="tf-flow">${rows}${otherRows}</ol>`
-    : '<div class="tf-hint">暂无流转记录</div>'
-}
-
-function flowStepIndicatorHtml (status, idx) {
-  if (status === 'done') return '<ui5-icon name="accept"></ui5-icon>'
-  return String(idx + 1)
-}
-
-function commentCardHtml (c) {
-  return `<div class="tf-cmt">
-    <div class="tf-cmt-head"><b>${esc(displayUserName(c))}</b>
-      <span class="tf-dec ${commentDecisionClass(c)}">${esc(commentDecisionText(c))}</span>
-      <em>${esc(fmtTime(c.createdAt))}</em></div>
-    <div class="tf-cmt-body">${esc(commentBodyText(c))}</div></div>`
-}
-
 // ————————————————————— 事件 + 办结 —————————————————————
 
 function bind (root, st, view, host) {
-  // 发起态：提交并发起。
   root.querySelector('[data-start-submit]')?.addEventListener('click', () => submitStart(st, host))
-  // 审批动作在 content(native 表单) 和 property(审批控制台，html 表单也用) 两处都可能出现。
-  root.querySelector('[data-approve]')?.addEventListener('click', () => complete(st, 'approve', host))
-  root.querySelector('[data-reject]')?.addEventListener('click', () => complete(st, 'reject', host))
-  root.querySelector('[data-return]')?.addEventListener('click', () => doReturn(st, host))
-  root.querySelector('[data-return-pick]')?.addEventListener('click', () => openReturnPicker(st, host, root))
-  root.querySelector('[data-confirm]')?.addEventListener('click', () => complete(st, 'approve', host))
+  root.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => {
+    captureDraft(st)
+    st.activeTab = b.dataset.tab
+    refreshAll(st)
+  }))
+  root.querySelector('[data-action-menu]')?.addEventListener('click', () => {
+    st.menuOpen = !st.menuOpen
+    refreshAll(st)
+  })
+  root.querySelectorAll('[data-choose-action]').forEach((b) => b.addEventListener('click', () => {
+    captureDraft(st)
+    st.menuOpen = false
+    st.pendingAction = b.dataset.chooseAction
+    st.actionError = ''
+    if (st.pendingAction === 'return-pick') openReturnPicker(st, false)
+    else refreshAll(st)
+  }))
+  root.querySelector('[data-cancel-action]')?.addEventListener('click', () => {
+    captureDraft(st)
+    st.pendingAction = ''
+    st.actionError = ''
+    st.returnTarget = ''
+    refreshAll(st)
+  })
+  root.querySelector('[data-reload-return]')?.addEventListener('click', () => openReturnPicker(st, true))
+  root.querySelector('[data-reload]')?.addEventListener('click', () => loadAll(st))
+  root.querySelector('[data-close-task]')?.addEventListener('click', () => closeSelf(st.props))
+  root.querySelector('[data-submit]')?.addEventListener('click', (e) => submitApproval(st, e.currentTarget.dataset.action))
+  root.querySelector('[data-comment]')?.addEventListener('input', (e) => { st.draft.comment = e.target.value || ''; st.actionError = '' })
+  root.querySelectorAll('[data-return-target]').forEach((r) => r.addEventListener('change', () => {
+    st.returnTarget = r.value || ''
+    st.returnTargetName = returnTargetName(st)
+    st.actionError = ''
+  }))
 }
 
 function toast (st, msg) {
@@ -437,89 +773,86 @@ function toast (st, msg) {
   }
 }
 
-async function complete (st, decision, host) {
-  if (st.busy) return
-  const p = st.props
-  // 意见框可能在 content 或 property 任一 host —— 跨所有 host 找。
-  let comment = ''
-  for (const h of Array.from(st.hosts)) {
-    const c = hostRoot(h)?.querySelector?.('[data-comment]')
-    if (c && c.value) { comment = c.value; break }
+function validateApproval (st, action) {
+  const comment = String(st.draft.comment || '').trim()
+  if ((action === 'reject' || action === 'return') && !comment) return '驳回 / 退回必须填写审批意见'
+  if (action === 'return-pick' && !st.returnTarget) return '请选择退回目标节点'
+  return ''
+}
+
+async function submitApproval (st, action) {
+  if (st.busy || st.submitted) return
+  captureDraft(st)
+  const kind = action || st.pendingAction || 'approve'
+  const error = validateApproval(st, kind)
+  if (error) {
+    st.actionError = error
+    refreshAll(st)
+    return
   }
+  const p = st.props
+  const comment = String(st.draft.comment || '').trim()
   st.busy = true
+  st.busyAction = kind
+  st.actionError = ''
+  refreshAll(st)
   try {
-    await apiJson(`/api/flow/tasks/${enc(p.taskId)}/complete`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instanceId: p.instanceId, decision, comment: comment || null }),
-    })
-    toast(st, decision === 'approve' ? '已同意办结' : '已驳回')
-    // 广播 → 待办中心刷新（门户默认派发 cmx-flow-task-done；组件壳由 CFG.onTaskDone 接管）
+    if (kind === 'approve' || kind === 'reject') {
+      await apiJson(`/api/flow/tasks/${enc(p.taskId)}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instanceId: p.instanceId, decision: kind, comment: comment || null }),
+      })
+      st.resultMessage = kind === 'approve' ? '已同意办结' : '已驳回'
+    } else {
+      const target = kind === 'return-pick' ? st.returnTarget : ''
+      await apiJson(`/api/flow/tasks/${enc(p.taskId)}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          instanceId: p.instanceId,
+          reason: comment || (target ? '退回到指定节点' : '退回上一步'),
+          ...(target ? { targetBpmnId: target } : {}),
+        }),
+      })
+      st.resultMessage = target ? '已退回到指定节点' : '已退回上一步'
+    }
+    st.busy = false
+    st.busyAction = ''
+    st.submitted = true
+    refreshAll(st)
+    toast(st, st.resultMessage)
     CFG.onTaskDone({ taskId: p.taskId, instanceId: p.instanceId })
-    // 尝试关闭本视图
-    setTimeout(() => closeSelf(p), 600)
+    setTimeout(() => closeSelf(p), 1200)
   } catch (e) {
     st.busy = false
-    toast(st, '办结失败: ' + e.message)
+    st.busyAction = ''
+    st.actionError = `${kind === 'approve' || kind === 'reject' ? '办结失败' : '退回失败'}：${e.message}`
+    refreshAll(st)
+    toast(st, st.actionError)
   }
 }
 
-// 退回上一步（P6）：调 reject_task 把任务打回前一审批节点重新办理（区别于「驳回」的决策位）。
-// targetBpmnId 省略 = 引擎默认回退直接前驱；传入 = 退回到指定上游节点（③）。
-async function doReturn (st, host, targetBpmnId) {
-  if (st.busy) return
+async function openReturnPicker (st, reload) {
   const p = st.props
-  let comment = ''
-  for (const h of Array.from(st.hosts)) {
-    const c = hostRoot(h)?.querySelector?.('[data-comment]')
-    if (c && c.value) { comment = c.value; break }
-  }
-  st.busy = true
-  try {
-    await apiJson(`/api/flow/tasks/${enc(p.taskId)}/reject`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        instanceId: p.instanceId,
-        reason: comment || (targetBpmnId ? '退回到指定节点' : '退回上一步'),
-        ...(targetBpmnId ? { targetBpmnId } : {}),
-      }),
-    })
-    toast(st, targetBpmnId ? '已退回到指定节点' : '已退回上一步')
-    CFG.onTaskDone({ taskId: p.taskId, instanceId: p.instanceId })
-    setTimeout(() => closeSelf(p), 600)
-  } catch (e) {
-    st.busy = false
-    toast(st, '退回失败: ' + e.message)
-  }
-}
-
-// 退回到任意上游节点（③）：拉 reject-targets 渲染可退节点菜单，选一个 → doReturn(target)。
-// 再点「退回到…」收起菜单。会签任务/首环节 → 提示不可退。
-async function openReturnPicker (st, host, root) {
-  const p = st.props
-  const menu = root.querySelector?.('[data-return-menu]')
-  if (!menu) return
-  if (!menu.hidden) { menu.hidden = true; menu.innerHTML = ''; return }
-  menu.innerHTML = '<div class="tf-hint">加载可退节点…</div>'
-  menu.hidden = false
+  if (!reload && Array.isArray(st.returnTargets)) { refreshAll(st); return }
+  st.returnLoading = true
+  st.returnError = ''
+  refreshAll(st)
   try {
     const r = await apiJson(`/api/flow/tasks/${enc(p.taskId)}/reject-targets?instanceId=${enc(p.instanceId)}`)
     const targets = (r && r.targets) || []
-    if (!r || !r.rejectable || !targets.length) {
-      menu.innerHTML = '<div class="tf-hint">无可退节点（会签任务或已是首环节）</div>'
-      return
-    }
-    menu.innerHTML = targets.map((t) => {
-      const star = t.isDirectPredecessor ? '★ ' : ''
-      const dist = t.distance ? ` <em>上${t.distance}步</em>` : ''
-      return `<button class="tf-btn tf-return-item" data-return-to="${esc(t.bpmnId)}">${star}${esc(t.name || t.bpmnId)}${dist}</button>`
-    }).join('')
-    menu.querySelectorAll('[data-return-to]').forEach((b) => {
-      b.addEventListener('click', () => doReturn(st, host, b.dataset.returnTo))
-    })
+    st.returnTargets = r?.rejectable ? targets : []
+    st.returnTarget = st.returnTargets.find((x) => x.isDirectPredecessor)?.bpmnId || st.returnTargets[0]?.bpmnId || ''
+    st.returnTargetName = returnTargetName(st)
+    if (!r?.rejectable) st.returnError = '无可退节点（会签任务或已是首环节）'
   } catch (e) {
-    menu.innerHTML = `<div class="tf-hint">加载失败: ${esc(e.message)}</div>`
+    st.returnTargets = []
+    st.returnTarget = ''
+    st.returnError = `加载失败：${e.message}`
   }
+  st.returnLoading = false
+  refreshAll(st)
 }
 
 // 关闭当前任务视图。nodeId 派生不变（门户工作区 Tab 命名规则），关闭动作委托 CFG.onClose：
@@ -577,6 +910,8 @@ function styleCss () {
   .tf-cmt-head em{margin-left:auto;flex:0 0 auto;font-style:normal;font-size:10px;color:var(--muted);white-space:nowrap}
   .tf-cmt-body{font-size:12px;line-height:1.45;margin-top:4px;color:var(--ink)}
   .tf-label{display:block;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:5px}
+  .tf-label .tf-required{color:var(--red);font-style:normal;margin-right:2px}
+  .tf-label span{margin-left:4px;color:var(--muted);font-weight:600;text-transform:none}
   .tf-comment{width:100%;min-height:70px;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;resize:vertical;background:var(--tile);color:var(--ink)}
   .tf-comment:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
   .tf-actions{display:flex;gap:9px;margin-top:12px;flex-wrap:wrap}
@@ -587,6 +922,46 @@ function styleCss () {
   .tf-btn.ok{background:var(--ok);border-color:var(--ok);color:var(--sapButton_Emphasized_TextColor,var(--sapContent_ContrastTextColor,var(--sapBaseColor)))}
   .tf-btn.danger{background:var(--tile);border-color:color-mix(in srgb,var(--red) 40%,var(--line));color:var(--red)}
   .tf-btn.danger:hover{background:color-mix(in srgb,var(--red) 10%,var(--tile))}
+  .tf-btn.danger.solid{background:var(--red);border-color:var(--red);color:var(--sapButton_Emphasized_TextColor,var(--sapContent_ContrastTextColor,var(--sapBaseColor)))}
+  .tf-btn.danger.solid:hover{background:color-mix(in srgb,var(--red) 86%,var(--sapBaseColor))}
+  .tf-btn:disabled{opacity:.58;cursor:not-allowed}
+  .tf-btn.more{display:inline-flex;align-items:center;gap:4px}
+  .tf-btn.more ui5-icon{width:.75rem;height:.75rem}
+  .tf-action-menu{display:flex;flex-direction:column;gap:4px;min-width:172px;margin-top:8px;padding:6px;border:1px solid var(--line-soft);border-radius:9px;background:var(--tile);box-shadow:0 10px 28px color-mix(in srgb,var(--ink) 18%,transparent)}
+  .tf-action-menu button{border:0;background:transparent;color:var(--ink);font:inherit;font-size:12.5px;text-align:left;padding:7px 9px;border-radius:7px;cursor:pointer}
+  .tf-action-menu button:hover,.tf-action-menu button:focus-visible{background:color-mix(in srgb,var(--brand) 10%,var(--tile));outline:none}
+  .tf-action-hint{margin-top:6px;font-size:11.5px;color:var(--muted)}
+  .tf-inline-error,.tf-inline-warn{margin-top:9px;font-size:12px;border-radius:8px;padding:8px 10px}
+  .tf-inline-error{color:var(--red);background:color-mix(in srgb,var(--red) 10%,var(--tile));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--red) 26%,transparent)}
+  .tf-inline-warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,var(--tile));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--warn) 26%,transparent)}
+  .tf-panel-note{display:flex;align-items:center;gap:7px;border:1px dashed var(--line);border-radius:9px;padding:9px 11px;color:var(--muted);font-size:12px;background:color-mix(in srgb,var(--ink) 3%,var(--tile))}
+  .tf-panel-note ui5-icon{width:1rem;height:1rem;flex:0 0 auto;color:var(--brand)}
+  .tf-summary{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:12px}
+  .tf-summary-item{min-width:0;border:1px solid var(--line-soft);border-radius:8px;padding:7px 9px;background:color-mix(in srgb,var(--ink) 3%,var(--tile))}
+  .tf-summary-item span{display:block;font-size:10.5px;color:var(--muted)}
+  .tf-summary-item b{display:block;margin-top:2px;font-size:12px;overflow-wrap:anywhere}
+  .tf-tabs{display:flex;gap:4px;margin:2px 0 12px;padding:3px;border:1px solid var(--line-soft);border-radius:9px;background:color-mix(in srgb,var(--ink) 4%,var(--tile))}
+  .tf-tabs button{flex:1;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12.5px;font-weight:700;padding:7px 10px;border-radius:7px;cursor:pointer}
+  .tf-tabs button.active{color:var(--brand);background:var(--tile);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--brand) 28%,transparent)}
+  .tf-current{border:1px solid color-mix(in srgb,var(--brand) 24%,var(--line));border-radius:9px;padding:9px 11px;background:color-mix(in srgb,var(--brand) 7%,var(--tile))}
+  .tf-current span{display:block;font-size:10.5px;color:var(--muted)}
+  .tf-current b{display:block;margin-top:2px;font-size:14px;color:var(--brand)}
+  .tf-current small{display:block;margin-top:4px;font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+  .tf-result{display:flex;align-items:center;gap:8px;margin-top:12px;border-radius:9px;padding:9px 11px;color:var(--ok);background:color-mix(in srgb,var(--ok) 10%,var(--tile));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ok) 26%,transparent)}
+  .tf-result ui5-icon{width:1rem;height:1rem;flex:0 0 auto}
+  .tf-result span{flex:1 1 auto;font-size:12.5px;font-weight:700}
+  .tf-skeleton-list{display:flex;flex-direction:column;gap:10px}
+  .tf-skeleton-list span{height:38px;border-radius:8px;background:color-mix(in srgb,var(--ink) 8%,transparent);animation:tf-skeleton 1.2s ease-in-out infinite}
+  .tf-skeleton-list span:nth-child(2){animation-delay:.16s}.tf-skeleton-list span:nth-child(3){animation-delay:.32s}
+  @keyframes tf-skeleton{0%,100%{opacity:.55}50%{opacity:1}}
+  .tf-return-option{display:flex;align-items:center;gap:8px;padding:6px 7px;border-radius:7px;cursor:pointer}
+  .tf-return-option:hover{background:color-mix(in srgb,var(--ink) 5%,transparent)}
+  .tf-return-head{display:flex;flex-direction:column;gap:2px;padding:2px 7px 6px;border-bottom:1px solid var(--line-soft);margin-bottom:5px}
+  .tf-return-head b{font-size:12px;color:var(--ink)}
+  .tf-return-head small{font-size:11px;color:var(--muted)}
+  .tf-return-option span{min-width:0;flex:1;display:flex;align-items:center;gap:7px}
+  .tf-return-option b{min-width:0;overflow-wrap:anywhere}
+  .tf-return-option i{flex:0 0 auto;color:var(--muted);font-style:normal;font-size:10.5px;padding:1px 5px;border-radius:999px;background:color-mix(in srgb,var(--ink) 7%,transparent)}
   .tf-prop-head{height:47px;flex:0 0 auto;display:flex;flex-direction:column;justify-content:center;padding:0 14px;border-bottom:1px solid var(--line-soft);background:var(--header)}
   .tf-prop-head b{font-size:14px} .tf-prop-head small{display:block;font-size:11px;color:var(--muted)}
   .tf-prop-body{padding:12px 14px;overflow:auto}
@@ -603,6 +978,7 @@ function styleCss () {
   .tf-flow-node.done .tf-flow-step{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 48%,var(--line));background:var(--tile)}
   .tf-flow-node.current .tf-flow-step{color:var(--sapButton_Emphasized_TextColor,var(--sapContent_ContrastTextColor,var(--sapBaseColor)));border-color:var(--brand);background:var(--brand)}
   .tf-flow-node.pending .tf-flow-step{background:color-mix(in srgb,var(--ink) 3%,var(--tile))}
+  .tf-flow-node.possible .tf-flow-step{border-style:dashed;color:var(--muted)}
   .tf-flow-node.other .tf-flow-step{width:10px;height:10px;margin:9px;border-style:dashed;background:transparent}
   .tf-flow-content{min-width:0;padding-top:4px}
   .tf-flow-title{display:flex;align-items:baseline;gap:8px;min-width:0}
@@ -612,6 +988,11 @@ function styleCss () {
   .tf-flow-state{flex:0 0 auto;font-size:10.5px;font-weight:600;color:var(--muted);white-space:nowrap}
   .tf-flow-node.done .tf-flow-state{color:var(--ok)}
   .tf-flow-node.current .tf-flow-state{color:var(--brand)}
+  .tf-flow-node.possible .tf-flow-state{color:var(--muted)}
+  .tf-flow-meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:4px}
+  .tf-flow-time,.tf-flow-actors{display:inline-flex;align-items:center;gap:4px;min-width:0;font-size:10.5px;color:var(--muted)}
+  .tf-flow-time ui5-icon{width:.7rem;height:.7rem;flex:0 0 auto}
+  .tf-flow-actors{overflow-wrap:anywhere}
   .tf-flow-comments{display:flex;flex-direction:column;gap:7px;margin-top:8px}
   .tf-hint{font-size:12px;color:var(--muted);padding:6px 0}
   .tf-empty{padding:44px;text-align:center;color:var(--muted)}

@@ -72,9 +72,15 @@ const state = {
   todos: [],
   startables: [],     // 可发起流程列表（发起态）
   loading: false,
+  error: '',
   selected: null,     // 选中的待办（property 展示其轨迹）
   trail: null,        // 选中实例的详情（令牌 + 任务链）
+  trailDefinition: null, // 选中实例对应流程定义（当前实例接口无 nodes，轨迹从这里补节点）
+  trailLoading: false,
+  trailError: '',
   comments: [],       // 选中实例的意见历史
+  cardMenu: '',       // 当前展开的卡片更多菜单 taskId
+  dialog: null,       // 页内确认框 / 转签人员选择器
   hosts: new Set(),
   // 查找/过滤/分页（每次切分类重置）
   filter: { keyword: '', definitionKey: '', nodeBpmnId: '', state: '' },
@@ -104,6 +110,31 @@ async function apiJson (url, options = {}) {
     throw new Error((j && (j.msg || j.error)) || `HTTP ${res.status}`)
   }
   return j && typeof j === 'object' && 'data' in j ? j.data : j
+}
+
+function rememberUserSnapshots (users) {
+  try {
+    globalThis.__cmxFlowUsers = globalThis.__cmxFlowUsers || {}
+    for (const u of (users || [])) {
+      const id = String(u?.id || u?.userId || u?.user_id || '')
+      if (!id) continue
+      globalThis.__cmxFlowUsers[id] = {
+        nickName: u.nickName || u.nickname || '',
+        userName: u.userName || u.username || '',
+      }
+    }
+  } catch {}
+}
+
+async function loadUserSnapshots () {
+  try {
+    if (globalThis.__cmxFlowUsersLoaded) return
+    globalThis.__cmxFlowUsersLoaded = true
+    const rows = await apiJson('/api/iam/users/list', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pageSize: 200 }),
+    })
+    rememberUserSnapshots(Array.isArray(rows) ? rows : rows?.items || [])
+  } catch { /* 历史意见保留用户 ID */ }
 }
 
 function hostRoot (host) {
@@ -216,23 +247,28 @@ function contentHtml () {
   if (state.category === 'initiate') {
     const body = state.loading
       ? `<div class="todo-empty"><ui5-icon name="busy"></ui5-icon><span>加载中...</span></div>`
-      : (state.startables.length
-          ? state.startables.map(startableCard).join('')
-          : `<div class="todo-empty"><ui5-icon name="tray"></ui5-icon><span>暂无可发起流程</span></div>`)
+      : (state.error
+          ? `<div class="todo-empty"><ui5-icon name="error"></ui5-icon><span>${esc(state.error)}</span><button class="todo-btn" data-act="refresh">重试</button></div>`
+          : (state.startables.length
+              ? state.startables.map(startableCard).join('')
+              : `<div class="todo-empty"><ui5-icon name="inbox"></ui5-icon><span>暂无可发起流程</span></div>`))
     return `<section class="todo todo-content">
       <div class="todo-bar"><b>发起流程</b><span class="todo-count">${state.startables.length}</span>
         <span class="todo-sp"></span>
         ${filterControlsHtml()}
         <button class="todo-btn" data-act="refresh"><ui5-icon name="refresh"></ui5-icon> 刷新</button></div>
       <div class="todo-list">${body}</div>
+      ${dialogHtml()}
       <div class="todo-toast"></div>
     </section>`
   }
   const body = state.loading
     ? `<div class="todo-empty"><ui5-icon name="busy"></ui5-icon><span>加载中...</span></div>`
-    : (state.todos.length
+    : (state.error
+        ? `<div class="todo-empty"><ui5-icon name="error"></ui5-icon><span>${esc(state.error)}</span><button class="todo-btn" data-act="refresh">重试</button></div>`
+        : (state.todos.length
         ? state.todos.map(todoCard).join('')
-        : `<div class="todo-empty"><ui5-icon name="tray"></ui5-icon><span>${esc(cat?.label || '')}：暂无</span></div>`)
+        : `<div class="todo-empty"><ui5-icon name="inbox"></ui5-icon><span>${esc(cat?.label || '')}：暂无</span></div>`))
   return `<section class="todo todo-content">
     <div class="todo-bar"><b>${esc(cat?.label || '待办')}</b><span class="todo-count">${state.total}</span>
       <span class="todo-sp"></span>
@@ -240,6 +276,7 @@ function contentHtml () {
       <button class="todo-btn" data-act="refresh"><ui5-icon name="refresh"></ui5-icon> 刷新</button></div>
     <div class="todo-list">${body}</div>
     ${pagerHtml()}
+    ${dialogHtml()}
     <div class="todo-toast"></div>
   </section>`
 }
@@ -261,12 +298,15 @@ function todoCard (t) {
   const active = state.selected?.taskId === t.taskId
   const amount = t.amount != null && t.amount !== '' ? `¥${t.amount}` : ''
   const cat = state.category
-  // 按分类给发起人/办理人/知会人各自的正确动作。
+  // 主动作只保留一个，次要动作收入「更多」；只读类不超过两个动作。
+  const menuOpen = state.cardMenu === t.taskId
   let acts
   if (cat === 'initiated') {
-    // 我发起的（是实例，非任务）：查看轨迹 + 撤销（仅进行中）。不是办理人，无办理/转签。
-    acts = `<button class="todo-btn" data-view="${esc(t.taskId)}">查看</button>` +
-      (t.state === 'ACTIVE' ? `<button class="todo-btn" data-withdraw="${esc(t.instanceId)}" title="下游未处理时取回，可改后重交">取回</button><button class="todo-btn danger" data-cancel="${esc(t.instanceId)}">撤销</button>` : '')
+    acts = `<button class="todo-btn" data-view="${esc(t.taskId)}">查看</button>
+      <button class="todo-btn icon" data-card-menu="${esc(t.taskId)}" aria-haspopup="menu" aria-expanded="${menuOpen ? 'true' : 'false'}" title="更多操作"><ui5-icon name="overflow"></ui5-icon></button>
+      ${menuOpen ? `<div class="todo-card-menu" role="menu">
+        ${t.state === 'ACTIVE' ? `<button role="menuitem" data-withdraw="${esc(t.instanceId)}">取回</button><button role="menuitem" class="danger" data-cancel="${esc(t.instanceId)}">撤销</button>` : '<span>流程已结束</span>'}
+      </div>` : ''}`
   } else if (cat === 'cc') {
     acts = `<button class="todo-btn" data-view="${esc(t.taskId)}">查看</button>
             <button class="todo-btn" data-ccread="${esc(t.ccId || t.taskId)}">标记已读</button>`
@@ -275,9 +315,9 @@ function todoCard (t) {
   } else if (t.claimable) {
     acts = `<button class="todo-btn primary" data-claim="${esc(t.taskId)}">认领</button>`
   } else {
-    // 我的待办（办理人）
     acts = `<button class="todo-btn primary" data-open="${esc(t.taskId)}">办理</button>
-            <button class="todo-btn" data-transfer="${esc(t.taskId)}">转签</button>`
+      <button class="todo-btn icon" data-card-menu="${esc(t.taskId)}" aria-haspopup="menu" aria-expanded="${menuOpen ? 'true' : 'false'}" title="更多操作"><ui5-icon name="overflow"></ui5-icon></button>
+      ${menuOpen ? `<div class="todo-card-menu" role="menu"><button role="menuitem" data-transfer="${esc(t.taskId)}">转签</button></div>` : ''}`
   }
   const icon = cat === 'initiated' ? 'journey-arrive' : (t.claimable ? 'inbox' : (cat === 'cc' ? 'email' : (cat === 'done' ? 'accept' : 'workflow-tasks')))
   return `<article class="todo-card ${active ? 'active' : ''} ${t.urgent ? 'urgent' : ''}" data-task="${esc(t.taskId)}">
@@ -305,6 +345,138 @@ function fmtTime (iso) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+function displayActor (row) {
+  const id = String(row?.userId || row?.user_id || row?.assignee || '')
+  const cached = id ? globalThis.__cmxFlowUsers?.[id] : null
+  return row?.nickName || row?.userName || row?.nickname || row?.username || cached?.nickName || cached?.userName || row?.userId || row?.user_id || row?.assignee || '—'
+}
+
+const APPROVAL_ACTION_LABELS = {
+  approve: '同意', reject: '驳回', return: '退回', submit: '制单',
+  complete: '办结', transfer: '转签', withdraw: '取回', cancel: '撤销',
+}
+
+// 与 task-form 保持同版本：待办中心轻量进度与办理页完整轨迹必须由同一套算法产出。
+const APPROVAL_VIEW_MODEL_VERSION = '20260831-step-time-1'
+
+function normalizeApprovalAction (row, node) {
+  const raw = String(row?.decision ?? '').trim()
+  const key = raw.toLowerCase()
+  if (key && APPROVAL_ACTION_LABELS[key]) {
+    return { key, label: APPROVAL_ACTION_LABELS[key], tone: key === 'reject' ? 'rej' : (key === 'return' || key === 'withdraw' ? 'warn' : 'ok') }
+  }
+  if (key) return { key, label: raw, tone: 'ok' }
+  const id = String(node?.id || row?.nodeBpmnId || '').toLowerCase()
+  const isCreation = id === 'apply' || id === 'start' || String(node?.name || '').includes('发起')
+  return { key: isCreation ? 'submit' : 'complete', label: isCreation ? '制单' : '办理', tone: 'ok' }
+}
+
+function normalizeApprovalComment (row, node) {
+  const action = normalizeApprovalAction(row, node)
+  const text = String(row?.comment ?? '').trim()
+  return {
+    id: String(row?.id || row?.taskId || `${row?.nodeBpmnId || 'unknown'}-${row?.createdAt || row?.userId || Math.random()}`),
+    nodeId: String(row?.nodeBpmnId || ''),
+    actor: displayActor(row),
+    action,
+    text: text || (action.key === 'submit' ? '制单提交' : '（未填写意见）'),
+    createdAt: row?.createdAt || '',
+    time: fmtTime(row?.createdAt),
+  }
+}
+
+function graphHasBranch (definition) {
+  const count = new Map()
+  for (const e of (definition?.edges || [])) count.set(e.from, (count.get(e.from) || 0) + 1)
+  return Array.from(count.values()).some((n) => n > 1)
+}
+
+function buildApprovalSteps ({ instance, definition, comments, task }) {
+  const inst = instance || {}
+  const activeIds = new Set([
+    ...((inst.tokens || []).map((x) => String(x.nodeBpmnId || ''))),
+    ...((inst.activeNodes || []).map((x) => String(x || ''))),
+  ].filter(Boolean))
+  const tasks = inst.tasks || []
+  const completedIds = new Set(tasks.filter((x) => x.completed).map((x) => String(x.nodeBpmnId || '')).filter(Boolean))
+  // 只把真实执行证据（活动令牌 / 任务）补进节点轴；意见找不到节点时保留 unmatched，不伪造成步骤。
+  const observedIds = new Set([...activeIds, ...completedIds])
+  const branch = graphHasBranch(definition)
+  let nodes = []
+  if (Array.isArray(definition?.nodes) && definition.nodes.length) {
+    nodes = definition.nodes
+      .filter((n) => String(n?.kind || '') === 'userTask' || observedIds.has(String(n?.id || '')))
+      .map((n) => ({ ...n, id: String(n.id || ''), source: 'definition' }))
+  } else if (Array.isArray(inst.nodes) && inst.nodes.length) {
+    nodes = inst.nodes.map((n) => ({ ...n, id: String(n.id || ''), source: 'instance' }))
+  } else {
+    const seen = new Set()
+    nodes = tasks
+      .map((x) => ({ id: String(x.nodeBpmnId || ''), name: x.name || x.nodeBpmnId, kind: 'userTask', source: 'observed' }))
+      .filter((n) => n.id && !seen.has(n.id) && seen.add(n.id))
+  }
+  const knownIds = new Set(nodes.map((n) => n.id))
+  for (const id of observedIds) {
+    if (knownIds.has(id)) continue
+    nodes.push({ id, name: tasks.find((x) => String(x.nodeBpmnId || '') === id)?.name || id, kind: 'userTask', source: 'observed' })
+    knownIds.add(id)
+  }
+  const normalized = (comments || []).map((c) => normalizeApprovalComment(c, nodes.find((n) => n.id === String(c.nodeBpmnId || ''))))
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+  const mismatch = normalized.some((c) => c.nodeId && !knownIds.has(c.nodeId))
+  const steps = nodes.map((node, index) => {
+    const current = activeIds.has(node.id)
+    const done = !current && completedIds.has(node.id)
+    const uncertain = !current && !done && branch
+    const nodeTasks = tasks.filter((x) => String(x.nodeBpmnId || '') === node.id)
+    const nodeComments = normalized.filter((c) => c.nodeId === node.id)
+    const isSelectedTaskNode = current && String(task?.nodeBpmnId || '') === node.id
+    const latestComment = nodeComments[nodeComments.length - 1] || null
+    const stepTime = current
+      ? (isSelectedTaskNode ? (task?.createdAt || task?.taskCreatedAt || '') : (latestComment?.createdAt || ''))
+      : (done ? (latestComment?.createdAt || '') : '')
+    return {
+      id: node.id, name: node.name || node.id, index,
+      status: current ? 'current' : (done ? 'done' : (uncertain ? 'possible' : 'pending')),
+      statusText: current ? '当前' : (done ? '已完成' : (uncertain ? '可能' : '待处理')),
+      time: stepTime,
+      timeText: fmtTime(stepTime),
+      timeLabel: current ? '到达时间' : (done ? '完成时间' : ''),
+      actors: Array.from(new Set(nodeTasks.map((x) => x.assignee || x.ownerUserId).filter(Boolean))),
+      comments: nodeComments,
+      source: node.source,
+    }
+  })
+  return { steps, unmatchedActions: normalized.filter((c) => !c.nodeId || !knownIds.has(c.nodeId)), definitionMismatch: mismatch }
+}
+
+function buildApprovalViewModel ({ instance, definition, comments, task }) {
+  const shared = globalThis.__cmxFlowApprovalView?.buildApprovalViewModel
+  // task-form 已注册同构实现时优先复用；本页自身注册则直接走本地实现。
+  if (typeof shared === 'function' && globalThis.__cmxFlowApprovalView?.version === APPROVAL_VIEW_MODEL_VERSION && shared !== buildApprovalViewModel) return shared({ instance, definition, comments, task })
+  const inst = instance || {}
+  const built = buildApprovalSteps({ instance: inst, definition, comments, task })
+  const actions = [...built.steps.flatMap((s) => s.comments), ...built.unmatchedActions]
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+  const current = built.steps.find((s) => s.status === 'current')
+  return {
+    meta: {
+      businessKey: inst.businessKey || task?.businessKey || inst.id || task?.instanceId || '',
+      definitionName: definition?.name || task?.definitionName || inst.definitionKey || task?.definitionKey || '',
+      instanceState: inst.state || task?.state || '',
+      currentNode: current?.name || task?.nodeName || task?.currentNode || '',
+    },
+    ...built,
+    latestAction: actions[0] || null,
+  }
+}
+try {
+  const existing = globalThis.__cmxFlowApprovalView
+  globalThis.__cmxFlowApprovalView = existing?.version === APPROVAL_VIEW_MODEL_VERSION
+    ? existing
+    : { version: APPROVAL_VIEW_MODEL_VERSION, buildApprovalViewModel }
+} catch {}
+
 // 多实例子任务的元素（②）→ 卡片上的紧凑标签：对象取代表字段(name/title/sku/label/code/id)，
 // 否则 JSON 缩略；标量原样。null/空 → 空串（卡片不渲染该 chip）。
 function elementLabel (v) {
@@ -325,99 +497,120 @@ function elementLabel (v) {
 function propertyHtml () {
   const t = state.selected
   if (!t) {
-    return `<section class="todo todo-prop"><div class="todo-prop-head"><b>流转记录</b><small>未选中</small></div>
-      <div class="todo-empty"><ui5-icon name="detail-view"></ui5-icon><span>点击一条待办<br>查看流转记录</span></div></section>`
+    return `<section class="todo todo-prop"><div class="todo-prop-head"><b>流程概览</b><small>未选中</small></div>
+      <div class="todo-empty"><ui5-icon name="detail-view"></ui5-icon><span>点击一条待办<br>查看轻量流程进度</span></div></section>`
   }
+  if (state.trailLoading) {
+    return `<section class="todo todo-prop">
+      <div class="todo-prop-head"><b>${esc(t.businessKey || t.instanceId)}</b><small>加载中…</small></div>
+      <div class="todo-prop-body"><div class="todo-skeleton-list"><span></span><span></span><span></span></div></div>
+    </section>`
+  }
+  if (state.trailError) {
+    return `<section class="todo todo-prop">
+      <div class="todo-prop-head"><b>${esc(t.businessKey || t.instanceId)}</b><small>加载失败</small></div>
+      <div class="todo-prop-body"><div class="todo-inline-error">${esc(state.trailError)}</div>
+        <div class="todo-actions"><button class="todo-btn" data-reload-trail>重试</button></div></div>
+    </section>`
+  }
+  const vm = buildApprovalViewModel({
+    instance: state.trail,
+    definition: state.trailDefinition,
+    comments: state.comments,
+    task: {
+      ...t,
+      nodeBpmnId: t.nodeBpmnId || t.currentNode || '',
+      createdAt: t.createdAt || '',
+    },
+  })
+  const stateText = ({ ACTIVE: '进行中', COMPLETED: '已完成', TERMINATED: '已终止' })[vm.meta.instanceState] || vm.meta.instanceState || '—'
   return `<section class="todo todo-prop">
-    <div class="todo-prop-head"><b>${esc(t.businessKey || t.instanceId)}</b><small>${esc(t.nodeName || '')}</small></div>
+    <div class="todo-prop-head"><b>${esc(vm.meta.businessKey || t.instanceId)}</b><small>${esc(vm.meta.definitionName || '')} · ${esc(stateText)}</small></div>
     <div class="todo-prop-body">
-      <div class="todo-sec">流转记录</div>${flowTimelineHtml()}
+      <div class="todo-summary">
+        <div><span>当前节点</span><b>${esc(vm.meta.currentNode || '—')}</b></div>
+        <div><span>单据状态</span><b>${esc(stateText)}</b></div>
+      </div>
+      <div class="todo-sec">流程进度</div>${compactTimelineHtml(vm)}
+      <div class="todo-sec">最新流转</div>${vm.latestAction ? commentCardHtml(vm.latestAction) : '<div class="todo-hint">暂无流转记录</div>'}
     </div></section>`
 }
 
-// 办理人显示名：优先服务端姓名快照（nickName 昵称优先 / userName username 口径，
-// 20260827 起随意见落库），存量行无快照回退 userId。
-function displayUserName (c) {
-  return c.nickName || c.userName || c.userId || '—'
-}
-
-// UI5 Wizard 是“可交互向导 + 内容滚动区”，不适合右侧栏的只读流程历史；
-// 这里用 AntD Steps 的竖向语义重排：步骤只表达节点进度，意见作为步骤描述展示。
-function flowTimelineHtml () {
-  const nodes = state.trail?.nodes || []
-  const tokens = state.trail?.tokens || []
-  const tasks = state.trail?.tasks || []
-  const currentIds = new Set(tokens.map((k) => k.nodeBpmnId))
-  const nodeIds = new Set(nodes.map((n) => String(n.id || '')))
-  const rows = nodes.map((n, idx) => {
-    const id = String(n.id || '')
-    const isCurrent = currentIds.has(id)
-    const isDone = tasks.some((x) => x.nodeBpmnId === id && x.completed)
-    const status = isCurrent ? 'current' : (isDone ? 'done' : 'pending')
-    const statusText = isCurrent ? '当前' : (isDone ? '已完成' : '待处理')
-    const comments = state.comments.filter((c) => String(c.nodeBpmnId || '') === id)
-    return `<li class="todo-flow-node ${status}"${isCurrent ? ' aria-current="step"' : ''}>
-      <div class="todo-flow-rail"><span class="todo-flow-step">${flowStepIndicatorHtml(status, idx)}</span></div>
+// 待办中心只做轻量预览：展示节点状态与最新一条记录；完整意见与办理动作进入办理页。
+function compactTimelineHtml (vm) {
+  if (!vm.steps.length && !vm.unmatchedActions.length) return '<div class="todo-hint">暂无流程节点</div>'
+  const rows = vm.steps.map((step, idx) => `<li class="todo-flow-node ${step.status}"${step.status === 'current' ? ' aria-current="step"' : ''}>
+      <div class="todo-flow-rail"><span class="todo-flow-step">${step.status === 'done' ? '<ui5-icon name="accept"></ui5-icon>' : String(idx + 1)}</span></div>
       <div class="todo-flow-content">
-        <div class="todo-flow-title"><b>${esc(n.name || n.id)}</b><span class="todo-flow-state">${statusText}</span></div>
-        ${comments.length ? `<div class="todo-flow-comments">${comments.map(commentCardHtml).join('')}</div>` : ''}
+        <div class="todo-flow-title"><b>${esc(step.name)}</b><span class="todo-flow-state">${esc(step.statusText)}</span></div>
+        <div class="todo-flow-meta">
+          <span class="todo-flow-time" title="${esc(step.timeLabel || '时间')}${step.timeText ? '：' + esc(step.timeText) : ''}"><ui5-icon name="history"></ui5-icon>${esc(step.timeText || '—')}</span>
+          ${step.actors.length ? `<span class="todo-flow-actors">办理人：${step.actors.map((x) => esc(displayActor({ userId: x }))).join('、')}</span>` : ''}
+        </div>
       </div>
-    </li>`
-  }).join('')
-  const otherComments = state.comments.filter((c) => {
-    const id = String(c.nodeBpmnId || '')
-    return !id || !nodeIds.has(id)
-  })
-  // unmatched 记录直接追加到时间线末尾：保留数据，不额外造一个类似节点名的分组标题。
-  const otherRows = otherComments.map((c) => `<li class="todo-flow-node other">
-    <div class="todo-flow-rail"><span class="todo-flow-step record"></span></div>
-    <div class="todo-flow-content">${commentCardHtml(c)}</div>
-  </li>`).join('')
-  return rows || otherRows
-    ? `<ol class="todo-flow">${rows}${otherRows}</ol>`
-    : '<div class="todo-hint">暂无流转记录</div>'
-}
-
-function flowStepIndicatorHtml (status, idx) {
-  if (status === 'done') return '<ui5-icon name="accept"></ui5-icon>'
-  return String(idx + 1)
+    </li>`).join('')
+  const otherRows = vm.unmatchedActions.map((c) => `<li class="todo-flow-node other">
+      <div class="todo-flow-rail"><span class="todo-flow-step record"></span></div>
+      <div class="todo-flow-content">${commentCardHtml(c)}</div>
+    </li>`).join('')
+  const mismatch = vm.definitionMismatch ? '<div class="todo-inline-warn">当前定义与实例轨迹存在版本差异，未识别节点已按实际记录追加。</div>' : ''
+  return `<ol class="todo-flow compact">${rows}${otherRows}</ol>${mismatch}`
 }
 
 function commentCardHtml (c) {
   return `<div class="todo-cmt">
-    <div class="todo-cmt-head"><b>${esc(displayUserName(c))}</b>
-      <span class="todo-cmt-dec ${commentDecisionClass(c)}">${esc(commentDecisionText(c))}</span>
-      <em>${esc(fmtTime(c.createdAt))}</em></div>
-    <div class="todo-cmt-body">${esc(commentBodyText(c))}</div></div>`
+    <div class="todo-cmt-head"><b>${esc(c.actor)}</b>
+      <span class="todo-cmt-dec ${c.action.tone}">${esc(c.action.label)}</span>
+      <em>${esc(c.time)}</em></div>
+    <div class="todo-cmt-body">${esc(c.text)}</div></div>`
 }
 
-function isCreationComment (c) {
-  return String(c.nodeBpmnId || '').trim().toLowerCase() === 'apply'
-}
-
-function commentDecisionClass (c) {
-  const decision = String(c.decision || '').trim().toLowerCase()
-  return decision === 'reject' ? 'rej' : (decision === 'return' ? 'warn' : 'ok')
-}
-
-function commentDecisionText (c) {
-  const decision = String(c.decision || '').trim()
-  if (decision) {
-    return ({ approve: '同意', reject: '驳回', return: '退回' })[decision.toLowerCase()] || decision
+function dialogHtml () {
+  const d = state.dialog
+  if (!d) return ''
+  if (d.kind === 'confirm') {
+    return `<div class="todo-dialog-mask" data-dialog>
+    <div class="todo-dialog ${d.intent || ''}" role="dialog" aria-modal="true" aria-labelledby="todo-dialog-title" tabindex="-1">
+        <div class="todo-dialog-head"><b id="todo-dialog-title">${esc(d.title)}</b></div>
+        <p>${esc(d.message)}</p>
+        ${d.error ? `<div class="todo-inline-error">${esc(d.error)}</div>` : ''}
+        <div class="todo-dialog-actions">
+          <button class="todo-btn" data-dialog-cancel>取消</button>
+          <button class="todo-btn ${d.intent === 'danger' ? 'danger' : 'primary'}" data-dialog-confirm ${d.submitting ? 'disabled' : ''}>${d.submitting ? '提交中…' : esc(d.confirmText || '确认')}</button>
+        </div>
+      </div>
+    </div>`
   }
-  return isCreationComment(c) ? '制单' : '办理'
-}
-
-function commentBodyText (c) {
-  const comment = String(c.comment || '').trim()
-  if (comment) return comment
-  return isCreationComment(c) ? '制单提交' : '（未填写意见）'
+  const users = (d.users || []).filter((u) => {
+    const kw = (d.keyword || '').trim().toLowerCase()
+    if (!kw) return true
+    return [u.id, u.username, u.nickname].some((v) => String(v || '').toLowerCase().includes(kw))
+  })
+  return `<div class="todo-dialog-mask" data-dialog>
+    <div class="todo-dialog" role="dialog" aria-modal="true" aria-labelledby="todo-user-title" tabindex="-1">
+      <div class="todo-dialog-head"><b id="todo-user-title">转签给</b><small>${esc(d.businessKey || '')}</small></div>
+      <div class="todo-search dialog-search"><ui5-icon name="search"></ui5-icon>
+        <input data-user-search value="${esc(d.keyword || '')}" placeholder="搜索姓名 / 账号 / 用户 ID"></div>
+      ${d.loading ? '<div class="todo-hint">加载用户…</div>' : ''}
+      ${d.error ? `<div class="todo-inline-error">${esc(d.error)}</div>` : ''}
+      <div class="todo-user-list">
+        ${users.length ? users.map((u) => `<button class="todo-user ${d.selectedUserId === u.id ? 'active' : ''}" data-user-id="${esc(u.id)}" data-user-name="${esc(u.nickname || u.username || u.id)}">
+            <b>${esc(u.nickname || u.username || u.id)}</b><small>${esc(u.username || '')} · ${esc(u.id)}</small>
+          </button>`).join('') : (d.loading ? '' : '<div class="todo-hint">没有匹配用户</div>')}
+      </div>
+      <div class="todo-dialog-actions">
+        <button class="todo-btn" data-dialog-cancel>取消</button>
+        <button class="todo-btn primary" data-dialog-confirm ${(d.selectedUserId && !d.submitting) ? '' : 'disabled'}>${d.submitting ? '提交中…' : '确认转签'}</button>
+      </div>
+    </div>
+  </div>`
 }
 
 // ————————————————————— 事件绑定 —————————————————————
 
 function bind (root, view, host) {
   root.querySelector('[data-act="refresh"]')?.addEventListener('click', () => loadTodos())
+  root.querySelector('[data-reload-trail]')?.addEventListener('click', () => selectTodo(state.selected?.taskId, true))
   if (view === 'explorer') {
     root.querySelectorAll('[data-cat]').forEach((b) => b.addEventListener('click', () => {
       switchCategory(b.dataset.cat)
@@ -428,17 +621,48 @@ function bind (root, view, host) {
     bindPager(root)
     root.querySelectorAll('.todo-card').forEach((card) => card.addEventListener('click', (e) => {
       if (e.target.closest('button')) return
-      if (card.dataset.task) selectTodo(card.dataset.task)
+      if (card.dataset.task) {
+        const menuChanged = state.cardMenu !== ''
+        state.cardMenu = ''
+        if (menuChanged) refreshView('content')
+        selectTodo(card.dataset.task)
+      }
     }))
     root.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); openTaskForm(b.dataset.open, b) }))
+    root.querySelectorAll('[data-card-menu]').forEach((b) => b.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const id = b.dataset.cardMenu
+      state.cardMenu = state.cardMenu === id ? '' : id
+      refreshView('content')
+    }))
     root.querySelectorAll('[data-claim]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); claimTodo(b.dataset.claim) }))
-    root.querySelectorAll('[data-transfer]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); transferTodo(b.dataset.transfer) }))
+    root.querySelectorAll('[data-transfer]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); openTransferDialog(b.dataset.transfer) }))
     root.querySelectorAll('[data-start]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); openStartForm(b.dataset.start, b) }))
     root.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); viewTodo(b.dataset.view, b) }))
     root.querySelectorAll('[data-cancel]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); cancelInstance(b.dataset.cancel) }))
     root.querySelectorAll('[data-withdraw]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); withdrawInstance(b.dataset.withdraw) }))
     root.querySelectorAll('[data-ccread]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); markCcRead(b.dataset.ccread) }))
+    bindDialog(root)
   }
+}
+
+function bindDialog (root) {
+  const mask = root.querySelector('[data-dialog]')
+  if (!mask) return
+  mask.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDialog() })
+  root.querySelector('[data-dialog-cancel]')?.addEventListener('click', closeDialog)
+  root.querySelector('[data-user-search]')?.addEventListener('input', (e) => {
+    state.dialog.keyword = e.target.value || ''
+    state.dialog.focusSearch = true
+    refreshView('content')
+    requestAnimationFrame(() => root.querySelector('[data-user-search]')?.focus())
+  })
+  root.querySelectorAll('[data-user-id]').forEach((b) => b.addEventListener('click', () => {
+    state.dialog.selectedUserId = b.dataset.userId
+    state.dialog.selectedUserName = b.dataset.userName
+    refreshView('content')
+  }))
+  root.querySelector('[data-dialog-confirm]')?.addEventListener('click', () => confirmDialogAction())
 }
 
 // 切换待办分类：重置分页与过滤，避免跨类残留。
@@ -446,9 +670,16 @@ function switchCategory (key) {
   if (state.category === key) return
   state.category = key
   state.selected = null
+  state.trail = null
+  state.trailDefinition = null
+  state.comments = []
+  state.trailLoading = false
+  state.trailError = ''
+  state.cardMenu = ''
+  if (state.dialog && !state.dialog.submitting) state.dialog = null
   state.page = 1
   state.filter = { keyword: '', definitionKey: '', nodeBpmnId: '', state: '' }
-  refreshView('explorer'); loadTodos()
+  refreshView('explorer'); refreshView('property'); loadTodos()
 }
 
 // 工具条：关键字（回车/失焦即查）+ 三个下拉 change 即查。改任一过滤都回到第 1 页。
@@ -507,7 +738,9 @@ function filterQs (extra) {
 }
 
 async function loadTodos () {
+  state.cardMenu = ''
   state.loading = true; refreshView('content')
+  state.error = ''
   const user = currentUser()
   try {
     if (state.category === 'initiate') {
@@ -533,7 +766,11 @@ async function loadTodos () {
       state.todos = (d.tasks || []).map((x) => ({ ...x, definitionName: x.definitionKey }))
       state.total = d.total || 0
     }
-  } catch (e) { toast('加载失败: ' + e.message); state.todos = []; state.startables = []; state.total = 0 }
+  } catch (e) {
+    state.error = `加载失败：${e.message}`
+    state.todos = []; state.startables = []; state.total = 0
+    toast(state.error)
+  }
   state.loading = false; refreshView('content'); refreshView('explorer')
 }
 
@@ -570,21 +807,51 @@ function stateLabel (s) {
   return ({ ACTIVE: '进行中', COMPLETED: '已完成', TERMINATED: '已终止' })[s] || s || ''
 }
 
-async function selectTodo (taskId) {
+const fullDefinitionCache = {}
+async function loadFullDefinition (key) {
+  if (!key) return null
+  if (fullDefinitionCache[key]) return fullDefinitionCache[key]
+  try {
+    const d = await apiJson('/api/flow/definitions')
+    for (const item of (d?.definitions || [])) fullDefinitionCache[item.key] = item
+  } catch { /* 定义失败时保留实例已发生路径 */ }
+  return fullDefinitionCache[key] || null
+}
+
+async function selectTodo (taskId, force) {
   const t = state.todos.find((x) => x.taskId === taskId)
   if (!t) return
+  if (state.selected?.taskId === taskId && !force) return
   state.selected = t
+  state.trailLoading = true
+  state.trailError = ''
+  state.trail = null
+  state.trailDefinition = null
+  state.comments = []
   refreshView('content')
-  // 拉轨迹 + 意见
+  refreshView('property')
+  // 实例接口不返回定义 nodes；并行拉实例、意见、定义，统一交给视图模型生成轨迹。
   try {
     if (t.instanceId) {
-      state.trail = await apiJson(`/api/flow/instances/${enc(t.instanceId)}`)
-      const c = await apiJson(`/api/flow/instances/${enc(t.instanceId)}/comments`)
-      state.comments = c.comments || []
+      const [inst, commentEnvelope] = await Promise.all([
+        apiJson(`/api/flow/instances/${enc(t.instanceId)}`),
+        apiJson(`/api/flow/instances/${enc(t.instanceId)}/comments`).catch(() => null),
+        loadUserSnapshots(),
+      ])
+      state.trail = inst
+      state.comments = Array.isArray(commentEnvelope?.comments) ? commentEnvelope.comments : []
+      state.trailDefinition = await loadFullDefinition(inst.definitionKey || t.definitionKey)
+    } else {
+      state.trailError = '该记录没有流程实例标识'
     }
-  } catch { state.trail = null; state.comments = [] }
+  } catch (e) {
+    state.trail = null; state.comments = []; state.trailDefinition = null
+    state.trailError = `流程轨迹加载失败：${e.message}`
+  }
+  state.trailLoading = false
   refreshView('property')
 }
+
 
 // 发起流程：解析 startFormKey → 打开发起表单（task-form 的 mode:'start'）。
 function openStartForm (defKey, sourceEl) {
@@ -652,9 +919,12 @@ function buildAndOpenTaskForm (t, f, sourceEl) {
   const taskCtx = {
     mode: 'task', formKey: t.formKey || '', formMode: t.formMode || 'approve',
     taskId: t.taskId, instanceId: t.instanceId,
+    definitionKey: t.definitionKey || '', definitionName: t.definitionName || '',
     bizTable: t.bizTable || f.bizTable || '', bizId: t.bizId || '',
-    businessKey: t.businessKey || '', nodeName: t.nodeName || '',
+    businessKey: t.businessKey || '', nodeBpmnId: t.nodeBpmnId || '', nodeName: t.nodeName || '',
+    taskCreatedAt: t.createdAt || '',
     domain: f.domain || '', application: f.application || '', module: f.module || '', file: f.file || '', apiPath: f.apiPath || '',
+    consoleMode: f.console || 'platform',
   }
   const sid = slug(`${t.instanceId}-${t.taskId}`)
   const title = `${t.businessKey || t.instanceId} · ${t.nodeName || ''}`
@@ -666,7 +936,7 @@ function buildAndOpenTaskForm (t, f, sourceEl) {
     id: `flow-task-${sid}-prop`, tabLabel: '审批', icon: 'detail-view',
     type: 'native_pages', native_page: 'portal.flow.task-form', view: 'property', props: { ...taskCtx },
   }
-  const usePlatformConsole = f.console !== 'none' 
+  const usePlatformConsole = f.console !== 'none'
 
   // content 区 = 节点 formKey 定义的真实表单页。三种来源：
   //   ① html_page → 门户原生 hydrate 的 html-pages 业务表单
@@ -708,7 +978,7 @@ function buildAndOpenTaskForm (t, f, sourceEl) {
           : {
               property: {
                 caption: '流程轨迹', icon: 'detail-view',
-                views: [Object.assign({}, propView, { props: { ...taskCtx, viewOnly: true } })],
+                views: [Object.assign({}, propView, { tabLabel: '流转', props: { ...taskCtx, viewOnly: true } })],
               },
             }),
     },
@@ -721,10 +991,13 @@ function taskCtxOf (t, f) {
   return {
     mode: 'task', formKey: t.formKey || '', formMode: t.formMode || 'approve',
     taskId: t.taskId, instanceId: t.instanceId,
+    definitionKey: t.definitionKey || '', definitionName: t.definitionName || '',
     bizTable: t.bizTable || (f && f.bizTable) || '', bizId: t.bizId || '',
-    businessKey: t.businessKey || '', nodeName: t.nodeName || '',
+    businessKey: t.businessKey || '', nodeBpmnId: t.nodeBpmnId || '', nodeName: t.nodeName || '',
+    taskCreatedAt: t.createdAt || '',
     domain: (f && f.domain) || '', application: (f && f.application) || '', module: (f && f.module) || '',
     file: (f && f.file) || '', apiPath: (f && f.apiPath) || '',
+    consoleMode: (f && f.console) || 'platform',
   }
 }
 
@@ -752,9 +1025,13 @@ async function buildWorkspaceWorknode (t, f, sourceEl, opts) {
   if (!Array.isArray(workspace.property.views)) workspace.property.views = []
   workspace.property.views.push({
     id: 'flow-task-approval',
-    tabLabel: readonly ? '轨迹' : '审批', icon: 'detail-view',
+    tabLabel: readonly || f.console === 'none' ? '轨迹' : '审批', icon: 'detail-view',
     type: 'native_pages', native_page: 'portal.flow.task-form', view: 'property',
-    props: { ...taskCtx, formMode: readonly ? 'readonly' : (t.formMode || 'approve'), viewOnly: readonly },
+    props: {
+      ...taskCtx,
+      formMode: readonly ? 'readonly' : (t.formMode || 'approve'),
+      viewOnly: readonly || f.console === 'none',
+    },
   })
 
   const sid = slug(`${t.instanceId}-${t.taskId}`)
@@ -839,48 +1116,167 @@ async function claimTodo (taskId) {
   } catch (e) { toast('认领失败: ' + e.message) }
 }
 
-async function transferTodo (taskId) {
+function normalizeUser (u) {
+  if (!u) return null
+  return {
+    id: String(u.id || u.userId || u.user_id || ''),
+    username: String(u.username || u.userName || ''),
+    nickname: String(u.nickname || u.nickName || ''),
+  }
+}
+
+async function openTransferDialog (taskId) {
   const t = state.todos.find((x) => x.taskId === taskId)
   if (!t) return
-  const to = window.prompt('转签给（用户 id）：')
-  if (!to) return
+  state.cardMenu = ''
+  state.dialog = {
+    kind: 'transfer', taskId, task: t, businessKey: t.businessKey || t.instanceId,
+    users: [], keyword: '', selectedUserId: '', selectedUserName: '',
+    loading: true, error: '', submitting: false,
+  }
+  refreshView('content')
+  focusDialog()
   try {
-    await apiJson(`/api/flow/tasks/${enc(taskId)}/transfer`, {
+    let users = []
+    try {
+      const portalUsers = await apiJson('/api/iam/users/list', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pageSize: 100 }),
+      })
+      users = (Array.isArray(portalUsers) ? portalUsers : portalUsers?.items || []).map(normalizeUser).filter(Boolean)
+    } catch { /* 门户用户目录不可用时退回 flow identity */ }
+    if (!users.length) {
+      const flowUsers = await apiJson('/api/flow/identity/users').catch(() => null)
+      users = (flowUsers?.items || []).map(normalizeUser).filter(Boolean)
+    }
+    if (state.dialog?.kind !== 'transfer' || state.dialog.taskId !== taskId) return
+    state.dialog.users = users.filter((u) => u.id)
+    rememberUserSnapshots(users)
+    state.dialog.loading = false
+  } catch (e) {
+    if (state.dialog?.kind !== 'transfer' || state.dialog.taskId !== taskId) return
+    state.dialog.loading = false
+    state.dialog.error = `用户列表加载失败：${e.message}`
+  }
+  refreshView('content')
+  focusDialog()
+}
+
+function openConfirmDialog ({ title, message, intent, confirmText, action, payload }) {
+  state.cardMenu = ''
+  state.dialog = { kind: 'confirm', title, message, intent, confirmText, action, payload }
+  refreshView('content')
+  focusDialog()
+}
+
+function focusDialog () {
+  requestAnimationFrame(() => {
+    for (const host of state.hosts) {
+      const el = hostRoot(host)?.querySelector?.('.todo-dialog')
+      if (el) { el.focus(); return }
+    }
+  })
+}
+
+function closeDialog () {
+  if (state.dialog?.submitting) return
+  state.dialog = null
+  refreshView('content')
+}
+
+async function confirmDialogAction () {
+  const d = state.dialog
+  if (!d || d.submitting) return
+  if (d.kind === 'confirm') {
+    if (d.action === 'cancel') await performCancelInstance(d.payload)
+    if (d.action === 'withdraw') await performWithdrawInstance(d.payload)
+    return
+  }
+  if (!d.selectedUserId) return
+  d.submitting = true
+  refreshView('content')
+  try {
+    await apiJson(`/api/flow/tasks/${enc(d.taskId)}/transfer`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instanceId: t.instanceId, fromUser: currentUser(), toUser: to, reason: '待办中心转签' }),
+      body: JSON.stringify({
+        instanceId: d.task.instanceId,
+        fromUser: currentUser(),
+        toUser: d.selectedUserId,
+        reason: `待办中心转签给 ${d.selectedUserName || d.selectedUserId}`,
+      }),
     })
-    toast('已转签给 ' + to)
+    state.dialog = null
+    toast(`已转签给 ${d.selectedUserName || d.selectedUserId}`)
     loadTodos()
-  } catch (e) { toast('转签失败: ' + e.message) }
+  } catch (e) {
+    d.submitting = false
+    d.error = `转签失败：${e.message}`
+    refreshView('content')
+  }
 }
 
 // 我发起的：撤销一个进行中的实例（发起人视角动作）。
 async function cancelInstance (instanceId) {
   if (!instanceId) return
-  if (!window.confirm('确认撤销该流程实例？撤销后不可恢复。')) return
+  openConfirmDialog({
+    title: '撤销流程',
+    message: '确认撤销该流程实例？撤销后不可恢复。',
+    intent: 'danger',
+    confirmText: '撤销',
+    action: 'cancel',
+    payload: instanceId,
+  })
+}
+
+async function performCancelInstance (instanceId) {
+  const d = state.dialog
+  if (!d) return
+  d.submitting = true
+  refreshView('content')
   try {
     await apiJson(`/api/flow/instances/${enc(instanceId)}/cancel`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason: '发起人在待办中心撤销' }),
     })
+    state.dialog = null
     toast('已撤销')
     loadTodos()
-  } catch (e) { toast('撤销失败: ' + e.message) }
+  } catch (e) {
+    d.submitting = false
+    d.error = `撤销失败：${e.message}`
+    refreshView('content')
+  }
 }
 
-// 我发起的：取回 / 撤回（④）——下游未处理时拉回发起处（可改后重交）。后端护栏校验发起人 + 策略，
-// 不满足则返回原因，这里 toast 提示（区别于「撤销」的整单终止）。
+// 我发起的：取回 / 撤回——下游未处理时拉回发起处，可修改后重新提交。
 async function withdrawInstance (instanceId) {
   if (!instanceId) return
-  if (!window.confirm('确认取回该流程？取回后流程回到你手中，可修改后重新提交。')) return
+  openConfirmDialog({
+    title: '取回流程',
+    message: '确认取回该流程？取回后流程回到你手中，可修改后重新提交。',
+    confirmText: '取回',
+    action: 'withdraw',
+    payload: instanceId,
+  })
+}
+
+async function performWithdrawInstance (instanceId) {
+  const d = state.dialog
+  if (!d) return
+  d.submitting = true
+  refreshView('content')
   try {
     await apiJson(`/api/flow/instances/${enc(instanceId)}/withdraw`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user: currentUser(), reason: '发起人在待办中心取回' }),
     })
+    state.dialog = null
     toast('已取回，可修改后重新提交')
     loadTodos()
-  } catch (e) { toast('取回失败: ' + e.message) }
+  } catch (e) {
+    d.submitting = false
+    d.error = `取回失败：${e.message}`
+    refreshView('content')
+  }
 }
 
 // 抄送我的：标记一条抄送为已读。
@@ -937,7 +1333,7 @@ function styleCss () {
   .todo-cat.active::before{content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:20px;border-radius:0 3px 3px 0;background:var(--brand)}
   .todo-cat-ic{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;background:color-mix(in srgb,var(--brand) 10%,var(--tile));color:var(--brand);flex:0 0 auto;transition:all .13s}
   .todo-cat-ic ui5-icon{width:1rem;height:1rem}
-  .todo-cat.active .todo-cat-ic{background:var(--brand);color:var(--sapButton_Emphasized_TextColor,#fff);box-shadow:0 4px 12px color-mix(in srgb,var(--brand) 34%,transparent)}
+  .todo-cat.active .todo-cat-ic{background:var(--brand);color:var(--sapButton_Emphasized_TextColor,var(--sapBaseColor));box-shadow:0 4px 12px color-mix(in srgb,var(--brand) 34%,transparent)}
   .todo-cat-main{min-width:0} .todo-cat-main b{display:block;font-size:13px;font-weight:600} .todo-cat-main small{display:block;font-size:10.5px;color:var(--muted);margin-top:1px}
   .todo-cat.active .todo-cat-main b{color:var(--brand)}
 
@@ -945,12 +1341,15 @@ function styleCss () {
   .todo-content{height:100%}
   .todo-bar{display:flex;align-items:center;gap:8px;min-height:48px;flex:0 0 auto;padding:7px 14px;border-bottom:1px solid var(--line-soft);background:var(--header);flex-wrap:wrap}
   .todo-bar b{font-size:14px;font-weight:700;white-space:nowrap}
-  .todo-count{min-width:22px;height:20px;padding:0 7px;border-radius:999px;background:var(--brand);color:var(--sapButton_Emphasized_TextColor,#fff);font-size:11px;font-weight:800;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .todo-count{min-width:22px;height:20px;padding:0 7px;border-radius:999px;background:var(--brand);color:var(--sapButton_Emphasized_TextColor,var(--sapBaseColor));font-size:11px;font-weight:800;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto}
   .todo-sp{flex:1 1 12px}
   .todo-btn{font:inherit;font-size:12px;border:1px solid var(--line);background:var(--tile);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:600;display:inline-flex;align-items:center;gap:5px;transition:all .13s;white-space:nowrap}
   .todo-btn:hover{border-color:var(--brand-line);color:var(--brand);background:var(--brand-soft)}
-  .todo-btn.primary{background:var(--brand);border-color:var(--brand);color:var(--sapButton_Emphasized_TextColor,#fff);box-shadow:0 2px 8px color-mix(in srgb,var(--brand) 26%,transparent)}
-  .todo-btn.primary:hover{background:color-mix(in srgb,var(--brand) 86%,#000);color:var(--sapButton_Emphasized_TextColor,#fff)}
+  .todo-btn.primary{background:var(--brand);border-color:var(--brand);color:var(--sapButton_Emphasized_TextColor,var(--sapBaseColor));box-shadow:0 2px 8px color-mix(in srgb,var(--brand) 26%,transparent)}
+  .todo-btn.primary:hover{background:color-mix(in srgb,var(--brand) 86%,var(--sapBaseColor));color:var(--sapButton_Emphasized_TextColor,var(--sapBaseColor))}
+  .todo-btn.danger{border-color:color-mix(in srgb,var(--red) 40%,var(--line));color:var(--red)}
+  .todo-btn.danger:hover{background:color-mix(in srgb,var(--red) 10%,var(--tile));color:var(--red)}
+  .todo-btn:disabled{opacity:.55;cursor:not-allowed}
   .todo-btn ui5-icon{width:.85rem;height:.85rem}
   .todo-list{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:10px;background:var(--surface)}
 
@@ -995,8 +1394,15 @@ function styleCss () {
   .todo-card-meta span.node ui5-icon{flex:0 0 auto}
   .todo-card-meta span.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 38%,var(--line));background:color-mix(in srgb,var(--warn) 10%,var(--tile))}
   .todo-card-meta ui5-icon{width:.72rem;height:.72rem}
-  .todo-card-act{display:flex;flex-direction:row;align-items:center;gap:6px;flex:0 0 auto}
+  .todo-card-act{position:relative;display:flex;flex-direction:row;align-items:center;gap:6px;flex:0 0 auto}
   .todo-card-act .todo-btn{white-space:nowrap}
+  .todo-btn.icon{width:32px;padding:0;display:inline-flex;align-items:center;justify-content:center}
+  .todo-btn.icon ui5-icon{width:.95rem;height:.95rem}
+  .todo-card-menu{position:absolute;right:0;top:38px;z-index:12;min-width:112px;padding:5px;border:1px solid var(--line-soft);border-radius:9px;background:var(--tile);box-shadow:0 12px 32px color-mix(in srgb,var(--ink) 18%,transparent);display:flex;flex-direction:column;gap:3px}
+  .todo-card-menu button,.todo-card-menu span{border:0;background:transparent;color:var(--ink);font:inherit;font-size:12.5px;text-align:left;padding:7px 9px;border-radius:7px;cursor:pointer}
+  .todo-card-menu button:hover,.todo-card-menu button:focus-visible{background:color-mix(in srgb,var(--brand) 10%,var(--tile));outline:none}
+  .todo-card-menu span{color:var(--muted);cursor:default}
+  .todo-card-menu .danger{color:var(--red)}
   .todo-empty{display:flex;flex-direction:column;align-items:center;gap:10px;color:var(--muted);font-size:12.5px;padding:56px 16px;text-align:center}
   .todo-empty ui5-icon{width:2rem;height:2rem;color:color-mix(in srgb,var(--muted) 60%,transparent)}
 
@@ -1004,6 +1410,17 @@ function styleCss () {
   .todo-prop-head{height:48px;flex:0 0 auto;display:flex;flex-direction:column;justify-content:center;padding:0 15px;border-bottom:1px solid var(--line-soft);background:var(--header)}
   .todo-prop-head b{font-size:14px;font-weight:700} .todo-prop-head small{display:block;font-size:10.5px;color:var(--muted);margin-top:1px}
   .todo-prop-body{padding:14px 15px;overflow:auto}
+  .todo-summary{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:4px}
+  .todo-summary div{min-width:0;border:1px solid var(--line-soft);border-radius:8px;padding:7px 9px;background:color-mix(in srgb,var(--ink) 3%,var(--tile))}
+  .todo-summary span{display:block;font-size:10.5px;color:var(--muted)}
+  .todo-summary b{display:block;margin-top:2px;font-size:12px;overflow-wrap:anywhere}
+  .todo-inline-error{font-size:12px;color:var(--red);background:color-mix(in srgb,var(--red) 10%,var(--tile));border-radius:8px;padding:8px 10px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--red) 26%,transparent)}
+  .todo-inline-warn{margin-top:8px;font-size:12px;color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,var(--tile));border-radius:8px;padding:8px 10px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--warn) 26%,transparent)}
+  .todo-actions{display:flex;gap:8px;margin-top:9px}
+  .todo-skeleton-list{display:flex;flex-direction:column;gap:10px}
+  .todo-skeleton-list span{height:36px;border-radius:8px;background:color-mix(in srgb,var(--ink) 8%,transparent);animation:todo-skeleton 1.2s ease-in-out infinite}
+  .todo-skeleton-list span:nth-child(2){animation-delay:.16s}.todo-skeleton-list span:nth-child(3){animation-delay:.32s}
+  @keyframes todo-skeleton{0%,100%{opacity:.55}50%{opacity:1}}
   .todo-sec{font-size:11px;font-weight:800;color:var(--brand);letter-spacing:.04em;text-transform:uppercase;margin:16px 0 9px;padding-bottom:6px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:6px}
   .todo-sec:first-child{margin-top:0}
   .todo-flow{display:block;margin:0;padding:0 0 4px;list-style:none}
@@ -1017,6 +1434,7 @@ function styleCss () {
   .todo-flow-node.done .todo-flow-step{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 48%,var(--line));background:var(--tile)}
   .todo-flow-node.current .todo-flow-step{color:var(--sapButton_Emphasized_TextColor,var(--sapContent_ContrastTextColor,var(--sapBaseColor)));border-color:var(--brand);background:var(--brand)}
   .todo-flow-node.pending .todo-flow-step{background:color-mix(in srgb,var(--ink) 3%,var(--tile))}
+  .todo-flow-node.possible .todo-flow-step{border-style:dashed}
   .todo-flow-node.other .todo-flow-step{width:10px;height:10px;margin:9px;border-style:dashed;background:transparent}
   .todo-flow-content{min-width:0;padding-top:4px}
   .todo-flow-title{display:flex;align-items:baseline;gap:8px;min-width:0}
@@ -1026,6 +1444,14 @@ function styleCss () {
   .todo-flow-state{flex:0 0 auto;font-size:10.5px;font-weight:600;color:var(--muted);white-space:nowrap}
   .todo-flow-node.done .todo-flow-state{color:var(--ok)}
   .todo-flow-node.current .todo-flow-state{color:var(--brand)}
+  .todo-flow.compact .todo-flow-node{padding-bottom:12px}
+  .todo-flow.compact .todo-flow-step{width:24px;height:24px;font-size:10.5px}
+  .todo-flow.compact .todo-flow-node:not(:last-of-type) .todo-flow-rail::after{top:28px}
+  .todo-flow.compact .todo-flow-title b{font-size:12.5px}
+  .todo-flow-meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:3px}
+  .todo-flow-time,.todo-flow-actors{display:inline-flex;align-items:center;gap:4px;min-width:0;font-size:10.5px;color:var(--muted)}
+  .todo-flow-time ui5-icon{width:.7rem;height:.7rem;flex:0 0 auto}
+  .todo-flow-actors{overflow-wrap:anywhere}
   .todo-flow-comments{display:flex;flex-direction:column;gap:7px;margin-top:8px}
   .todo-cmt{border-radius:8px;padding:8px 10px;background:color-mix(in srgb,var(--ink) 3%,var(--tile));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ink) 7%,transparent)}
   .todo-cmt-head{display:flex;align-items:center;gap:6px;font-size:11.5px;flex-wrap:wrap} .todo-cmt-head b{min-width:0;max-width:100%;overflow-wrap:anywhere;color:var(--ink);font-weight:650}
@@ -1033,9 +1459,24 @@ function styleCss () {
   .todo-cmt-head em{margin-left:auto;flex:0 0 auto;font-style:normal;font-size:10px;color:var(--muted);white-space:nowrap}
   .todo-cmt-body{font-size:12px;line-height:1.45;margin-top:4px;color:var(--ink)}
   .todo-hint{font-size:12px;color:var(--muted);padding:8px 0}
+  .todo-dialog-mask{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:18px;background:color-mix(in srgb,var(--sapBaseColor,transparent) 58%,transparent);backdrop-filter:blur(2px)}
+  .todo-dialog{width:min(420px,96vw);max-height:min(520px,92vh);display:flex;flex-direction:column;border:1px solid var(--line);border-radius:13px;background:var(--tile);color:var(--ink);box-shadow:0 22px 60px color-mix(in srgb,var(--ink) 30%,transparent)}
+  .todo-dialog.danger{border-color:color-mix(in srgb,var(--red) 34%,var(--line))}
+  .todo-dialog:focus-visible{outline:2px solid var(--brand);outline-offset:3px}
+  .todo-dialog-head{padding:15px 17px 9px}
+  .todo-dialog-head b{font-size:14.5px}
+  .todo-dialog-head small{display:block;margin-top:3px;color:var(--muted);font-size:11.5px;overflow-wrap:anywhere}
+  .todo-dialog p{margin:0;padding:0 17px;font-size:12.5px;line-height:1.6;color:var(--ink)}
+  .todo-dialog .dialog-search{flex:0 0 auto;margin:10px 17px 8px;max-width:none}
+  .todo-user-list{flex:1 1 auto;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:6px;padding:0 17px}
+  .todo-user{border:1px solid var(--line-soft);border-radius:9px;background:color-mix(in srgb,var(--ink) 3%,var(--tile));color:var(--ink);font:inherit;text-align:left;padding:9px 11px;cursor:pointer}
+  .todo-user:hover,.todo-user:focus-visible,.todo-user.active{border-color:var(--brand);background:color-mix(in srgb,var(--brand) 10%,var(--tile));outline:none}
+  .todo-user b{display:block;font-size:12.5px}
+  .todo-user small{display:block;margin-top:2px;color:var(--muted);font-size:11px;overflow-wrap:anywhere}
+  .todo-dialog-actions{display:flex;justify-content:flex-end;gap:8px;padding:14px 17px 16px}
 
   /* toast */
-  .todo-toast{position:absolute;left:50%;bottom:20px;transform:translateX(-50%) translateY(8px);background:color-mix(in srgb,var(--ink) 92%,#000);color:var(--surface);padding:10px 18px;border-radius:10px;font-size:12.5px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:20;box-shadow:0 8px 28px rgba(0,0,0,.3)}
+  .todo-toast{position:absolute;left:50%;bottom:20px;transform:translateX(-50%) translateY(8px);background:color-mix(in srgb,var(--ink) 92%,var(--sapBaseColor));color:var(--surface);padding:10px 18px;border-radius:10px;font-size:12.5px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:20;box-shadow:0 8px 28px color-mix(in srgb,var(--ink) 28%,transparent)}
   .todo-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
   `
 }
