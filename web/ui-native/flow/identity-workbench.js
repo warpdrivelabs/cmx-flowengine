@@ -78,6 +78,7 @@ function hostRoot (host) {
 }
 
 const { showCmxToast: toast } = globalThis.__cmxDataComp // 共享 toast（cmx-data-comp/lib/cmx-toast.js；治理清单 B-05）
+const { cmxConfirm } = globalThis.__cmxDataComp // 共享确认弹窗（cmx-data-comp/lib/cmx-message-dialog.js；审查 A-03 替换原生 confirm）
 
 // ————————————————————— native-page 入口 —————————————————————
 
@@ -303,7 +304,7 @@ function genId (ent, d) {
 
 async function deleteRecord () {
   if (!state.editable || !state.selected) return
-  if (!confirm(`确认删除「${state.selected.name || state.selected.username || state.selected.code || state.selected.id}」？`)) return
+  if (!await cmxConfirm({ message: `确认删除「${state.selected.name || state.selected.username || state.selected.code || state.selected.id}」？`, intent: 'danger', confirmText: '删除' })) return
   try {
     await apiJson('/api/flow/identity/' + enc(state.entity) + '/' + enc(state.selected.id), { method: 'DELETE' })
     toast('已删除')
