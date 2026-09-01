@@ -8,7 +8,7 @@
 
 本库当前完成 **S0**——引擎 crate 已从 cmx-container 物理迁入本 workspace，编译独立成立，自带 demo 可独立运行；平台（cmx-container）经保留的 `cmx-flow-api` 适配层跨 workspace 路径引用本库，功能零回归。
 
-后续里程碑（S1 四外部适配器 / S2 多租户认证 / S3 headless API / S4 前端抽核 / S5 可嵌组件 / S6 center_client 对接）见方案文档。
+后续里程碑（S1 四外部适配器 / S2 多租户认证 / S3 headless API / S4 前端抽核 / S5 可嵌组件 / S6 平台对接 service_rpc）见方案文档。
 
 ## crate 布局
 

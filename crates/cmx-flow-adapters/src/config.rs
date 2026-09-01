@@ -62,20 +62,22 @@ pub struct AdapterConfig {
 /// 出站 webhook 选择配置。
 ///
 /// 环境变量：
-///   - `FLOW_WEBHOOK_URLS`：逗号分隔的目标 URL 列表（空 = 关闭 webhook）。
-///   - `FLOW_WEBHOOK_SIGNING_KEY`：HMAC-SHA256 签名密钥（空 = 不签名）。
+///   - `FLOW_WEBHOOK_TARGETS`：逗号分隔的目标**服务键**列表（`[service_rpc.services]` 的键，
+///     如 "mdm"；经 cmx-mdm-sdk 契约投递到 `/api/mdm/flow/callback`。空 = 关闭 webhook）。
+///   - `FLOW_WEBHOOK_SIGNING_KEY`：HMAC-SHA256 签名密钥（须与接收端 `[mdm.flow].webhook_secret`
+///     一致；空 = 仍签名但接收端按空密钥拒收——生产必配）。
 ///   - `FLOW_WEBHOOK_MAX_RETRIES`：单条投递失败重试次数（默认 3）。
 #[derive(Debug, Clone, Default)]
 pub struct WebhookConfig {
-    pub urls: Vec<String>,
+    pub targets: Vec<String>,
     pub signing_key: Option<String>,
     pub max_retries: u32,
 }
 
 impl WebhookConfig {
-    /// 从环境变量装配。urls 空即视为关闭。
+    /// 从环境变量装配。targets 空即视为关闭。
     pub fn from_env() -> Self {
-        let urls = env_opt("FLOW_WEBHOOK_URLS")
+        let targets = env_opt("FLOW_WEBHOOK_TARGETS")
             .map(|s| {
                 s.split(',')
                     .map(|u| u.trim().to_string())
@@ -84,7 +86,7 @@ impl WebhookConfig {
             })
             .unwrap_or_default();
         Self {
-            urls,
+            targets,
             signing_key: env_opt("FLOW_WEBHOOK_SIGNING_KEY"),
             max_retries: env_opt("FLOW_WEBHOOK_MAX_RETRIES")
                 .and_then(|s| s.parse().ok())
@@ -92,9 +94,9 @@ impl WebhookConfig {
         }
     }
 
-    /// 是否启用（配了至少一个 URL）。
+    /// 是否启用（配了至少一个目标服务键）。
     pub fn is_enabled(&self) -> bool {
-        !self.urls.is_empty()
+        !self.targets.is_empty()
     }
 }
 

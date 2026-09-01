@@ -26,6 +26,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 # 异步 trait 实现
 async-trait = { workspace = true }
+# mdm 契约 SDK（webhook 回调投递）
+cmx-mdm-sdk = { workspace = true }
+# 集成测试直装基座目录（tests/webhook.rs）
+cmx-service-rpc = { workspace = true }
 # 请求/响应 DTO
 serde = { workspace = true }
 serde_json = { workspace = true }

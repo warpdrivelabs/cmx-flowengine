@@ -59,3 +59,14 @@ api_keys = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6:default"
 [assets]
 ui_native_dir = "../cmx-container/assets/flow/web/ui-native"
 ui_html_dir = "../cmx-container/assets/flow/web/ui-html"
+
+# ==================== 服务间统一调用目录 ====================
+# （本服务出站：webhook 生命周期回调 → mdm 的 /api/mdm/flow/callback，经 cmx-mdm-sdk 契约投递）
+[service_rpc]
+default_transport = "http"
+nacos_group = "DEFAULT_GROUP"
+timeout_ms = 30000
+retry_max = 1
+
+[service_rpc.services]
+mdm = { url = "http://127.0.0.1:8095", discovery = "cmx-mdm-server" }
