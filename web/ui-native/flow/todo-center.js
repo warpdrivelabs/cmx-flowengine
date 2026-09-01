@@ -91,6 +91,7 @@ const state = {
 }
 
 const { escHtml: esc } = globalThis.__cmxDataComp // 共享转义（cmx-data-comp/lib/cmx-page-helpers.js；最严格五字符集合，文本/属性上下文皆安全）
+const { deepClone } = globalThis.__cmxDataComp // 共享深拷贝（cmx-data-comp/lib/cmx-deep-clone.js；审查 B-04）
 const enc = encodeURIComponent
 const slug = (s) => String(s || '').replace(/[^A-Za-z0-9_-]+/g, '_') || 'x'
 
@@ -1024,11 +1025,6 @@ async function buildWorkspaceWorknode (t, f, sourceEl, opts) {
   return openWorkNode(workNode, sourceEl)
 }
 
-// 结构化深拷贝（无 structuredClone 时退回 JSON）。
-function deepClone (o) {
-  try { return (typeof structuredClone === 'function') ? structuredClone(o) : JSON.parse(JSON.stringify(o)) }
-  catch { return JSON.parse(JSON.stringify(o)) }
-}
 
 // 给 workspace 各区（content/explorer/property/bottom/...）的 native_pages / html_pages 视图 props
 // 注入任务上下文（浅合并，节点已配的 props 优先保留）。空区/空 views/非对象 props 全容错。
