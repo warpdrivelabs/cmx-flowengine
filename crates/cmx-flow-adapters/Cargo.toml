@@ -6,30 +6,29 @@ authors.workspace = true
 
 # cmx-flow 外部服务适配器（方案 standalone-microservice-design.html §4/S1）。
 #
-# 把引擎的三个注入 trait 从「直连平台库」升级为「可接外部 HTTP 服务」，兑现「身份/组织/
+# 把引擎的三个注入 trait 从「直连平台库」升级为「可接外部服务」，兑现「身份/组织/
 # 表单外部化」：
 #   - HttpAssigneeResolver  实现 AssigneeResolver —— 候选人解析走外部身份服务
 #   - HttpSubflowRouter     实现 SubflowRouter    —— 子流程组织路由走外部组织服务
-#   - HttpDelegate          实现 JavaDelegate     —— serviceTask 逻辑外包给外部 URL
+#   - HttpDelegate          实现 JavaDelegate     —— serviceTask 逻辑外包给外部服务
 # 每个都配一个 Mock 默认实现（脱外部可单跑/单测锚点）。选择由 config.rs 的 mode(mock|http|pg)
 # 从环境变量决定（pg 实现在 cmx-flow-store-pg，本 crate 不含 pg，选择逻辑在 cmx-flow-app）。
 #
-# 本 crate 只依赖引擎 trait 层 + reqwest，不依赖平台/DB——与引擎核一样中立可测。
+# http 形态统一经 cmx-service-rpc 基座（服务目录键定位 + 鉴权/超时/重试/熔断），协议保持
+# 自定义裸 JSON——本 crate 不直接依赖任何 HTTP 客户端库，与引擎核一样中立可测。
 
 [dependencies]
 # 引擎 trait/类型层（AssigneeResolver/SubflowRouter/JavaDelegate/DelegateContext/Variables/
 # CandidateRef/CandidateKind/ResolveError/RouteError 全从 cmx-flow-engine 再导出）
 cmx-flow-engine = { workspace = true }
 
-# 外部服务 HTTP 客户端（版本/特性对齐 cmx-container 根；rustls 免 openssl 系统依赖）
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# 服务间调用基座：http 形态适配器的传输层（目录定位/鉴权注入/超时/重试/熔断）+ webhook 投递
+cmx-service-rpc = { workspace = true }
 
 # 异步 trait 实现
 async-trait = { workspace = true }
 # mdm 契约 SDK（webhook 回调投递）
 cmx-mdm-sdk = { workspace = true }
-# 集成测试直装基座目录（tests/webhook.rs）
-cmx-service-rpc = { workspace = true }
 # 请求/响应 DTO
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -8,7 +8,7 @@
                       ┌────────────── cmx-flow-server ──────────────┐
 外部系统 ──REST────────► /api/flow/v1/*  (发起/办理/查询)              │
 外部系统 ──消息────────► POST /messages/correlate (唤醒等待中的流程)    │
-        ◄──Webhook──── FLOW_WEBHOOK_URLS (生命周期事件推送)           │
+        ◄──Webhook──── FLOW_WEBHOOK_TARGETS (生命周期事件推送, 服务目录键)   │
         ◄──SSE──────── GET /api/flow/v1/events (实时事件流)           │
                       │                                              │
         ◄──外呼──────── serviceTask → HttpDelegate (调外部算逻辑)      │
@@ -19,24 +19,19 @@
 
 ## 8.2 鉴权（外部系统怎么带凭证）
 
-### 模式 `FLOW_AUTH_MODE`
+> ⚠️ 本节旧版写的 `FLOW_AUTH_MODE` / `FLOW_JWT_*` 环境变量**已废弃**——鉴权收编至
+> `cmx-engine-kit` 后统一经 ConfigManager 读 toml `[auth]` 段（env 覆盖前缀 `AUTH__`）。
+> 完整键表（mode / jwt_alg / jwt_secret / jwt_public_key / jwt_tenant_claim / jwt_roles_claim /
+> api_keys）见 [11 配置参考 §11.4.3](11-configuration-reference.md)。
+
+### 模式 `auth.mode`
 
 | 模式 | 说明 |
 |------|------|
 | `off`（默认） | 无验签；租户取 `X-Tenant` 头，用户取 `X-User` 头。适合内网/单租户/开发 |
 | `jwt` | 强制验签；缺/坏/过期 `Authorization: Bearer` → 401 |
 
-### JWT 配置
-
-| 环境变量 | 默认 | 说明 |
-|----------|------|------|
-| `FLOW_JWT_ALG` | `HS256` | `HS256` 或 `RS256` |
-| `FLOW_JWT_SECRET` | | HS256 对称密钥 |
-| `FLOW_JWT_PUBLIC_KEY` | | RS256 PEM 公钥 |
-| `FLOW_JWT_TENANT_CLAIM` | `tenant` | 租户 claim 名 |
-| `FLOW_JWT_ROLES_CLAIM` | `roles` | 角色 claim 名 |
-
-`decode_claims` 读 `sub`→用户、租户 claim→租户（缺省 `default`）、角色 claim→角色数组（接受 JSON 数组或逗号串）。`exp` 默认校验（过期即失败）。
+claim 宽容解析：`sub`→用户、租户 claim→租户（缺省 `default`）、角色 claim→角色数组（接受 JSON 数组或逗号串）。`exp` 默认校验（过期即失败）。SSE 票据白名单（`/design/collab`、`/events`）为引擎内置，无需配置。
 
 ### 请求头一览
 
@@ -111,9 +106,9 @@ delegate key（`riskDelegate`）指向注册的实现。
 
 ### HttpDelegate 外呼契约
 
-设 `FLOW_DELEGATE_MODE=http` + `FLOW_DELEGATE_URL`，`serviceTask` 会外呼（delegate 注册名 `httpDelegate`；因 BPMN serviceTask 只带 key 无 URL 槽，URL 在 delegate 实例上，一 key 一 URL）：
+设 `FLOW_DELEGATE_MODE=http` + `FLOW_DELEGATE_TARGET`（服务目录键，地址登记在 `[service_rpc.services]`），`serviceTask` 会外呼（delegate 注册名 `httpDelegate`；因 BPMN serviceTask 只带 key 无地址槽，目标键在 delegate 实例上，一 key 一目标；路径固定 `/delegate/run`）：
 
-**请求** `POST <FLOW_DELEGATE_URL>?node=<nodeBpmnId>&instance=<instanceId>`：
+**请求** `POST {目标服务}/delegate/run?node=<nodeBpmnId>&instance=<instanceId>`：
 
 ```json
 { "amount": 80000, "applicant": "张三", "...": "当前实例全部变量" }
@@ -198,8 +193,8 @@ curl -X POST http://flow:8091/api/flow/v1/messages/correlate \
 
 | 环境变量 | 说明 |
 |----------|------|
-| `FLOW_WEBHOOK_URLS` | 逗号分隔的接收 URL；空 = 禁用 |
-| `FLOW_WEBHOOK_SIGNING_KEY` | HMAC-SHA256 签名密钥（可选） |
+| `FLOW_WEBHOOK_TARGETS` | 逗号分隔的目标**服务目录键**（`[service_rpc.services]` 键，如 "mdm"）；空 = 禁用 |
+| `FLOW_WEBHOOK_SIGNING_KEY` | HMAC-SHA256 签名密钥（可选；须与接收端 `[mdm.flow].webhook_secret` 一致） |
 | `FLOW_WEBHOOK_MAX_RETRIES` | 重试次数（默认 3） |
 
 ### 事件类型
@@ -308,19 +303,20 @@ es.addEventListener('instance.completed', e => toast('流程完成', JSON.parse(
 
 ## 8.10 适配器模式选择
 
-三个外部适配器各有 `mock|http|pg` 模式（默认全 `pg` = 内嵌/回连平台库，零回归）：
+三个外部适配器各有 `mock|http|pg` 模式（默认全 `pg` = 内嵌/回连平台库，零回归）；`http` 形态统一走 cmx-service-rpc 基座——目标为服务目录键（`[service_rpc.services]` 登记，无注册中心时配静态 url 直连；鉴权/超时/重试/熔断由基座承载），协议保持自定义裸 JSON。**全量参数（必要性/默认值/env 与 toml 全集）见 [11 配置参考](11-configuration-reference.md)**，下表为速查：
 
-| 适配器 | 模式变量 | URL 变量 | 作用 |
+| 适配器 | 模式变量 | 目标变量（服务目录键） | 作用 |
 |--------|---------|---------|------|
-| 身份解析 | `FLOW_IDENTITY_MODE`（+`local`） | `FLOW_IDENTITY_URL` | 候选人 → 用户（见 [04](04-organization-and-identity.md)） |
-| 子流程路由 | `FLOW_SUBFLOW_MODE` | `FLOW_SUBFLOW_URL` | 逻辑 key → 子流程（见 [03](03-subprocess.md)） |
-| serviceTask | `FLOW_DELEGATE_MODE` | `FLOW_DELEGATE_URL` | 服务任务外呼（§8.4） |
+| 身份解析 | `FLOW_IDENTITY_MODE`（+`local`） | `FLOW_IDENTITY_TARGET` | 候选人 → 用户（见 [04](04-organization-and-identity.md)） |
+| 子流程路由 | `FLOW_SUBFLOW_MODE` | `FLOW_SUBFLOW_TARGET` | 逻辑 key → 子流程（见 [03](03-subprocess.md)） |
+| serviceTask | `FLOW_DELEGATE_MODE` | `FLOW_DELEGATE_TARGET` | 服务任务外呼（§8.4） |
+| 维度层级（RD5，仅 pg 路由下） | `FLOW_DIMENSION_MODE` | `FLOW_DIMENSION_TARGET` | 继承链祖先解析（§3） |
 
 - `mock`：独立跑无外部依赖（测试）。
-- `http`：调外部服务。
+- `http`：调外部服务（服务目录键 → 基座传输）。
 - `pg`：回连平台库（实现在 `cmx-flow-store-pg`）。
 
-**HttpSubflowRouter 契约**：`POST {FLOW_SUBFLOW_URL}/subflow/resolve`，body `{calledKey, orgId?}` → `{targetKey}`；404 或 targetKey 空 → `NoBinding`；其它非成功 → `Backend`。
+**HttpSubflowRouter 契约**：`POST {目标服务}/subflow/resolve`，body `{calledKey, orgId?}` → `{targetKey}`；404 或 targetKey 空 → `NoBinding`；其它非成功 → `Backend`。
 
 **HttpAssigneeResolver 契约**：见 [04 §4.6](04-organization-and-identity.md)。
 

@@ -2,20 +2,27 @@
 //!
 //! 实现 `SubflowRouter`：把「逻辑子流程 key + 路由维度 + 维度取值」POST 给外部服务解析成具体子流程
 //! 定义 key，替代 Pg 版沿维度字典物化路径继承的库内解析。维度字典/绑定的真相在外部服务。
+//!
+//! 传输走 cmx-service-rpc 基座：目标 = `[service_rpc.services]` 服务目录键（无注册中心时
+//! 目录登记静态 url 直连）。对端协议保持自定义裸 JSON（非 ApiResp 信封——外部组织服务
+//! 不受 CMX 契约约束），故用 `execute` 取原始响应。
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use cmx_flow_engine::{DimensionResolver, RouteError, RouteResult, SubflowRouter};
+use cmx_service_rpc::{ServiceRpcError, ServiceRpcHandle};
 
-/// 外部组织服务子流程路由器。
-#[derive(Debug, Clone)]
+/// 外部组织服务子流程路由器。持服务目录键 + 基座句柄。
+#[derive(Clone)]
 pub struct HttpSubflowRouter {
-    base_url: String,
-    http: reqwest::Client,
+    key: String,
+    rpc: Arc<ServiceRpcHandle>,
 }
 
-/// `POST {base}/subflow/resolve` 请求体。
+/// `POST {svc}/subflow/resolve` 请求体。
 #[derive(Serialize)]
 struct RouteReq<'a> {
     #[serde(rename = "calledKey")]
@@ -33,11 +40,28 @@ struct RouteResp {
     target_key: Option<String>,
 }
 
+/// 期望响应体：祖先取值链（由近及远，不含自身）。
+#[derive(Deserialize)]
+struct AncestorsResp {
+    #[serde(default)]
+    ancestors: Vec<String>,
+}
+
 impl HttpSubflowRouter {
-    pub fn new(base_url: impl Into<String>) -> Self {
+    /// 生产构造：目标为服务目录键（`[service_rpc.services]` 登记）。基座未初始化时返回
+    /// `None`，装配点据此回退 mock。
+    pub fn new(key: impl Into<String>) -> Option<Self> {
+        cmx_service_rpc::global_arc().map(|rpc| Self {
+            key: key.into(),
+            rpc,
+        })
+    }
+
+    /// 测试/定制构造：显式传入基座句柄（不经全局单例，测试并行安全）。
+    pub fn with_handle(key: impl Into<String>, rpc: ServiceRpcHandle) -> Self {
         Self {
-            base_url: base_url.into().trim_end_matches('/').to_string(),
-            http: reqwest::Client::new(),
+            key: key.into(),
+            rpc: Arc::new(rpc),
         }
     }
 }
@@ -50,42 +74,41 @@ impl SubflowRouter for HttpSubflowRouter {
         dim_key: &str,
         dim_value: Option<&str>,
     ) -> RouteResult<String> {
-        let url = format!("{}/subflow/resolve", self.base_url);
-        let body = RouteReq { called_key, dim_key, dim_value };
-        let resp = self
-            .http
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| RouteError::Backend(format!("组织服务请求失败: {e}")))?;
+        let body = RouteReq {
+            called_key,
+            dim_key,
+            dim_value,
+        };
+        let req = cmx_service_rpc::RpcRequest::post(self.key.clone(), "/subflow/resolve")
+            .json_body(serde_json::to_value(&body).map_err(|e| {
+                RouteError::Backend(format!("组织服务请求序列化失败: {e}"))
+            })?)
+            // 查询语义（只读路由解析），允许连接级错误换实例重试。
+            .idempotent();
+        // 基座把非 2xx 归并为 Remote；404 语义为「无绑定」（与 Pg 版全无绑定一致），
+        // 200 但 targetKey 空/缺省 → 同样无解。
+        let no_binding = || RouteError::NoBinding {
+            called_key: called_key.to_string(),
+            dim_key: dim_key.to_string(),
+            dim_value: dim_value.map(|s| s.to_string()),
+        };
+        let resp = match self.rpc.execute(req).await {
+            Err(ServiceRpcError::Remote { http_status: 404, .. }) => return Err(no_binding()),
+            Err(e) => return Err(RouteError::Backend(format!("组织服务调用失败: {e}"))),
+            Ok(resp) => resp,
+        };
 
-        let status = resp.status();
-        // 404 或非成功但非 5xx：视为「无绑定」（与 Pg 版全无绑定的语义一致）。
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Err(RouteError::NoBinding {
-                called_key: called_key.to_string(),
-                dim_key: dim_key.to_string(),
-                dim_value: dim_value.map(|s| s.to_string()),
-            });
+        // 基座对无法解析为 JSON 的响应置 Null——与原裸 reqwest 行为对齐，此时报错而非解出 None。
+        if resp.body.is_null() {
+            return Err(RouteError::Backend(
+                "组织服务响应解析失败: 非 JSON".to_string(),
+            ));
         }
-        if !status.is_success() {
-            let msg = resp.text().await.unwrap_or_default();
-            return Err(RouteError::Backend(format!("组织服务返回 {status}: {msg}")));
-        }
-
-        let parsed: RouteResp = resp
-            .json()
-            .await
+        let parsed: RouteResp = serde_json::from_value(resp.body)
             .map_err(|e| RouteError::Backend(format!("组织服务响应解析失败: {e}")))?;
         match parsed.target_key.filter(|s| !s.is_empty()) {
             Some(t) => Ok(t),
-            // 200 但无 targetKey → 同样无解。
-            None => Err(RouteError::NoBinding {
-                called_key: called_key.to_string(),
-                dim_key: dim_key.to_string(),
-                dim_value: dim_value.map(|s| s.to_string()),
-            }),
+            None => Err(no_binding()),
         }
     }
 }
@@ -95,28 +118,30 @@ impl SubflowRouter for HttpSubflowRouter {
 // 绑定表始终 flow 本地；本实现只解耦「维度祖先链」这一外部事实源（不直连字典表）。
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 期望响应体：祖先取值链（由近及远，不含自身）。
-#[derive(Deserialize)]
-struct AncestorsResp {
-    #[serde(default)]
-    ancestors: Vec<String>,
-}
-
 /// 维度层级的外部 HTTP 实现（RD5）。
 ///
-/// `GET {base}/dimensions/ancestors?dimKey=..&dimValue=..` → `{"ancestors":["parent","grandparent",..]}`。
+/// `GET {svc}/dimensions/ancestors?dimKey=..&dimValue=..` → `{"ancestors":["parent","grandparent",..]}`。
 /// 404 视为「无层级」（返回空链 = 无继承，非错误）；非成功 5xx/4xx → Backend 错误。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpDimensionResolver {
-    base_url: String,
-    http: reqwest::Client,
+    key: String,
+    rpc: Arc<ServiceRpcHandle>,
 }
 
 impl HttpDimensionResolver {
-    pub fn new(base_url: impl Into<String>) -> Self {
+    /// 生产构造：目标为服务目录键。基座未初始化时返回 `None`（装配点据此退回库内继承）。
+    pub fn new(key: impl Into<String>) -> Option<Self> {
+        cmx_service_rpc::global_arc().map(|rpc| Self {
+            key: key.into(),
+            rpc,
+        })
+    }
+
+    /// 测试/定制构造：显式传入基座句柄（不经全局单例，测试并行安全）。
+    pub fn with_handle(key: impl Into<String>, rpc: ServiceRpcHandle) -> Self {
         Self {
-            base_url: base_url.into().trim_end_matches('/').to_string(),
-            http: reqwest::Client::new(),
+            key: key.into(),
+            rpc: Arc::new(rpc),
         }
     }
 }
@@ -124,26 +149,23 @@ impl HttpDimensionResolver {
 #[async_trait]
 impl DimensionResolver for HttpDimensionResolver {
     async fn ancestors(&self, dim_key: &str, dim_value: &str) -> RouteResult<Vec<String>> {
-        let url = format!("{}/dimensions/ancestors", self.base_url);
-        let resp = self
-            .http
-            .get(&url)
-            .query(&[("dimKey", dim_key), ("dimValue", dim_value)])
-            .send()
-            .await
-            .map_err(|e| RouteError::Backend(format!("维度服务请求失败: {e}")))?;
-        let status = resp.status();
-        // 无层级/未知取值 → 空链（无继承，非错误；与 Pg 版平级维度天然跳继承一致）。
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Ok(Vec::new());
+        let req = cmx_service_rpc::RpcRequest::get(self.key.clone(), "/dimensions/ancestors")
+            .query("dimKey", dim_key)
+            .query("dimValue", dim_value);
+        let resp = match self.rpc.execute(req).await {
+            // 基座把非 2xx 归并为 Remote；404 在此语义为「无层级」= 空链（无继承，非错误；
+            // 与 Pg 版平级维度天然跳继承一致）。
+            Err(ServiceRpcError::Remote { http_status: 404, .. }) => return Ok(Vec::new()),
+            Err(e) => return Err(RouteError::Backend(format!("维度服务调用失败: {e}"))),
+            Ok(resp) => resp,
+        };
+        // 非 JSON（基座置 Null）→ 报错，与原裸 reqwest 行为对齐。
+        if resp.body.is_null() {
+            return Err(RouteError::Backend(
+                "维度服务响应解析失败: 非 JSON".to_string(),
+            ));
         }
-        if !status.is_success() {
-            let msg = resp.text().await.unwrap_or_default();
-            return Err(RouteError::Backend(format!("维度服务返回 {status}: {msg}")));
-        }
-        let parsed: AncestorsResp = resp
-            .json()
-            .await
+        let parsed: AncestorsResp = serde_json::from_value(resp.body)
             .map_err(|e| RouteError::Backend(format!("维度服务响应解析失败: {e}")))?;
         Ok(parsed.ancestors)
     }

@@ -8,7 +8,9 @@
 //! 选择由 [`config::AdapterConfig`] 的 mode(mock|http|pg) 从环境变量决定；pg 实现在
 //! cmx-flow-store-pg（本 crate 不含），三选一的装配在 cmx-flow-app::engine。
 //!
-//! 本 crate 只依赖引擎 trait 层 + reqwest，与引擎核一样中立可测。
+//! http 形态统一走 cmx-service-rpc 基座（目标 = 服务目录键，无注册中心时目录登记静态
+//! url 直连）；对端协议保持自定义裸 JSON。本 crate 依赖引擎 trait 层 + 基座，不直接
+//! 依赖任何 HTTP 客户端库。
 
 pub mod config;
 pub mod delegate;

@@ -240,7 +240,7 @@ demo 播种的组织树：`df_root(总部) → df_bj(北京) / df_sh(上海)`，
 `FLOW_SUBFLOW_MODE` 环境变量（默认 `pg`）：
 
 - `pg` → `PgSubflowRouter`，读 `cmx_flow_subflow_binding` + `cmx_org.path` 三层解析。
-- `http` → `HttpSubflowRouter`，`POST {FLOW_SUBFLOW_URL}/subflow/resolve`，body `{calledKey, orgId}` → `{targetKey}`（详见 [08](08-external-integration.md)）。
+- `http` → `HttpSubflowRouter`，`POST {FLOW_SUBFLOW_TARGET 服务}/subflow/resolve`，body `{calledKey, orgId}` → `{targetKey}`（详见 [08](08-external-integration.md)）。
 - `mock` → 固定映射（测试用）。
 
 ## 3.4 嵌入式子流程 subProcess

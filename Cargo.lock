@@ -741,7 +741,6 @@ dependencies = [
  "cmx-service-rpc",
  "hex",
  "hmac 0.12.1",
- "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",

@@ -238,9 +238,9 @@ curl -X DELETE http://127.0.0.1:8091/api/flow/v1/identity/users/u_staff
 
 ## 4.6 外部 IAM 后端（HTTP 模式）
 
-独立部署、对接企业既有 IAM 时，设 `FLOW_IDENTITY_MODE=http` + `FLOW_IDENTITY_URL`，引擎用 `HttpAssigneeResolver` 外呼：
+独立部署、对接企业既有 IAM 时，设 `FLOW_IDENTITY_MODE=http` + `FLOW_IDENTITY_TARGET`（服务目录键，实际地址登记在 `[service_rpc.services]`——无注册中心时目录里配静态 url 直连），引擎用 `HttpAssigneeResolver` 经 cmx-service-rpc 基座外呼：
 
-**请求** `POST {FLOW_IDENTITY_URL}/identity/resolve`：
+**请求** `POST {目标服务}/identity/resolve`：
 
 ```json
 {

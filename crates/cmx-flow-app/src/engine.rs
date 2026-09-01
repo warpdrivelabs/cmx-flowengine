@@ -62,14 +62,14 @@ pub fn identity_is_local() -> bool {
         .unwrap_or(false)
 }
 
-/// RD5：读维度层级外部解析地址。`FLOW_DIMENSION_MODE=http` 且 `FLOW_DIMENSION_URL` 非空时返回 Some，
-/// 否则 None（沿用 PgSubflowRouter 直连字典表继承，零回归）。
-fn dimension_http_url() -> Option<String> {
+/// RD5：读维度层级外部解析目标。`FLOW_DIMENSION_MODE=http` 且 `FLOW_DIMENSION_TARGET` 非空时
+/// 返回 Some（值为服务目录键），否则 None（沿用 PgSubflowRouter 直连字典表继承，零回归）。
+fn dimension_http_target() -> Option<String> {
     let mode = std::env::var("FLOW_DIMENSION_MODE").unwrap_or_default();
     if !mode.eq_ignore_ascii_case("http") {
         return None;
     }
-    std::env::var("FLOW_DIMENSION_URL")
+    std::env::var("FLOW_DIMENSION_TARGET")
         .ok()
         .filter(|s| !s.trim().is_empty())
 }
@@ -246,13 +246,20 @@ async fn build_for(
             AdapterMode::Pg => {
                 engine.set_resolver(Arc::new(PgIamAssigneeResolver::new(iam_db_id)));
             }
-            AdapterMode::Http => match &cfg.identity_url {
-                Some(url) => {
-                    tracing::info!(url, "候选人解析走外部身份服务(http)");
-                    engine.set_resolver(Arc::new(HttpAssigneeResolver::new(url.clone())));
-                }
+            AdapterMode::Http => match &cfg.identity_target {
+                // 目标 = [service_rpc.services] 服务目录键（地址/鉴权/重试由基座承载）。
+                Some(target) => match HttpAssigneeResolver::new(target) {
+                    Some(r) => {
+                        tracing::info!(target, "候选人解析走外部身份服务(http, 服务目录键)");
+                        engine.set_resolver(Arc::new(r));
+                    }
+                    None => {
+                        tracing::warn!("FLOW_IDENTITY_TARGET 配了但基座未初始化（init_infra 未跑？），回退 mock");
+                        engine.set_resolver(Arc::new(MockAssigneeResolver));
+                    }
+                },
                 None => {
-                    tracing::warn!("FLOW_IDENTITY_MODE=http 但缺 FLOW_IDENTITY_URL，回退 mock");
+                    tracing::warn!("FLOW_IDENTITY_MODE=http 但缺 FLOW_IDENTITY_TARGET，回退 mock");
                     engine.set_resolver(Arc::new(MockAssigneeResolver));
                 }
             },
@@ -272,24 +279,36 @@ async fn build_for(
             for d in &dim_regs {
                 router.register_dim(d.dim_key.clone(), d.spec.clone());
             }
-            // RD5：配了 FLOW_DIMENSION_MODE=http + FLOW_DIMENSION_URL → 继承步经外部 HTTP 读维度层级
+            // RD5：配了 FLOW_DIMENSION_MODE=http + FLOW_DIMENSION_TARGET → 继承步经外部服务读维度层级
             //      （独立部署不共享字典库；绑定表仍本地）。默认 None = 直连字典表继承（零回归）。
-            let router = match dimension_http_url() {
-                Some(url) => {
-                    tracing::info!(url, "子流程继承：维度层级经外部 HTTP 解析（RD5）");
-                    router.with_dim_resolver(Arc::new(HttpDimensionResolver::new(url)))
-                }
+            let router = match dimension_http_target() {
+                Some(target) => match HttpDimensionResolver::new(&target) {
+                    Some(r) => {
+                        tracing::info!(target, "子流程继承：维度层级经外部服务解析（RD5, 服务目录键）");
+                        router.with_dim_resolver(Arc::new(r))
+                    }
+                    None => {
+                        tracing::warn!("FLOW_DIMENSION_TARGET 配了但基座未初始化，维度继承退回库内解析");
+                        router
+                    }
+                },
                 None => router,
             };
             engine.set_subflow_router(Arc::new(router));
         }
-        AdapterMode::Http => match &cfg.subflow_url {
-            Some(url) => {
-                tracing::info!(url, "子流程路由走外部服务(http)");
-                engine.set_subflow_router(Arc::new(HttpSubflowRouter::new(url.clone())));
-            }
+        AdapterMode::Http => match &cfg.subflow_target {
+            Some(target) => match HttpSubflowRouter::new(target) {
+                Some(r) => {
+                    tracing::info!(target, "子流程路由走外部服务(http, 服务目录键)");
+                    engine.set_subflow_router(Arc::new(r));
+                }
+                None => {
+                    tracing::warn!("FLOW_SUBFLOW_TARGET 配了但基座未初始化（init_infra 未跑？），回退 mock");
+                    engine.set_subflow_router(Arc::new(MockSubflowRouter));
+                }
+            },
             None => {
-                tracing::warn!("FLOW_SUBFLOW_MODE=http 但缺 FLOW_SUBFLOW_URL，回退 mock");
+                tracing::warn!("FLOW_SUBFLOW_MODE=http 但缺 FLOW_SUBFLOW_TARGET，回退 mock");
                 engine.set_subflow_router(Arc::new(MockSubflowRouter));
             }
         },
@@ -314,12 +333,17 @@ async fn build_for(
         tracing::warn!("已注册 E2E 测试 delegate（FLOW_ENABLE_E2E_DELEGATES 开启）——生产环境勿开");
     }
     match cfg.delegate_mode {
-        AdapterMode::Http => match &cfg.delegate_url {
-            Some(url) => {
-                tracing::info!(url, "serviceTask 外包外部 delegate(http)，键=httpDelegate");
-                engine.register_delegate("httpDelegate", HttpDelegate::new(url.clone()));
-            }
-            None => tracing::warn!("FLOW_DELEGATE_MODE=http 但缺 FLOW_DELEGATE_URL，不注册 httpDelegate"),
+        AdapterMode::Http => match &cfg.delegate_target {
+            Some(target) => match HttpDelegate::new(target) {
+                Some(d) => {
+                    tracing::info!(target, "serviceTask 外包外部 delegate(http, 服务目录键)，键=httpDelegate");
+                    engine.register_delegate("httpDelegate", d);
+                }
+                None => {
+                    tracing::warn!("FLOW_DELEGATE_TARGET 配了但基座未初始化（init_infra 未跑？），不注册 httpDelegate")
+                }
+            },
+            None => tracing::warn!("FLOW_DELEGATE_MODE=http 但缺 FLOW_DELEGATE_TARGET，不注册 httpDelegate"),
         },
         AdapterMode::Mock => {
             engine.register_delegate("mockDelegate", MockDelegate);

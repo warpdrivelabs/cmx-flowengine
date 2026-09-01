@@ -101,5 +101,5 @@ tenancy = "multi"
 
 运行态调用链（本 S6）通了后，flow-server 查候选人/角色/组织仍走 S1 的 `AssigneeResolver` 三注入 trait：
 - **mock**（demo）/ **pg**（直连库）/ **http**（回连平台 IAM 查询服务）。
-- 若独立部署要回连平台身份：平台需暴露 `/api/iam/flow-identity/*`（candidates/user-org/ancestors/validate-claim 四端点镜像 trait），flow-server 配 `FLOW_IDENTITY_MODE=http` + `FLOW_IDENTITY_URL` 指向它。**这组端点是平台侧新增，与本 S6 的运行态反代正交**，可按需后续补。
+- 若独立部署要回连平台身份：平台需暴露 `/api/iam/flow-identity/*`（candidates/user-org/ancestors/validate-claim 四端点镜像 trait），flow-server 配 `FLOW_IDENTITY_MODE=http` + `FLOW_IDENTITY_TARGET`（服务目录键，地址登记在 `[service_rpc.services]`）。**这组端点是平台侧新增，与本 S6 的运行态反代正交**，可按需后续补。
 - **表单**：formKey 契约（F1–F3）已闭环，`/api/flow/v1/forms/{key}` 已在 S3 暴露；平台前端经反代取，第三方自研 UI 直接调。零改。

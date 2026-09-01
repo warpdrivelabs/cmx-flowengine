@@ -1,7 +1,13 @@
 //! HttpAssigneeResolver —— 候选人解析的外部 HTTP 实现（方案 §4①）。
 //!
 //! 实现 `AssigneeResolver`：把 role/position/org 引用 POST 给外部身份服务解析成用户 id 列表，
-//! 替代 Pg 版的直连 IAM 库。引擎因此不认识任何身份系统——换 URL 即换后端。
+//! 替代 Pg 版的直连 IAM 库。引擎因此不认识任何身份系统——换服务键即换后端。
+//!
+//! 传输走 cmx-service-rpc 基座：目标 = `[service_rpc.services]` 服务目录键（无注册中心时
+//! 目录登记静态 url 直连），鉴权注入/超时/重试/熔断由基座统一承载。对端协议保持自定义
+//! 裸 JSON（非 ApiResp 信封——外部身份服务不受 CMX 契约约束），故用 `execute` 取原始响应。
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -9,15 +15,16 @@ use serde::{Deserialize, Serialize};
 use cmx_flow_engine::{
     AssigneeResolver, CandidateKind, CandidateRef, ResolveContext, ResolveError, ResolveResult,
 };
+use cmx_service_rpc::{ServiceRpcError, ServiceRpcHandle};
 
-/// 外部身份服务候选人解析器。持 base_url + 复用连接的 reqwest client。
-#[derive(Debug, Clone)]
+/// 外部身份服务候选人解析器。持服务目录键 + 基座句柄。
+#[derive(Clone)]
 pub struct HttpAssigneeResolver {
-    base_url: String,
-    http: reqwest::Client,
+    key: String,
+    rpc: Arc<ServiceRpcHandle>,
 }
 
-/// `POST {base}/identity/resolve` 请求体。
+/// `POST {svc}/identity/resolve` 请求体。
 #[derive(Serialize)]
 struct ResolveReq<'a> {
     /// 候选类型（USER/ROLE/POSITION/ORG/ORG_LEADER/INITIATOR/INITIATOR_LEADER，对齐
@@ -39,12 +46,31 @@ struct ResolveResp {
     user_ids: Vec<String>,
 }
 
+/// 基座错误 → 身份解析错误：4xx 语义为「引用无效」（角色 code 不存在等），其余归后端故障。
+fn map_err(e: ServiceRpcError) -> ResolveError {
+    match &e {
+        ServiceRpcError::Remote { http_status, .. } if (400..500).contains(http_status) => {
+            ResolveError::InvalidRef(e.to_string())
+        }
+        _ => ResolveError::Backend(format!("身份服务调用失败: {e}")),
+    }
+}
+
 impl HttpAssigneeResolver {
-    /// 用外部身份服务 base_url 构建（末尾斜杠会被规整）。
-    pub fn new(base_url: impl Into<String>) -> Self {
+    /// 生产构造：目标为服务目录键（`[service_rpc.services]` 登记）。基座未初始化（未跑
+    /// `init_infra`）时返回 `None`，装配点据此回退 mock。
+    pub fn new(key: impl Into<String>) -> Option<Self> {
+        cmx_service_rpc::global_arc().map(|rpc| Self {
+            key: key.into(),
+            rpc,
+        })
+    }
+
+    /// 测试/定制构造：显式传入基座句柄（不经全局单例，测试并行安全）。
+    pub fn with_handle(key: impl Into<String>, rpc: ServiceRpcHandle) -> Self {
         Self {
-            base_url: base_url.into().trim_end_matches('/').to_string(),
-            http: reqwest::Client::new(),
+            key: key.into(),
+            rpc: Arc::new(rpc),
         }
     }
 
@@ -80,41 +106,28 @@ impl HttpAssigneeResolver {
                 .collect());
         }
 
-        let url = format!("{}/identity/resolve", self.base_url);
         let body = ResolveReq {
             kind: Self::kind_str(candidate.kind),
             value: &candidate.value,
             initiator: ctx.initiator.as_deref(),
             org_id: ctx.org_id.as_deref(),
         };
-        let resp = self
-            .http
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ResolveError::Backend(format!("身份服务请求失败: {e}")))?;
+        let req = cmx_service_rpc::RpcRequest::post(self.key.clone(), "/identity/resolve")
+            .json_body(
+                serde_json::to_value(&body)
+                    .map_err(|e| ResolveError::Backend(format!("身份服务请求序列化失败: {e}")))?,
+            )
+            // 查询语义（只读解析），允许连接级错误换实例重试。
+            .idempotent();
+        let resp = self.rpc.execute(req).await.map_err(map_err)?;
 
-        let status = resp.status();
-        if status.is_client_error() {
-            // 4xx：语义为「引用无效」（如角色 code 不存在）。
-            let msg = resp.text().await.unwrap_or_default();
-            return Err(ResolveError::InvalidRef(format!(
-                "身份服务拒绝 {}({}): {status} {msg}",
-                Self::kind_str(candidate.kind),
-                candidate.value
-            )));
+        // 基座对无法解析为 JSON 的响应置 Null——与原裸 reqwest 行为对齐，此时报错而非解出空表。
+        if resp.body.is_null() {
+            return Err(ResolveError::Backend(
+                "身份服务响应解析失败: 非 JSON".to_string(),
+            ));
         }
-        if !status.is_success() {
-            let msg = resp.text().await.unwrap_or_default();
-            return Err(ResolveError::Backend(format!(
-                "身份服务返回 {status}: {msg}"
-            )));
-        }
-
-        let parsed: ResolveResp = resp
-            .json()
-            .await
+        let parsed: ResolveResp = serde_json::from_value(resp.body)
             .map_err(|e| ResolveError::Backend(format!("身份服务响应解析失败: {e}")))?;
         Ok(parsed.user_ids)
     }

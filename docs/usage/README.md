@@ -23,6 +23,7 @@ cmx-flowengine 是一款**框架无关、可独立部署、支持多租户**的�
 | 08 | [外部系统集成](08-external-integration.md) | serviceTask 外呼、Webhook、消息相关、SSE、鉴权头、多租户、平台反代 | 集成开发者、运维 |
 | 09 | [运维与管理](09-operations-and-admin.md) | 挂起/恢复/跳转、异常(Incident)重试、改变量、定时器、统计与监控 | 运维、管理员 |
 | 10 | [流程变量声明](10-variable-declaration.md) | 设计态声明变量名称/类型/结构/说明、对象/数组字段、四处下拉、发起校验 | 流程设计者、集成方 |
+| 11 | [配置参考](11-configuration-reference.md) | 环境变量与 toml 段全集（适配器/webhook/多租户/鉴权/服务目录）、必要性、默认值 | 部署者、运维、集成方 |
 
 ## 30 秒速览
 

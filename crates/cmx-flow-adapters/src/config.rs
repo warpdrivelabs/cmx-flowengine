@@ -1,4 +1,4 @@
-//! 适配器选择配置：mode(mock|http|pg) + URL，从环境变量读（镜像平台 center_client 约定）。
+//! 适配器选择配置：mode(mock|http|pg) + 目标服务键，从环境变量读。
 //!
 //! 一份代码三部署姿态（方案 §9）：
 //!   - `mock`：脱一切外部单跑（开发/演示/CI）——默认，最安全。
@@ -6,7 +6,9 @@
 //!   - `pg`  ：回连平台库（平台内嵌姿态，用 cmx-flow-store-pg 的 Pg* 实现，本 crate 不含）。
 //!
 //! 选择逻辑本身在 `cmx-flow-app::engine`（它同时能看到 pg 实现）；本模块只负责「从环境读出
-//! 每个适配器该用哪种 mode + 对应 URL」，纯 `std::env`，零平台依赖。
+//! 每个适配器该用哪种 mode + 对应目标**服务键**」。地址不在此处——`http` 形态的目标是
+//! `[service_rpc.services]` 目录键（无注册中心时目录里登记静态 url 直连，语义与 webhook 的
+//! `FLOW_WEBHOOK_TARGETS` 一致），传输/鉴权/超时/重试/熔断由 cmx-service-rpc 基座统一承载。
 
 /// 适配器模式。三姿态由此区分。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,20 +43,20 @@ impl AdapterMode {
 /// 三适配器的选择配置。
 ///
 /// 环境变量（缺省见括号）：
-///   - `FLOW_IDENTITY_MODE`(pg) / `FLOW_IDENTITY_URL`
-///   - `FLOW_SUBFLOW_MODE`(pg)  / `FLOW_SUBFLOW_URL`
-///   - `FLOW_DELEGATE_MODE`(pg) / `FLOW_DELEGATE_URL`
+///   - `FLOW_IDENTITY_MODE`(pg) / `FLOW_IDENTITY_TARGET`（服务目录键）
+///   - `FLOW_SUBFLOW_MODE`(pg)  / `FLOW_SUBFLOW_TARGET`（服务目录键）
+///   - `FLOW_DELEGATE_MODE`(pg) / `FLOW_DELEGATE_TARGET`（服务目录键）
 ///
 /// **默认全 pg**：与抽核前 engine.rs 写死的三注入等价 → 平台内嵌与既有测试零回归。
-/// 独立微服务显式设 `=http`（配 URL）或 `=mock`（脱外部单跑）。
+/// 独立微服务显式设 `=http`（配 TARGET，指向 `[service_rpc.services]` 键）或 `=mock`（脱外部单跑）。
 #[derive(Debug, Clone)]
 pub struct AdapterConfig {
     pub identity_mode: AdapterMode,
-    pub identity_url: Option<String>,
+    pub identity_target: Option<String>,
     pub subflow_mode: AdapterMode,
-    pub subflow_url: Option<String>,
+    pub subflow_target: Option<String>,
     pub delegate_mode: AdapterMode,
-    pub delegate_url: Option<String>,
+    pub delegate_target: Option<String>,
     /// 出站 webhook 配置（生命周期事件通知第三方）。
     pub webhook: WebhookConfig,
 }
@@ -105,11 +107,11 @@ impl AdapterConfig {
     pub fn from_env() -> Self {
         Self {
             identity_mode: AdapterMode::from_env("FLOW_IDENTITY_MODE", AdapterMode::Pg),
-            identity_url: env_opt("FLOW_IDENTITY_URL"),
+            identity_target: env_opt("FLOW_IDENTITY_TARGET"),
             subflow_mode: AdapterMode::from_env("FLOW_SUBFLOW_MODE", AdapterMode::Pg),
-            subflow_url: env_opt("FLOW_SUBFLOW_URL"),
+            subflow_target: env_opt("FLOW_SUBFLOW_TARGET"),
             delegate_mode: AdapterMode::from_env("FLOW_DELEGATE_MODE", AdapterMode::Pg),
-            delegate_url: env_opt("FLOW_DELEGATE_URL"),
+            delegate_target: env_opt("FLOW_DELEGATE_TARGET"),
             webhook: WebhookConfig::from_env(),
         }
     }
