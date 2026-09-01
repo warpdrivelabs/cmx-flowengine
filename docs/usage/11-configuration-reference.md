@@ -48,12 +48,12 @@
 | `FLOW_ROUTING_DIMENSIONS` | 可选 | 空（仅内建 `org` 维度） | 自分级路由维度注册（RD2），JSON 数组，每项形如 `{"dimKey":"legal_entity","name":"法人公司","table":"cf_legal_entity","idCol":"id","pathCol":"full_path","delim":".","nameCol":"name","parentCol":"parent_id"}`（`parentCol` 有值 = 自分级表）。解析失败忽略并告警 |
 | `FLOW_PUBLISH_STRICT_REQUIRED` | 可选 | 开（含无配置回落从紧） | 发布闸（D2）：声明了必填变量的定义发布时必须配 strict 校验策略。`off` = 显式关闭 |
 
-### 11.3.3 出站 Webhook（生命周期事件 → mdm 等）
+### 11.3.3 出站 Webhook（生命周期事件 → 外部订阅方）
 
 | 环境变量 | 必要性 | 默认 | 说明 |
 |----------|--------|------|------|
-| `FLOW_WEBHOOK_TARGETS` | 可选 | 空 = 关闭 | 逗号分隔的目标**服务目录键**（如 `mdm`）；经 cmx-mdm-sdk 契约投递到 `/api/mdm/flow/callback` |
-| `FLOW_WEBHOOK_SIGNING_KEY` | **启用 webhook 时必须** | 空 | HMAC-SHA256 签名密钥，**须与接收端 mdm 的 `[mdm.flow].webhook_secret` 一致**；空 = 仍签名但接收端按空密钥拒收 |
+| `FLOW_WEBHOOK_TARGETS` | 可选 | 空 = 关闭 | 逗号分隔的目标条目，每条 `服务目录键:回调路径`（如 `mdm:/api/mdm/flow/callback`）——键经 `[service_rpc.services]` 定位地址，路径归接收方定义；格式不合法的条目启动时 warn 跳过。契约（三头 + HMAC 签名 + HTTP 2xx 判定，无共享 SDK——订阅方是任意外部系统）见 [08 §8.6](08-external-integration.md) |
+| `FLOW_WEBHOOK_SIGNING_KEY` | **启用 webhook 时必须** | 空 | HMAC-SHA256 签名密钥，**须与每个接收端的共享密钥一致**（如 mdm 的 `[mdm.flow].webhook_secret`）；空 = 仍签名但接收端按空密钥拒收 |
 | `FLOW_WEBHOOK_MAX_RETRIES` | 可选 | `3` | 单条投递失败重试次数 |
 
 ### 11.3.4 多租户（按需启用）
@@ -142,4 +142,5 @@ claim 宽容解析：`sub`→用户；租户 claim 缺省 `default`；角色接�
 ## 11.6 变更速记
 
 - **2026-09-01**：适配器 http 形态切 cmx-service-rpc 基座——`FLOW_{IDENTITY,SUBFLOW,DELEGATE,DIMENSION}_URL` 改名 `_TARGET`（值从完整地址改为服务目录键，地址登记迁 `[service_rpc.services]`）；delegate 外呼路径固定 `/delegate/run`。
+- **2026-09-01**：webhook 回调去 cmx-mdm-sdk 化（对外契约不以共享 crate 为载体）——`FLOW_WEBHOOK_TARGETS` 条目从纯服务键（`mdm`）升级为 `键:路径`（`mdm:/api/mdm/flow/callback`）；成功判定从信封 `code==0` 改 **HTTP 2xx**；契约真源 = [08 §8.6](08-external-integration.md)。
 - 鉴权 env（`FLOW_AUTH_MODE`/`FLOW_JWT_*`）废弃 → `[auth]` 段 + `AUTH__*` 覆盖（收编 `cmx-engine-kit` 时统一）。

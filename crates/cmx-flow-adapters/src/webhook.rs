@@ -3,13 +3,34 @@
 //! 设计（用户定）：**app 层发**（handler 调引擎成功后 emit，引擎零改）+ **后台异步 + 重试**
 //! （事件入内存队列，后台 task 逐个发，失败指数退避重试若干次，不阻塞 handler 响应）。
 //!
-//! 投递经 `cmx-mdm-sdk` 契约（`POST /api/mdm/flow/callback`）：目标 = 服务目录键
-//! （`FLOW_WEBHOOK_TARGETS`，`[service_rpc.services]` 定位）；安全 = 每条请求带
-//! `x-cmx-flow-signature: sha256=<hex(HMAC-SHA256(body, signing_key))>`（对实际发送字节签名，
-//! 接收端按共享密钥验签防伪造）+ 事件名 / 幂等投递头。签名与信封契约两端同源（cmx-mdm-sdk）。
+//! **对外回调契约（自包含，无 SDK）**：订阅方（mdm 或任意外部/三方系统）不会共享本仓的
+//! Rust crate，契约只存在于 HTTP 层——**文档是真源**（`docs/usage/08-external-integration.md`
+//! §8.5），双端各自实现、集成测试对拍。这与服务间调用（内部微服务，cmx-service-rpc 基座 +
+//! 标准信封）是两类东西：
+//!   - 目标 = 服务目录键 + 回调路径（`FLOW_WEBHOOK_TARGETS` 条目 `键:路径`，如
+//!     `mdm:/api/mdm/flow/callback`；键经 `[service_rpc.services]` 定位）；
+//!   - 安全 = 每条请求带 [`SIGNATURE_HEADER`]：`sha256=<hex(HMAC-SHA256(body, signing_key))>`
+//!     （对实际发送字节签名，接收端按共享密钥验签防伪造）+ 事件名 / 幂等投递头；
+//!   - 成功判定 = **HTTP 2xx**（接收方协议不受 CMX 信封约束，响应体不解析）。
+//!
+//! 传输复用 cmx-service-rpc 基座（目录定位 / 超时 / 熔断），仅取其裸响应层（`execute`）。
 
+use crate::config::WebhookTarget;
+use hmac::{Hmac, Mac};
 use serde::Serialize;
+use sha2::Sha256;
 use tokio::sync::mpsc;
+
+use cmx_service_rpc::{RpcRequest, ServiceRpcHandle};
+
+/// HMAC 签名头（值形如 `sha256=<hex(HMAC-SHA256(body, secret))>`，对 body 原始字节计算）。
+pub const SIGNATURE_HEADER: &str = "x-cmx-flow-signature";
+
+/// 事件名头（载荷 `event` 字段的冗余副本，便于接收方路由 / 过滤）。
+pub const EVENT_HEADER: &str = "x-cmx-flow-event";
+
+/// 投递幂等头（`{instanceId}-{occurredAt}`，接收方可据此去重）。
+pub const DELIVERY_HEADER: &str = "x-cmx-flow-delivery";
 
 /// 生命周期事件类型（对齐方案 §6 SSE 命名）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +57,7 @@ impl FlowEventKind {
     }
 }
 
-/// 一条出站事件（app 层构造，塞进队列）。
+/// 一条出站事件（app 层构造，塞进队列；camelCase wire DTO，即对外契约的载荷格式）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlowEvent {
@@ -110,6 +131,19 @@ impl FlowEvent {
         self.tenant = v;
         self
     }
+
+    /// 投递幂等 id（`{instanceId}-{occurredAt}`，进 [`DELIVERY_HEADER`]）。
+    pub fn delivery_id(&self) -> String {
+        format!("{}-{}", self.instance_id, self.occurred_at)
+    }
+}
+
+/// HMAC-SHA256(body, secret) → 签名头值 `sha256=<hex>`（小写 hex；对实际发送字节计算）。
+pub fn sign_body(secret: &str, body: &[u8]) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .expect("HMAC 接受任意长度密钥");
+    mac.update(body);
+    format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
 }
 
 /// webhook 发送器句柄：app 层持有它，`emit` 非阻塞入队。
@@ -129,18 +163,30 @@ impl WebhookSender {
 
     /// 起一个后台发送 worker，返回句柄。
     ///
-    /// - `targets`：目标服务键列表（`[service_rpc.services]` 的键，每事件投递给全部目标）。
+    /// - `targets`：目标列表（服务目录键 + 回调路径，每事件投递给全部目标）。
     /// - `signing_key`：HMAC 签名密钥（须与接收端共享密钥一致）。
     /// - `max_retries`：单条单目标失败重试次数（指数退避 1s/2s/4s…）。
-    pub fn spawn_worker(targets: Vec<String>, signing_key: Option<String>, max_retries: u32) -> Self {
+    ///
+    /// 传输经全局 service_rpc 基座（装配链更早处 `init_infra` 已初始化）；基座未初始化时
+    /// 降级 disabled（warn）——webhook 是通知非关键路径，不值得让它阻断服务启动。
+    pub fn spawn_worker(
+        targets: Vec<WebhookTarget>,
+        signing_key: Option<String>,
+        max_retries: u32,
+    ) -> Self {
         if targets.is_empty() {
             return Self::disabled();
         }
+        let Some(rpc) = cmx_service_rpc::global_arc() else {
+            tracing::warn!("webhook 已配目标但 service_rpc 基座未初始化，webhook 关闭");
+            return Self::disabled();
+        };
         let (tx, mut rx) = mpsc::channel::<FlowEvent>(1024);
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 for target in &targets {
-                    deliver(target, &event, signing_key.as_deref(), max_retries).await;
+                    deliver(&rpc, target, &event, signing_key.as_deref().unwrap_or(""), max_retries)
+                        .await;
                 }
             }
         });
@@ -162,53 +208,49 @@ impl WebhookSender {
     }
 }
 
-/// 投递一条事件到一个目标服务键：契约投递（cmx-mdm-sdk：序列化 → 签名 → POST 回调端点）→
-/// 失败指数退避重试（重试/退避策略归本发送器；SDK 只做单次投递）。
+/// 投递一条事件到一个目标：序列化 → 签名（对实际发送字节）→ 基座裸 POST → 失败指数退避重试。
+///
+/// 成功判定 = HTTP 2xx（`execute` 取原始响应，不解析 body——接收方是任意外部系统，
+/// 不受 CMX 信封约束）；非 2xx / 传输错误进重试。
 async fn deliver(
-    target: &str,
+    rpc: &ServiceRpcHandle,
+    target: &WebhookTarget,
     event: &FlowEvent,
-    signing_key: Option<&str>,
+    secret: &str,
     max_retries: u32,
 ) {
-    let sdk_event = cmx_mdm_sdk::FlowEvent::from(event.clone());
-    let secret = signing_key.unwrap_or("");
+    // body 用紧凑 JSON；签名对 body 字节，必须与发出的字节一致（Raw body 保证）。
+    let body = match serde_json::to_vec(event) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!(event = %event.event, error = %e, "webhook 事件序列化失败，丢弃");
+            return;
+        }
+    };
     let mut attempt = 0u32;
     loop {
-        match cmx_mdm_sdk::deliver_flow_event(&sdk_event, secret).await {
-            Ok(()) => {
-                tracing::debug!(event = %event.event, target, "webhook 投递成功");
+        let req = RpcRequest::post(target.key.clone(), target.path.clone())
+            .raw_body(body.clone(), "application/json")
+            .header(EVENT_HEADER, event.event.clone())
+            .header(DELIVERY_HEADER, event.delivery_id())
+            .header(SIGNATURE_HEADER, sign_body(secret, &body));
+        match rpc.execute(req).await {
+            Ok(_) => {
+                tracing::debug!(event = %event.event, key = %target.key, "webhook 投递成功");
                 return;
             }
             Err(e) => {
-                tracing::warn!(event = %event.event, target, attempt, error = %e, "webhook 投递失败");
+                tracing::warn!(event = %event.event, key = %target.key, attempt, error = %e, "webhook 投递失败");
             }
         }
         if attempt >= max_retries {
-            tracing::warn!(event = %event.event, target, "webhook 重试耗尽，放弃");
+            tracing::warn!(event = %event.event, key = %target.key, "webhook 重试耗尽，放弃");
             return;
         }
         // 指数退避：1s, 2s, 4s…
         let backoff = std::time::Duration::from_secs(1u64 << attempt.min(6));
         tokio::time::sleep(backoff).await;
         attempt += 1;
-    }
-}
-
-/// 内部事件 → 契约事件（wire DTO 同构，字段一一对应）。
-impl From<FlowEvent> for cmx_mdm_sdk::FlowEvent {
-    fn from(e: FlowEvent) -> Self {
-        Self {
-            event: e.event,
-            instance_id: e.instance_id,
-            state: e.state,
-            definition_key: e.definition_key,
-            business_key: e.business_key,
-            task_id: e.task_id,
-            node_bpmn_id: e.node_bpmn_id,
-            assignee: e.assignee,
-            tenant: e.tenant,
-            occurred_at: e.occurred_at,
-        }
     }
 }
 
@@ -223,29 +265,38 @@ mod tests {
         s.emit(FlowEvent::new(FlowEventKind::InstanceStarted, "i1", "t".into())); // 不 panic
     }
 
-    /// 内部事件 → 契约 DTO 字段对齐（wire 同构，防漂移）。
-    #[test]
-    fn sdk_event_conversion_aligns() {
-        let ev = FlowEvent::new(FlowEventKind::TaskCompleted, "i-1", "t0".into())
-            .state(Some("COMPLETED".into()))
-            .definition_key(Some("mdm_cr_approval".into()))
-            .business_key(Some("CR-1".into()))
-            .task(Some("t-9".into()), Some("review_1".into()))
-            .assignee(Some("u1".into()))
-            .tenant(Some("default".into()));
-        let sdk = cmx_mdm_sdk::FlowEvent::from(ev);
-        assert_eq!(sdk.event, "task.completed");
-        assert_eq!(sdk.instance_id, "i-1");
-        assert_eq!(sdk.state.as_deref(), Some("COMPLETED"));
-        assert_eq!(sdk.definition_key.as_deref(), Some("mdm_cr_approval"));
-        assert_eq!(sdk.task_id.as_deref(), Some("t-9"));
-        assert_eq!(sdk.node_bpmn_id.as_deref(), Some("review_1"));
-        assert_eq!(sdk.occurred_at, "t0");
-    }
-
     #[test]
     fn event_kind_names() {
         assert_eq!(FlowEventKind::InstanceStarted.as_str(), "instance.started");
         assert_eq!(FlowEventKind::TaskReassigned.as_str(), "task.reassigned");
+    }
+
+    /// wire 形状：camelCase + None 字段不上线 + 幂等 id。
+    #[test]
+    fn event_wire_shape() {
+        let ev = FlowEvent::new(FlowEventKind::TaskCompleted, "i-1", "2026-08-31T10:00:00Z".into())
+            .state(Some("COMPLETED".into()))
+            .definition_key(Some("mdm_cr_approval".into()))
+            .task(Some("t-9".into()), Some("review_1".into()))
+            .assignee(Some("u1".into()));
+        let v = serde_json::to_value(&ev).unwrap();
+        assert_eq!(v["event"], "task.completed");
+        assert_eq!(v["instanceId"], "i-1");
+        assert_eq!(v["nodeBpmnId"], "review_1");
+        assert_eq!(v["occurredAt"], "2026-08-31T10:00:00Z");
+        assert!(v.get("businessKey").is_none(), "None 字段不上线");
+        assert_eq!(ev.delivery_id(), "i-1-2026-08-31T10:00:00Z");
+    }
+
+    /// 签名形状与稳定性：`sha256=` 前缀 + 64 位小写 hex；同 body/密钥稳定，密钥变则变。
+    #[test]
+    fn sign_body_shape() {
+        let body = br#"{"event":"instance.completed","instanceId":"i-1"}"#;
+        let sig = sign_body("secret", body);
+        assert!(sig.starts_with("sha256="));
+        assert_eq!(sig.len(), "sha256=".len() + 64);
+        assert_eq!(sig, sign_body("secret", body));
+        assert_ne!(sig, sign_body("other", body));
+        assert_ne!(sig, sign_body("secret", b"other"));
     }
 }

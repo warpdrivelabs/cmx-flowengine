@@ -19,9 +19,11 @@ pub mod mock;
 pub mod subflow;
 pub mod webhook;
 
-pub use config::{AdapterConfig, AdapterMode, WebhookConfig};
+pub use config::{AdapterConfig, AdapterMode, WebhookConfig, WebhookTarget};
 pub use delegate::HttpDelegate;
 pub use identity::HttpAssigneeResolver;
 pub use mock::{MockAssigneeResolver, MockDelegate, MockSubflowRouter};
 pub use subflow::{HttpDimensionResolver, HttpSubflowRouter, MockDimensionResolver};
-pub use webhook::{FlowEvent, FlowEventKind, WebhookSender};
+pub use webhook::{
+    FlowEvent, FlowEventKind, WebhookSender, DELIVERY_HEADER, EVENT_HEADER, SIGNATURE_HEADER,
+};

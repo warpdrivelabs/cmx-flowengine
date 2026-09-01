@@ -8,7 +8,7 @@
                       ┌────────────── cmx-flow-server ──────────────┐
 外部系统 ──REST────────► /api/flow/v1/*  (发起/办理/查询)              │
 外部系统 ──消息────────► POST /messages/correlate (唤醒等待中的流程)    │
-        ◄──Webhook──── FLOW_WEBHOOK_TARGETS (生命周期事件推送, 服务目录键)   │
+        ◄──Webhook──── FLOW_WEBHOOK_TARGETS (生命周期事件推送, 服务键:路径)   │
         ◄──SSE──────── GET /api/flow/v1/events (实时事件流)           │
                       │                                              │
         ◄──外呼──────── serviceTask → HttpDelegate (调外部算逻辑)      │
@@ -189,12 +189,17 @@ curl -X POST http://flow:8091/api/flow/v1/messages/correlate \
 
 引擎在生命周期节点触发出站 Webhook（应用层发，引擎核不变）。
 
+> **契约定位**：订阅方是**任意外部/三方系统**（mdm 只是订阅者之一），不存在共享 SDK——
+> 本节即契约真源，接收方照此实现即可（同 GitHub / Stripe webhook 模式）。**成功判定 =
+> HTTP 2xx**（响应体不解析，接收方协议自由）；传输地址经 `[service_rpc.services]` 服务
+> 目录定位（键即目录键，见 §8.1 与配置手册 11）。
+
 ### 配置
 
 | 环境变量 | 说明 |
 |----------|------|
-| `FLOW_WEBHOOK_TARGETS` | 逗号分隔的目标**服务目录键**（`[service_rpc.services]` 键，如 "mdm"）；空 = 禁用 |
-| `FLOW_WEBHOOK_SIGNING_KEY` | HMAC-SHA256 签名密钥（可选；须与接收端 `[mdm.flow].webhook_secret` 一致） |
+| `FLOW_WEBHOOK_TARGETS` | 逗号分隔的目标条目，每条 `服务目录键:回调路径`（如 `mdm:/api/mdm/flow/callback`）——键经 `[service_rpc.services]` 定位地址，路径归接收方定义；格式不合法的条目启动时 warn 跳过；空 = 禁用 |
+| `FLOW_WEBHOOK_SIGNING_KEY` | HMAC-SHA256 签名密钥（可选；须与每个接收端的共享密钥一致，如 mdm 的 `[mdm.flow].webhook_secret`） |
 | `FLOW_WEBHOOK_MAX_RETRIES` | 重试次数（默认 3） |
 
 ### 事件类型
@@ -203,13 +208,13 @@ curl -X POST http://flow:8091/api/flow/v1/messages/correlate \
 
 ### 请求
 
-`POST` 到每个 URL：
+`POST` 到每个目标的回调路径：
 
 ```
 content-type: application/json
 x-cmx-flow-event: instance.started
-x-cmx-flow-delivery: <instanceId>-<occurredAt>
-x-cmx-flow-signature: sha256=<hex(HMAC-SHA256(body, key))>   # 配了签名密钥才有
+x-cmx-flow-delivery: <instanceId>-<occurredAt>              # 幂等 id，可据此去重
+x-cmx-flow-signature: sha256=<hex(HMAC-SHA256(body, key))>  # 对 body 原始字节计算
 ```
 
 **载荷**（camelCase，None 字段省略）：
@@ -229,7 +234,7 @@ x-cmx-flow-signature: sha256=<hex(HMAC-SHA256(body, key))>   # 配了签名密�
 }
 ```
 
-投递：mpsc 队列（容量 1024）+ 后台任务，指数退避（1s,2s,4s… 上限 1<<6）重试至 `FLOW_WEBHOOK_MAX_RETRIES`。队列满/无订阅者 → 静默丢弃（非关键路径，绝不阻塞业务）。
+投递：mpsc 队列（容量 1024）+ 后台任务，指数退避（1s,2s,4s… 上限 1<<6）重试至 `FLOW_WEBHOOK_MAX_RETRIES`（非 2xx / 传输错误才算失败）。队列满/无订阅者 → 静默丢弃（非关键路径，绝不阻塞业务）。
 
 ### 验签（接收端）
 
@@ -239,6 +244,8 @@ def verify(body_bytes, sig_header, key):
     expected = "sha256=" + hmac.new(key.encode(), body_bytes, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, sig_header)
 ```
+
+接收端要点：密钥未配置 = 拒收（签名即凭证）；`x-cmx-flow-delivery` 可做幂等去重；不关心的事件直接 200 丢弃即可（发送方不因业务忽略而重试）。
 
 ## 8.7 事件订阅：SSE（实时流）
 
