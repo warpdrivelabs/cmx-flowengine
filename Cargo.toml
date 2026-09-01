@@ -93,3 +93,10 @@ dotenvy = "0.15"
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+# 测试 profile（继承 dev）：专为 cargo test 裁剪体积
+# debug = 1：仅保留行号表（backtrace 仍有行号可定位），测试二进制体积大幅缩小
+# incremental = true：保留增量编译，改动后重跑测试更快
+[profile.test]
+debug = 1
+incremental = true
