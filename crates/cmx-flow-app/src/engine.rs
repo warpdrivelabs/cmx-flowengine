@@ -395,15 +395,16 @@ async fn build_for(
         tracing::warn!(error = %e, "变量历史表建表失败（变量历史不可用）");
     }
 
-    // 4) 出站 webhook 发送器：配了 FLOW_WEBHOOK_URLS 则起后台投递 worker，否则 disabled（emit no-op）。
+    // 4) 出站 webhook 发送器：配了 FLOW_WEBHOOK_TARGETS（服务目录键）则起后台投递 worker，
+    //    否则 disabled（emit no-op）。投递经 cmx-mdm-sdk 契约（签名 + 服务目录定位）。
     let webhook = if cfg.webhook.is_enabled() {
         tracing::info!(
-            urls = cfg.webhook.urls.len(),
+            targets = cfg.webhook.targets.len(),
             signed = cfg.webhook.signing_key.is_some(),
-            "出站 webhook 已启用（生命周期事件通知第三方）"
+            "出站 webhook 已启用（生命周期事件通知目标服务）"
         );
         WebhookSender::spawn_worker(
-            cfg.webhook.urls.clone(),
+            cfg.webhook.targets.clone(),
             cfg.webhook.signing_key.clone(),
             cfg.webhook.max_retries,
         )

@@ -1,17 +1,15 @@
-//! 出站生命周期 webhook（方案 §4④ 的出站半）：flow 把实例/任务生命周期事件 POST 通知第三方。
+//! 出站生命周期 webhook（方案 §4④ 的出站半）：flow 把实例/任务生命周期事件通知目标服务。
 //!
 //! 设计（用户定）：**app 层发**（handler 调引擎成功后 emit，引擎零改）+ **后台异步 + 重试**
 //! （事件入内存队列，后台 task 逐个发，失败指数退避重试若干次，不阻塞 handler 响应）。
 //!
-//! 安全：每条请求带 `X-Cmx-Flow-Signature: sha256=<hex(HMAC-SHA256(body, signing_key))>` +
-//! `X-Cmx-Flow-Event`/`X-Cmx-Flow-Delivery`，第三方按共享密钥验签防伪造。
+//! 投递经 `cmx-mdm-sdk` 契约（`POST /api/mdm/flow/callback`）：目标 = 服务目录键
+//! （`FLOW_WEBHOOK_TARGETS`，`[service_rpc.services]` 定位）；安全 = 每条请求带
+//! `x-cmx-flow-signature: sha256=<hex(HMAC-SHA256(body, signing_key))>`（对实际发送字节签名，
+//! 接收端按共享密钥验签防伪造）+ 事件名 / 幂等投递头。签名与信封契约两端同源（cmx-mdm-sdk）。
 
-use hmac::{Hmac, Mac};
 use serde::Serialize;
-use sha2::Sha256;
 use tokio::sync::mpsc;
-
-type HmacSha256 = Hmac<Sha256>;
 
 /// 生命周期事件类型（对齐方案 §6 SSE 命名）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,19 +129,18 @@ impl WebhookSender {
 
     /// 起一个后台发送 worker，返回句柄。
     ///
-    /// - `urls`：目标 URL 列表（每事件都 POST 给全部 URL）。
-    /// - `signing_key`：HMAC 签名密钥（空则不签名）。
-    /// - `max_retries`：单条单 URL 失败重试次数（指数退避 1s/2s/4s…）。
-    pub fn spawn_worker(urls: Vec<String>, signing_key: Option<String>, max_retries: u32) -> Self {
-        if urls.is_empty() {
+    /// - `targets`：目标服务键列表（`[service_rpc.services]` 的键，每事件投递给全部目标）。
+    /// - `signing_key`：HMAC 签名密钥（须与接收端共享密钥一致）。
+    /// - `max_retries`：单条单目标失败重试次数（指数退避 1s/2s/4s…）。
+    pub fn spawn_worker(targets: Vec<String>, signing_key: Option<String>, max_retries: u32) -> Self {
+        if targets.is_empty() {
             return Self::disabled();
         }
         let (tx, mut rx) = mpsc::channel::<FlowEvent>(1024);
-        let http = reqwest::Client::new();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                for url in &urls {
-                    deliver(&http, url, &event, signing_key.as_deref(), max_retries).await;
+                for target in &targets {
+                    deliver(target, &event, signing_key.as_deref(), max_retries).await;
                 }
             }
         });
@@ -165,50 +162,29 @@ impl WebhookSender {
     }
 }
 
-/// 投递一条事件到一个 URL：签名 → POST → 失败指数退避重试。
+/// 投递一条事件到一个目标服务键：契约投递（cmx-mdm-sdk：序列化 → 签名 → POST 回调端点）→
+/// 失败指数退避重试（重试/退避策略归本发送器；SDK 只做单次投递）。
 async fn deliver(
-    http: &reqwest::Client,
-    url: &str,
+    target: &str,
     event: &FlowEvent,
     signing_key: Option<&str>,
     max_retries: u32,
 ) {
-    // body 用紧凑 JSON（签名对 body 字节，必须与发出的字节一致）。
-    let body = match serde_json::to_vec(event) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(error = %e, "webhook 事件序列化失败，跳过");
-            return;
-        }
-    };
-    let signature = signing_key.map(|k| sign(&body, k));
-    let delivery_id = format!("{}-{}", event.instance_id, event.occurred_at);
-
+    let sdk_event = cmx_mdm_sdk::FlowEvent::from(event.clone());
+    let secret = signing_key.unwrap_or("");
     let mut attempt = 0u32;
     loop {
-        let mut req = http
-            .post(url)
-            .header("content-type", "application/json")
-            .header("x-cmx-flow-event", &event.event)
-            .header("x-cmx-flow-delivery", &delivery_id)
-            .body(body.clone());
-        if let Some(sig) = &signature {
-            req = req.header("x-cmx-flow-signature", format!("sha256={sig}"));
-        }
-        match req.send().await {
-            Ok(resp) if resp.status().is_success() => {
-                tracing::debug!(event = %event.event, url, "webhook 投递成功");
+        match cmx_mdm_sdk::deliver_flow_event(&sdk_event, secret).await {
+            Ok(()) => {
+                tracing::debug!(event = %event.event, target, "webhook 投递成功");
                 return;
             }
-            Ok(resp) => {
-                tracing::warn!(event = %event.event, url, status = %resp.status(), attempt, "webhook 非 2xx");
-            }
             Err(e) => {
-                tracing::warn!(event = %event.event, url, error = %e, attempt, "webhook 请求失败");
+                tracing::warn!(event = %event.event, target, attempt, error = %e, "webhook 投递失败");
             }
         }
         if attempt >= max_retries {
-            tracing::warn!(event = %event.event, url, "webhook 重试耗尽，放弃");
+            tracing::warn!(event = %event.event, target, "webhook 重试耗尽，放弃");
             return;
         }
         // 指数退避：1s, 2s, 4s…
@@ -218,11 +194,22 @@ async fn deliver(
     }
 }
 
-/// HMAC-SHA256(body, key) → hex。
-fn sign(body: &[u8], key: &str) -> String {
-    let mut mac = HmacSha256::new_from_slice(key.as_bytes()).expect("HMAC 接受任意长度密钥");
-    mac.update(body);
-    hex::encode(mac.finalize().into_bytes())
+/// 内部事件 → 契约事件（wire DTO 同构，字段一一对应）。
+impl From<FlowEvent> for cmx_mdm_sdk::FlowEvent {
+    fn from(e: FlowEvent) -> Self {
+        Self {
+            event: e.event,
+            instance_id: e.instance_id,
+            state: e.state,
+            definition_key: e.definition_key,
+            business_key: e.business_key,
+            task_id: e.task_id,
+            node_bpmn_id: e.node_bpmn_id,
+            assignee: e.assignee,
+            tenant: e.tenant,
+            occurred_at: e.occurred_at,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -230,20 +217,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn signature_is_stable_hex() {
-        let body = br#"{"event":"instance.started"}"#;
-        let s = sign(body, "secret");
-        // HMAC-SHA256 → 64 hex chars，确定性。
-        assert_eq!(s.len(), 64);
-        assert_eq!(s, sign(body, "secret"));
-        assert_ne!(s, sign(body, "other"));
-    }
-
-    #[test]
     fn disabled_sender_emit_is_noop() {
         let s = WebhookSender::disabled();
         assert!(!s.is_enabled());
         s.emit(FlowEvent::new(FlowEventKind::InstanceStarted, "i1", "t".into())); // 不 panic
+    }
+
+    /// 内部事件 → 契约 DTO 字段对齐（wire 同构，防漂移）。
+    #[test]
+    fn sdk_event_conversion_aligns() {
+        let ev = FlowEvent::new(FlowEventKind::TaskCompleted, "i-1", "t0".into())
+            .state(Some("COMPLETED".into()))
+            .definition_key(Some("mdm_cr_approval".into()))
+            .business_key(Some("CR-1".into()))
+            .task(Some("t-9".into()), Some("review_1".into()))
+            .assignee(Some("u1".into()))
+            .tenant(Some("default".into()));
+        let sdk = cmx_mdm_sdk::FlowEvent::from(ev);
+        assert_eq!(sdk.event, "task.completed");
+        assert_eq!(sdk.instance_id, "i-1");
+        assert_eq!(sdk.state.as_deref(), Some("COMPLETED"));
+        assert_eq!(sdk.definition_key.as_deref(), Some("mdm_cr_approval"));
+        assert_eq!(sdk.task_id.as_deref(), Some("t-9"));
+        assert_eq!(sdk.node_bpmn_id.as_deref(), Some("review_1"));
+        assert_eq!(sdk.occurred_at, "t0");
     }
 
     #[test]

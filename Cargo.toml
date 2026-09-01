@@ -53,6 +53,9 @@ cmx-web-chassis = { path = "../cmx-container/crates/libs/cmx-web-chassis", versi
 cmx-web-monitor = { path = "../cmx-container/crates/libs/cmx-web-monitor", version = "0.1.12" }
 # 基础服务库：pg 数据源注册原语（default-features=false → 不拉 Redis/sqlx，flow 零负担）
 cmx-service-base = { path = "../cmx-container/crates/libs/cmx-service-base", version = "0.1.12", default-features = false }
+# mdm 契约 SDK（webhook 回调投递：签名 + 服务目录定位）
+cmx-mdm-sdk = { path = "../cmx-container/crates/libs/cmx-mdm/cmx-mdm-sdk", version = "0.1.12" }
+cmx-service-rpc = { path = "../cmx-container/crates/libs/cmx-infra/cmx-service-rpc", version = "0.1.12" }
 # 配置中台（ConfigManager）：flow-app 页面资产目录（assets_ui_*）/auth 段等业务配置直读
 cmx-utils = { path = "../cmx-container/crates/libs/cmx-utils", version = "0.1.12" }
 # 页面只读投递（native/html-pages 六端点通用路由，收编原 cmx-flow-app frontend_pages.rs）
