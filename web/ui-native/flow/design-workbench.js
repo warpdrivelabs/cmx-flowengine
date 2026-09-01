@@ -4355,14 +4355,14 @@ function styleCss () {
   /* bpmn 图标字体的 @font-face 已注入主文档 head（shadow 内声明 font-face 无效，Chrome 限制）。 */
   /* ① 节点业务徽章（overlays）：叠在节点左上角，随缩放平移跟随。 */
   .cmx-badges{display:flex;gap:3px;flex-wrap:wrap;pointer-events:none;max-width:180px}
-  .cmx-badge{display:inline-flex;align-items:center;gap:2px;height:17px;padding:0 5px;border-radius:9px;font-size:10px;font-weight:600;line-height:1;color:#fff;white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,.18)}
-  .cmx-badge ui5-icon{width:10px;height:10px;color:#fff;min-width:10px}
+  .cmx-badge{display:inline-flex;align-items:center;gap:2px;height:17px;padding:0 5px;border-radius:9px;font-size:10px;font-weight:600;line-height:1;color:var(--sapGroup_ContentBorderColor, #ffffff);white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,.18)}
+  .cmx-badge ui5-icon{width:10px;height:10px;color: #fff;min-width:10px}
   .cmx-badge i{font-style:normal}
   .cmx-badge.par{background:#8250df} .cmx-badge.seq{background:#6639ba}
-  .cmx-badge.who{background:#0969da} .cmx-badge.svc{background:#57606a}
-  .cmx-badge.rule{background:#bf8700} .cmx-badge.sub{background:#1a7f37}
-  .cmx-badge.msg{background:#bc4c00} .cmx-badge.timer{background:#cf222e}
-  .cmx-badge.term{background:#82071e}
+  .cmx-badge.who{background:var(--sapInformationElementColor, #0969da)} .cmx-badge.svc{background:#57606a}
+  .cmx-badge.rule{background:var(--sapCriticalElementColor, #bf8700)} .cmx-badge.sub{background:var(--sapPositiveElementColor, #1a7f37)}
+  .cmx-badge.msg{background:var(--sapCriticalElementColor, #bc4c00)} .cmx-badge.timer{background:var(--sapNegativeElementColor, #cf222e)}
+  .cmx-badge.term{background:var(--sapNegativeElementColor, #82071e)}
   /* 设计令牌层：全部派生自门户 --sap* 主题令牌（light/dark 自动翻，零 JS），写死值仅作降级 fallback。 */
   .flow{
     --brand:var(--sapButton_Emphasized_Background,var(--sapContent_IconColor,#0969da));
@@ -4494,7 +4494,7 @@ function styleCss () {
   .flow-minimap.collapsed .flow-mm-stage{display:none}
   .flow-minimap.collapsed{width:auto}
   /* 版本管理对话框（content 画布区内浮层） */
-  .flow-dialog-mask{position:absolute;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,#04070c 46%,transparent);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);padding:18px}
+  .flow-dialog-mask{position:absolute;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--sapInformationElementColor, #04070c) 46%,transparent);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);padding:18px}
   .flow-dialog{width:min(560px,100%);max-height:100%;overflow:hidden;display:flex;flex-direction:column;background:var(--tile);border:1px solid var(--brand-line);border-radius:12px;box-shadow:0 22px 54px var(--shadow)}
   .flow-dialog-head{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line-soft);background:linear-gradient(135deg,var(--brand-soft),var(--tile))}
   .flow-dialog-ic{width:32px;height:32px;border-radius:9px;background:var(--brand);color:var(--brand-ink);display:grid;place-items:center;flex:0 0 auto;box-shadow:0 3px 10px var(--glow)}
@@ -4551,7 +4551,7 @@ function styleCss () {
   .flow-field input:focus{outline:none;border-color:var(--brand-line);box-shadow:0 0 0 3px var(--brand-soft)}
   .flow-hint{font-size:11px;color:var(--muted);margin-top:3px} .flow-sec{font-size:11px;font-weight:800;color:var(--brand-d);text-transform:uppercase;margin:14px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--line-soft);letter-spacing:.04em}
   .flow-empty{display:flex;flex-direction:column;align-items:center;gap:8px;color:var(--muted);font-size:12.5px;padding:36px 16px;text-align:center}
-  .flow-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);background:#0d1117;color:#fff;padding:9px 16px;border-radius:10px;font-size:12.5px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s;z-index:20;max-width:min(88%,520px);white-space:normal;line-height:1.5;text-align:center;box-shadow:0 8px 24px rgba(0,0,0,.36);border:1px solid rgba(255,255,255,.08)}
+  .flow-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);background:#0d1117;color: #fff;padding:9px 16px;border-radius:10px;font-size:12.5px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s;z-index:20;max-width:min(88%,520px);white-space:normal;line-height:1.5;text-align:center;box-shadow:0 8px 24px rgba(0,0,0,.36);border:1px solid rgba(255,255,255,.08)}
   .flow-toast.show{opacity:1}
   /* 分支条件可视化构造器（P2-c） */
   .flow-cond{margin-bottom:12px}

@@ -362,21 +362,21 @@ function injectBpmnCss (root) {
     const st = document.createElement('style')
     st.setAttribute('data-ops-marker', '1')
     st.textContent = `
-      .ops-tok-run .djs-visual > :nth-child(1){stroke:#3b82f6 !important;stroke-width:3px !important;fill:#dbeafe !important}
-      .ops-tok-inc .djs-visual > :nth-child(1){stroke:#dc2626 !important;stroke-width:3px !important;fill:#fee2e2 !important}
-      .ops-tok-wait .djs-visual > :nth-child(1){stroke:#d97706 !important;stroke-width:3px !important;fill:#fef3c7 !important}
-      .ops-tok-subflow .djs-visual > :nth-child(1){stroke:#7c3aed !important;stroke-width:3px !important;fill:#ede9fe !important}
-      .ops-tok-timer .djs-visual > :nth-child(1){stroke:#0891b2 !important;stroke-width:3px !important;fill:#cffafe !important}
-      .ops-tok-async .djs-visual > :nth-child(1){stroke:#c2410c !important;stroke-width:3px !important;fill:#ffedd5 !important}
-      .ops-tok-msg .djs-visual > :nth-child(1){stroke:#be185d !important;stroke-width:3px !important;fill:#fce7f3 !important}
-      .ops-tok-end .djs-visual > :nth-child(1){stroke:#16a34a !important;stroke-width:3px !important}
+      .ops-tok-run .djs-visual > :nth-child(1){stroke:var(--sapInformationElementColor, #3b82f6) !important;stroke-width:3px !important;fill:#dbeafe !important}
+      .ops-tok-inc .djs-visual > :nth-child(1){stroke:var(--sapNegativeElementColor, #dc2626) !important;stroke-width:3px !important;fill:#fee2e2 !important}
+      .ops-tok-wait .djs-visual > :nth-child(1){stroke:var(--sapCriticalElementColor, #d97706) !important;stroke-width:3px !important;fill:#fef3c7 !important}
+      .ops-tok-subflow .djs-visual > :nth-child(1){stroke:var(--neo-violet, #7c3aed) !important;stroke-width:3px !important;fill:#ede9fe !important}
+      .ops-tok-timer .djs-visual > :nth-child(1){stroke:var(--sapInformationElementColor, #0891b2) !important;stroke-width:3px !important;fill:#cffafe !important}
+      .ops-tok-async .djs-visual > :nth-child(1){stroke:var(--sapNegativeElementColor, #c2410c) !important;stroke-width:3px !important;fill:#ffedd5 !important}
+      .ops-tok-msg .djs-visual > :nth-child(1){stroke:var(--sapNegativeElementColor, #be185d) !important;stroke-width:3px !important;fill:#fce7f3 !important}
+      .ops-tok-end .djs-visual > :nth-child(1){stroke:var(--sapPositiveElementColor, #16a34a) !important;stroke-width:3px !important}
       /* 回放：轨迹（走过的节点/边，暗色）+ 当前帧占用节点（活动蓝，同 run） */
-      .ops-rp-trail .djs-visual > :nth-child(1){stroke:#94a3b8 !important;stroke-width:2px !important}
-      .ops-rp-trail.djs-connection .djs-visual > :nth-child(1){stroke:#94a3b8 !important}
-      .ops-rp-now .djs-visual > :nth-child(1){stroke:#3b82f6 !important;stroke-width:3.5px !important;fill:#dbeafe !important}
+      .ops-rp-trail .djs-visual > :nth-child(1){stroke:var(--sapInformationElementColor, #94a3b8) !important;stroke-width:2px !important}
+      .ops-rp-trail.djs-connection .djs-visual > :nth-child(1){stroke:var(--sapInformationElementColor, #94a3b8) !important}
+      .ops-rp-now .djs-visual > :nth-child(1){stroke:var(--sapInformationElementColor, #3b82f6) !important;stroke-width:3.5px !important;fill:#dbeafe !important}
       /* 令牌数徽标（并行/多实例：一个节点多个令牌）——右上角计数气泡 */
       .ops-tok-badge{background:#0d1117;color:#fff;font:700 10px/1 var(--mono,monospace);min-width:16px;height:16px;padding:0 4px;border-radius:9px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,.35);border:1.5px solid #fff}
-      .ops-tok-badge.inc{background:#cf222e}`
+      .ops-tok-badge.inc{background:var(--sapNegativeElementColor, #cf222e)}`
     root.appendChild(st)
   }
 }
@@ -395,14 +395,14 @@ function tokMarkerClass (s) {
 
 // 令牌状态图例（色 + 文字，与画布高亮同色；不靠色区分——每项带中文名）。
 const TOK_LEGEND = [
-  ['run', '#3b82f6', '活动'],
-  ['wait', '#d97706', '等待'],
-  ['subflow', '#7c3aed', '子流程'],
-  ['timer', '#0891b2', '定时'],
-  ['async', '#c2410c', '异步'],
-  ['msg', '#be185d', '消息'],
-  ['inc', '#dc2626', '异常'],
-  ['end', '#16a34a', '结束'],
+  ['run', 'var(--sapInformationElementColor, #3b82f6)', '活动'],
+  ['wait', 'var(--sapCriticalElementColor, #d97706)', '等待'],
+  ['subflow', 'var(--neo-violet, #7c3aed)', '子流程'],
+  ['timer', 'var(--sapInformationElementColor, #0891b2)', '定时'],
+  ['async', 'var(--sapNegativeElementColor, #c2410c)', '异步'],
+  ['msg', 'var(--sapNegativeElementColor, #be185d)', '消息'],
+  ['inc', 'var(--sapNegativeElementColor, #dc2626)', '异常'],
+  ['end', 'var(--sapPositiveElementColor, #16a34a)', '结束'],
 ]
 
 // 挂载/更新只读流程图 + 令牌高亮（在每次 content 渲染后调用；容器随 innerHTML 重建，故 viewer 重挂）。
@@ -811,7 +811,7 @@ function styleCss () {
     --field-bg: var(--sapField_Background, var(--panel));
     --field-ink: var(--sapField_TextColor, var(--ink));
     --bg-soft: var(--sapGroup_ContentBackground, #fafafa);
-    --violet: var(--neo-violet, #7c3aed);
+    --violet: var(--neo-violet, var(--neo-violet, #7c3aed));
     --mono: ui-monospace, Menlo, Consolas, monospace;
   }
   .ops { font:13px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; color:var(--ink); height:100%; box-sizing:border-box; display:flex; flex-direction:column; }
@@ -848,7 +848,7 @@ function styleCss () {
   .ops-sec-r { display:inline-flex; align-items:center; gap:8px; text-transform:none; }
   .ops-mini { font:inherit; font-size:11px; font-weight:700; padding:2px 8px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--muted); cursor:pointer; }
   .ops-mini:hover { border-color:var(--brand); color:var(--brand); }
-  .ops-mini.on { background:var(--brand); color:#fff; border-color:var(--brand); }
+  .ops-mini.on { background:var(--brand); color: #fff; border-color:var(--brand); }
   /* 回放控制条 */
   .ops-replay { margin:8px 14px 0; padding:8px 10px; border:1px solid var(--line-soft); border-radius:9px; background:var(--bg); }
   .ops-replay-ctl { display:flex; align-items:center; gap:6px; }

@@ -352,7 +352,7 @@ function styleCss () {
   /* explorer */
   .idn-tabs { display:flex; gap:4px; padding:8px; flex-wrap:wrap; border-bottom:1px solid var(--line-soft); }
   .idn-tab { display:flex; align-items:center; gap:5px; font:inherit; font-size:12px; font-weight:700; padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--muted); cursor:pointer; }
-  .idn-tab.active { background:var(--brand); color:#fff; border-color:var(--brand); }
+  .idn-tab.active { background:var(--brand); color: #fff; border-color:var(--brand); }
   .idn-tab-ic ui5-icon { width:14px; height:14px; }
   .idn-list-head { display:flex; justify-content:space-between; align-items:center; padding:8px 12px; font-size:11px; color:var(--muted); text-transform:uppercase; font-weight:800; }
   .idn-list-head span { background:var(--brand-soft); color:var(--brand); border-radius:20px; padding:1px 8px; }
@@ -369,7 +369,7 @@ function styleCss () {
   .idn-title { font-size:14px; } .idn-tb-sp { flex:1; }
   .idn-btn { display:inline-flex; align-items:center; gap:4px; font:inherit; font-size:12px; font-weight:700; padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); cursor:pointer; }
   .idn-btn ui5-icon { width:14px; height:14px; }
-  .idn-btn.primary { background:var(--brand); color:#fff; border-color:var(--brand); }
+  .idn-btn.primary { background:var(--brand); color: #fff; border-color:var(--brand); }
   .idn-btn.danger { color:var(--danger); border-color:color-mix(in srgb, var(--danger) 35%, transparent); }
   .idn-btn:disabled { opacity:.45; cursor:not-allowed; }
   .idn-banner { margin:12px 14px 0; padding:10px 14px; background:var(--warn-soft); border:1px solid color-mix(in srgb, var(--warn) 30%, transparent); border-left:3px solid var(--warn); border-radius:0 8px 8px 0; font-size:12.5px; color:var(--ink); }

@@ -417,7 +417,7 @@ function styleCss () {
   .fba-row small { color: var(--muted); font-size: 11px; }
   .fba-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
   .fba-tag { font-style: normal; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 10px; background: var(--brand-soft); color: var(--brand); }
-  .fba-tag.kind-workspace { background: color-mix(in srgb, var(--neo-violet, #7c3aed) 14%, transparent); color: var(--neo-violet, #7c3aed); }
+  .fba-tag.kind-workspace { background: color-mix(in srgb, var(--neo-violet, var(--neo-violet, #7c3aed)) 14%, transparent); color: var(--neo-violet, var(--neo-violet, #7c3aed)); }
   .fba-tag.kind-html { background: color-mix(in srgb, var(--neo-mint, #10b981) 14%, transparent); color: var(--neo-mint, #10b981); }
   .fba-tag.kind-native { background: var(--brand-soft); color: var(--brand); }
   .fba-tag.none { background: var(--warn-soft); color: var(--warn); }

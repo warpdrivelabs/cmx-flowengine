@@ -515,7 +515,7 @@ function styleCss () {
   .dsd-vtab td{ padding:5px 8px; border-bottom:1px solid var(--line-soft); vertical-align:top; word-break:break-all; font-family:var(--mono); }
   .dsd-vtab td:first-child{ font-weight:700; color:var(--muted); white-space:nowrap; width:40%; }
   .dsd-muted{ color:var(--muted); font-size:12px; padding:0 14px; }
-  .dsd-toast{ position:fixed; left:50%; bottom:20px; transform:translateX(-50%); background:#0d1117; color:#fff; padding:9px 16px; border-radius:9px; font-size:12.5px; font-weight:600; opacity:0; pointer-events:none; transition:opacity .2s; z-index:30; border:1px solid rgba(255,255,255,.08); }
+  .dsd-toast{ position:fixed; left:50%; bottom:20px; transform:translateX(-50%); background:#0d1117; color: #fff; padding:9px 16px; border-radius:9px; font-size:12.5px; font-weight:600; opacity:0; pointer-events:none; transition:opacity .2s; z-index:30; border:1px solid rgba(255,255,255,.08); }
   .dsd-toast.show{ opacity:1; } .dsd-toast.err{ background:var(--red); }
   `
 }
