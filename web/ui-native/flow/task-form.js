@@ -17,9 +17,7 @@
  * F4 再接通用动态字段渲染。formMode=edit 的可编辑收紧也留 F4。
  */
 
-const esc = (s) => String(s ?? '')
-  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+const { escHtml: esc } = globalThis.__cmxDataComp // 共享转义（cmx-data-comp/lib/cmx-page-helpers.js；最严格五字符集合，文本/属性上下文皆安全）
 const enc = encodeURIComponent
 
 // —— S4 抽核：配置接缝 ——（详见 todo-center.js 同名 CFG 注释）
@@ -52,21 +50,8 @@ const CFG = {
 }
 function configure (o) { Object.assign(CFG, o || {}); return CFG }
 
-async function apiJson (url, options = {}) {
-  // S4：apiBase 前缀（门户空串=同源）+ CFG.authHeaders/fetchInit。
-  const full = (CFG.apiBase && url.charAt(0) === '/') ? CFG.apiBase + url : url
-  const res = await fetch(full, {
-    ...CFG.fetchInit,
-    ...options,
-    headers: { Accept: 'application/json', ...CFG.authHeaders(), ...(options.headers || {}) },
-  })
-  let j = null
-  try { j = await res.json() } catch {}
-  if (!res.ok || (j && typeof j.code === 'number' && j.code !== 0)) {
-    throw new Error((j && (j.msg || j.error)) || `HTTP ${res.status}`)
-  }
-  return j && typeof j === 'object' && 'data' in j ? j.data : j
-}
+const { apiJson: _sharedApiJson } = globalThis.__cmxDataComp // 共享 fetch 封装（cmx-data-comp/lib/cmx-page-helpers.js）；经 CFG 转发保留组件壳 configure() 契约
+async function apiJson (url, options = {}) { return _sharedApiJson(url, options, CFG) }
 
 function rememberUserSnapshots (users) {
   try {
@@ -516,13 +501,13 @@ async function submitStart (st, host) {
     const r = await apiJson('/api/flow/instances', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     })
-    toast(st, '已发起流程实例 ' + (r.id ? String(r.id).slice(0, 8) : ''))
+    showCmxToast('已发起流程实例 ' + (r.id ? String(r.id).slice(0, 8) : ''))
     CFG.onTaskDone({ started: true, definitionKey: p.definitionKey })
     setTimeout(() => closeSelf({ instanceId: 'start', taskId: p.definitionKey }), 600)
   } catch (e) {
     st.busy = false
     refreshAll(st)
-    toast(st, '发起失败: ' + e.message)
+    showCmxToast('发起失败: ' + e.message)
   }
 }
 
@@ -766,12 +751,7 @@ function bind (root, st, view, host) {
   }))
 }
 
-function toast (st, msg) {
-  for (const host of Array.from(st.hosts)) {
-    const t = hostRoot(host)?.querySelector?.('.tf-toast')
-    if (t) { t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600) }
-  }
-}
+const { showCmxToast } = globalThis.__cmxDataComp // 共享 toast（cmx-data-comp/lib/cmx-toast.js；治理清单 B-05）
 
 function validateApproval (st, action) {
   const comment = String(st.draft.comment || '').trim()
@@ -821,7 +801,7 @@ async function submitApproval (st, action) {
     st.busyAction = ''
     st.submitted = true
     refreshAll(st)
-    toast(st, st.resultMessage)
+    showCmxToast(st.resultMessage)
     CFG.onTaskDone({ taskId: p.taskId, instanceId: p.instanceId })
     setTimeout(() => closeSelf(p), 1200)
   } catch (e) {
@@ -829,7 +809,7 @@ async function submitApproval (st, action) {
     st.busyAction = ''
     st.actionError = `${kind === 'approve' || kind === 'reject' ? '办结失败' : '退回失败'}：${e.message}`
     refreshAll(st)
-    toast(st, st.actionError)
+    showCmxToast(st.actionError)
   }
 }
 

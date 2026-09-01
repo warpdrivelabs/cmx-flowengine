@@ -38,37 +38,16 @@ const state = {
   validation: null,    // 保存前/失败的校验诊断（字符串数组）
 }
 
-const esc = (s) => String(s ?? '')
-  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+const { escHtml: esc } = globalThis.__cmxDataComp // 共享转义（cmx-data-comp/lib/cmx-page-helpers.js；最严格五字符集合，文本/属性上下文皆安全）
 const enc = encodeURIComponent
 
-async function apiJson (url, options = {}) {
-  const full = (CFG.apiBase && url.charAt(0) === '/') ? CFG.apiBase + url : url
-  const res = await fetch(full, {
-    ...CFG.fetchInit, ...options,
-    headers: { Accept: 'application/json', ...CFG.authHeaders(), ...(options.headers || {}) },
-  })
-  let j = null
-  try { j = await res.json() } catch {}
-  if (!res.ok || (j && typeof j.code === 'number' && j.code !== 0)) {
-    const err = new Error((j && (j.msg || j.error)) || `HTTP ${res.status}`)
-    err.status = res.status
-    err.body = j
-    throw err
-  }
-  return j && typeof j === 'object' && 'data' in j ? j.data : j
-}
+const { apiJson: _sharedApiJson } = globalThis.__cmxDataComp // 共享 fetch 封装（cmx-data-comp/lib/cmx-page-helpers.js）；经 CFG 转发保留组件壳 configure() 契约
+async function apiJson (url, options = {}) { return _sharedApiJson(url, options, CFG) }
 
 function hostRoot (host) {
   return host?.renderRoot || host?.shadowRoot?.querySelector('.native-page-root') || null
 }
-function toast (msg, err) {
-  for (const host of Array.from(state.hosts)) {
-    const t = hostRoot(host)?.querySelector?.('.dsd-toast')
-    if (t) { t.textContent = msg; t.classList.toggle('err', !!err); t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000) }
-  }
-}
+const { showCmxToast } = globalThis.__cmxDataComp // 共享 toast（cmx-data-comp/lib/cmx-toast.js；治理清单 B-05）
 
 // ————————————————————— 入口 —————————————————————
 
@@ -351,7 +330,7 @@ async function loadList () {
   try {
     const d = await apiJson('/api/flow/decisions')
     state.list = d.decisions || d.items || (Array.isArray(d) ? d : [])
-  } catch (e) { toast('加载失败: ' + e.message, true); state.list = [] }
+  } catch (e) { showCmxToast('加载失败: ' + e.message, { level: 'error' }); state.list = [] }
   state.loading = false; refreshView('explorer')
 }
 async function ensureFns () {
@@ -366,18 +345,18 @@ async function selectTable (key) {
     t.inputs = t.inputs || []; t.outputs = t.outputs || []; t.rules = t.rules || []; t.hit_policy = t.hit_policy || 'FIRST'
     t.rules.forEach((r) => { r.conditions = r.conditions || []; r.outputs = r.outputs || {} })
     state.def = t
-  } catch (e) { toast('加载决策表失败: ' + e.message, true) }
+  } catch (e) { showCmxToast('加载决策表失败: ' + e.message, { level: 'error' }) }
   refreshAll()
 }
 function newTable (key) {
-  if (!key) { toast('请输入新决策表 key', true); return }
-  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) { toast('key 需字母开头，仅字母数字下划线', true); return }
-  if (state.list.some((m) => m.key === key)) { toast('key 已存在，改为选中编辑', true); selectTable(key); return }
+  if (!key) { showCmxToast('请输入新决策表 key', { level: 'error' }); return }
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) { showCmxToast('key 需字母开头，仅字母数字下划线', { level: 'error' }); return }
+  if (state.list.some((m) => m.key === key)) { showCmxToast('key 已存在，改为选中编辑', { level: 'error' }); selectTable(key); return }
   state.selectedKey = key
   state.def = { key, hit_policy: 'FIRST', inputs: ['input1'], outputs: ['out1'], rules: [{ conditions: ['-'], outputs: {} }] }
   state.dirty = true; state.lastEval = null; state.validation = null; state.fx = null
   refreshAll()
-  toast('新建 ' + key + '（编辑后点保存落库）')
+  showCmxToast('新建 ' + key + '（编辑后点保存落库）')
 }
 async function saveTable () {
   const d = state.def; if (!d) return
@@ -388,7 +367,7 @@ async function saveTable () {
       body: JSON.stringify(d),
     })
     state.dirty = false
-    toast('已保存并热注册：' + d.key)
+    showCmxToast('已保存并热注册：' + d.key)
     await loadList()
     refreshView('content')
   } catch (e) {
@@ -397,7 +376,7 @@ async function saveTable () {
     const diags = body.violations || body.errors || (body.data && (body.data.violations || body.data.errors)) || null
     if (Array.isArray(diags) && diags.length) state.validation = diags.map((x) => (typeof x === 'string' ? x : (x.message || JSON.stringify(x))))
     else state.validation = [e.message]
-    toast('保存失败：' + e.message, true)
+    showCmxToast('保存失败：' + e.message, { level: 'error' })
     refreshView('content')
   }
 }
@@ -406,23 +385,23 @@ async function deleteTable () {
   if (typeof window !== 'undefined' && window.confirm && !window.confirm(`删除决策表「${d.key}」？此操作从库中移除并从引擎注销。`)) return
   try {
     await apiJson('/api/flow/decisions/' + enc(d.key), { method: 'DELETE' })
-    toast('已删除：' + d.key)
+    showCmxToast('已删除：' + d.key)
     state.selectedKey = null; state.def = null; state.lastEval = null; state.dirty = false
     await loadList(); refreshAll()
-  } catch (e) { toast('删除失败: ' + e.message, true) }
+  } catch (e) { showCmxToast('删除失败: ' + e.message, { level: 'error' }) }
 }
 async function doEvaluate () {
   const d = state.def; if (!d) return
   let facts
-  try { facts = JSON.parse(state.factsDraft || '{}') } catch { toast('facts JSON 非法', true); return }
+  try { facts = JSON.parse(state.factsDraft || '{}') } catch { showCmxToast('facts JSON 非法', { level: 'error' }); return }
   try {
     const r = await apiJson('/api/flow/decisions/evaluate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ table: d, variables: facts }),
     })
     state.lastEval = { matchedRules: r.matchedRules || [], outputs: r.outputs || {} }
-    toast(state.lastEval.matchedRules.length ? '命中 ' + state.lastEval.matchedRules.length + ' 条' : '无命中')
-  } catch (e) { toast('试算失败: ' + e.message, true); state.lastEval = null }
+    showCmxToast(state.lastEval.matchedRules.length ? '命中 ' + state.lastEval.matchedRules.length + ' 条' : '无命中')
+  } catch (e) { showCmxToast('试算失败: ' + e.message, { level: 'error' }); state.lastEval = null }
   refreshAll()
 }
 

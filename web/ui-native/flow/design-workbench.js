@@ -137,9 +137,7 @@ const EMPTY_DIAGRAM = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmndi:BPMNPlane></bpmndi:BPMNDiagram>
 </bpmn:definitions>`
 
-const esc = (s) => String(s ?? '')
-  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+const { escHtml: esc } = globalThis.__cmxDataComp // 共享转义（cmx-data-comp/lib/cmx-page-helpers.js；最严格五字符集合，文本/属性上下文皆安全）
 const enc = encodeURIComponent
 
 // 钻入式子流程编辑复用 content 唯一 modeler，故「当前编辑的 modeler」恒为 state.modeler。
@@ -152,20 +150,10 @@ function setActiveDirty (v) {
   state.dirty = v
 }
 
+const { apiJson: _sharedApiJson } = globalThis.__cmxDataComp // 共享 fetch 封装（cmx-data-comp/lib/cmx-page-helpers.js）；经 CFG 转发保留组件壳 configure() 契约
+// 本页多注入一个 X-User 头（流程设计工作台历史约定），用户自带的 options.headers 仍可覆盖。
 async function apiJson (url, options = {}) {
-  // S4：apiBase 前缀（门户空串=同源）+ CFG.authHeaders/fetchInit。
-  const full = (CFG.apiBase && url.charAt(0) === '/') ? CFG.apiBase + url : url
-  const res = await fetch(full, {
-    ...CFG.fetchInit,
-    ...options,
-    headers: { Accept: 'application/json', 'X-User': currentUser(), ...CFG.authHeaders(), ...(options.headers || {}) },
-  })
-  let j = null
-  try { j = await res.json() } catch {}
-  if (!res.ok || (j && typeof j.code === 'number' && j.code !== 0)) {
-    throw new Error((j && (j.msg || j.error)) || `HTTP ${res.status}`)
-  }
-  return j && typeof j === 'object' && 'data' in j ? j.data : j
+  return _sharedApiJson(url, { ...options, headers: { 'X-User': currentUser(), ...(options.headers || {}) } }, CFG)
 }
 
 // SSE 连接（带 jwt 一次性票据）。浏览器原生 EventSource 不能带 Authorization header，
@@ -215,15 +203,7 @@ function openSse (path, listeners, onopen) {
   }
 }
 
-function toast (msg) {
-  state.message = msg
-  // 简易：写到每个 host 的 toast 区
-  for (const host of Array.from(state.hosts)) {
-    const root = hostRoot(host)
-    const t = root?.querySelector?.('.flow-toast')
-    if (t) { t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600) }
-  }
-}
+const { showCmxToast: toast } = globalThis.__cmxDataComp // 共享 toast（cmx-data-comp/lib/cmx-toast.js；治理清单 B-05）
 
 function hostRoot (host) {
   return host?.renderRoot || host?.shadowRoot?.querySelector('.native-page-root') || null

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MDM 主数据变更审批流程（M7 首版）。
+
+  结构（V4 方案 D3，四眼原则的结构保证）：
+    start → apply（发起人确认，直派 initiator）→ review（审批，mdm_approver 候选池）
+          → 网关（lastDecision）→ 驳回 end / 通过 end
+
+  ★ 两个不可退化的属性（deploy-mdm-flow.sh 的 validate 步骤有断言）：
+    - process 级 cmx:withdrawPolicy="lenient"：默认 strict 下「任何环节已办结即拒取回」，
+      而 MDM submit 会代确认 apply 节点（置 completed）——不声明 lenient 则「取回落 apply
+      重确认」恒被拒，四眼的 withdraw 防线失效；
+    - apply 节点 cmx:candidates="initiator"：普通 userTask 的 flowable:assignee 不做
+      ${} 插值（仅多实例路径插值），写 "${initiator}" 会落成字面量——必须用关系型候选
+      表达式经 resolver 解析为 [initiator] 单人直派。
+
+  ★ 变量契约（强校验 D2/D3）：cmx:varValidation="strict" + required 四变量是发布闸
+    （publish/activate 拒绝 lenient+required 组合）与发起边界硬校验的载体——缺
+    initiator / docNo / bizTable / bizId 任一发起即被拒。initiatorName 为展示快照
+    （可回退按 initiator 回查），故意不声明 required。
+-->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:flowable="http://flowable.org/bpmn" xmlns:cmx="http://cmx/flow">
+  <process id="mdm_cr_approval" name="主数据变更审批" isExecutable="true" cmx:withdrawPolicy="lenient" cmx:varValidation="strict">
+    <!-- 发起参数契约（required 缺一拒发；schema 为 VarSchema 透明数组，见 cmx-flow-model var_schema.rs） -->
+    <extensionElements>
+      <cmx:varSchema>[
+        {"name": "initiator", "type": "STRING", "required": true, "source": "START_PARAM", "description": "发起人 id（撤回护栏、「我发起的」过滤）"},
+        {"name": "docNo", "type": "STRING", "required": true, "description": "CR 业务单号"},
+        {"name": "bizTable", "type": "STRING", "required": true, "description": "待办中心单据坐标投影：表名"},
+        {"name": "bizId", "type": "STRING", "required": true, "description": "待办中心单据坐标投影：主键"}
+      ]</cmx:varSchema>
+    </extensionElements>
+    <startEvent id="s"/>
+    <sequenceFlow id="f0" sourceRef="s" targetRef="apply"/>
+    <!-- 发起人确认：MDM submit 后端代确认（以发起人身份 complete），撤回/取回的落点 -->
+    <userTask id="apply" name="发起人确认" cmx:candidates="initiator" cmx:formKey="mdm.cr.review" cmx:formMode="edit"/>
+    <sequenceFlow id="f1" sourceRef="apply" targetRef="review"/>
+    <!-- 审批：候选池认领（mdm_approver 角色，start 时物化）；「驳回」= complete(decision=reject) -->
+    <userTask id="review" name="主数据审批" flowable:candidateGroups="mdm_approver" cmx:formKey="mdm.cr.review" cmx:formMode="approve"/>
+    <sequenceFlow id="f2" sourceRef="review" targetRef="gw"/>
+    <exclusiveGateway id="gw" name="审批结论"/>
+    <sequenceFlow id="fReject" sourceRef="gw" targetRef="eReject" name="驳回">
+      <conditionExpression xsi:type="tFormalExpression" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">${lastDecision == 'reject'}</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="fApprove" sourceRef="gw" targetRef="eApprove" name="通过"/>
+    <endEvent id="eReject" name="已驳回"/>
+    <endEvent id="eApprove" name="已通过"/>
+  </process>
+</definitions>
