@@ -50,11 +50,17 @@
 
 ### 11.3.3 出站 Webhook（生命周期事件 → 外部订阅方）
 
+> 001 方案（订阅入库 + 管理页面）落地后：**运行时以订阅表 `cmx_flow_webhook_subscription` 为准**
+> （管理页面 / REST 维护，见 [09 §9.14](09-operations-and-admin.md)）；本组 env 仍生效的部分：
+> `TARGETS` 用作**首启导入源**（订阅表为空时按确定性名 `env-<服务键>` 种入、secret 沿用全局
+> 密钥，只种一次绝不覆盖用户改动），`SIGNING_KEY` 用作导入行的初始 secret。`MODE` 双轨切换。
+
 | 环境变量 | 必要性 | 默认 | 说明 |
 |----------|--------|------|------|
-| `FLOW_WEBHOOK_TARGETS` | 可选 | 空 = 关闭 | 逗号分隔的目标条目，每条 `服务目录键:回调路径`（如 `mdm:/api/mdm/flow/callback`）——键经 `[service_rpc.services]` 定位地址，路径归接收方定义；格式不合法的条目启动时 warn 跳过。契约（三头 + HMAC 签名 + HTTP 2xx 判定，无共享 SDK——订阅方是任意外部系统）见 [08 §8.6](08-external-integration.md) |
-| `FLOW_WEBHOOK_SIGNING_KEY` | **启用 webhook 时必须** | 空 | HMAC-SHA256 签名密钥，**须与每个接收端的共享密钥一致**（如 mdm 的 `[mdm.flow].webhook_secret`）；空 = 仍签名但接收端按空密钥拒收 |
-| `FLOW_WEBHOOK_MAX_RETRIES` | 可选 | `3` | 单条投递失败重试次数 |
+| `FLOW_WEBHOOK_MODE` | 可选 | `outbox` | 投递链路双轨：`outbox` = 持久化投递队列（事件先落库再投递，租约式多副本安全 poller，重试耗尽进死信可重发/处置）；`legacy` = 现行内存链路（mpsc + 串行 worker，重启丢、无死信，保留至 M3 后移除）。**集群级配置：滚动升级/漂移窗口须全量同配或停写**（双轨互斥，混配会双投或漏投） |
+| `FLOW_WEBHOOK_TARGETS` | 可选 | 空 | 逗号分隔的目标条目，每条 `服务目录键:回调路径`（如 `mdm:/api/mdm/flow/callback`）——键经 `[service_rpc.services]` 定位地址，路径归接收方定义；格式不合法的条目启动时 warn 跳过。**outbox 模式下语义 = 首启导入源**（订阅表非空时不再读它）；legacy 模式 = 运行时目标。契约（三头 + HMAC 签名 + HTTP 2xx 判定，无共享 SDK——订阅方是任意外部系统）见 [08 §8.6](08-external-integration.md) |
+| `FLOW_WEBHOOK_SIGNING_KEY` | **启用 webhook 时必须** | 空 | HMAC-SHA256 签名密钥，**须与每个接收端的共享密钥一致**（如 mdm 的 `[mdm.flow].webhook_secret`）；空 = 仍签名但接收端按空密钥拒收。outbox 模式 = 首启导入行的初始 secret（后续在管理页改独立密钥并同步接收端） |
+| `FLOW_WEBHOOK_MAX_RETRIES` | 可选 | `3` | **legacy 模式**单条投递失败重试次数（outbox 模式的重试上限在订阅行 `retry_max`，默认 10 含首发） |
 
 ### 11.3.4 多租户（按需启用）
 

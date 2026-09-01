@@ -150,6 +150,9 @@ async fn main() -> cmx_web_chassis::Result<()> {
                 spawn_async_job_poller()
                     .await
                     .map_err(|e| anyhow::anyhow!("异步 Job 执行器启动失败: {e}"))?;
+                cmx_flow_app::spawn_webhook_delivery_poller()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("出站 webhook 投递 poller 启动失败: {e}"))?;
                 Ok(())
             })
         });

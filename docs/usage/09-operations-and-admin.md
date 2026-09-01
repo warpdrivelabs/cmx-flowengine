@@ -226,3 +226,66 @@ timers/trigger  ──► 推进到期定时器（中断型移令牌/非中断�
 ---
 
 上一篇 ← [08 外部系统集成](08-external-integration.md) ｜ 下一篇 → [10 流程变量声明](10-variable-declaration.md)
+
+## 9.14 出站 Webhook 订阅管理（001 方案，outbox 模式）
+
+生命周期事件的出站投递支持**订阅入库 + 管理页面**：每订阅独立目标/独立密钥、按
+definitionKey × 事件类型路由、投递持久化（重启不丢）、死信可查可重发可处置。页面入口：
+流程工作台 → 「Webhook 订阅」（M2 起）；以下为 REST/curl 运维形态（全部 POST + JSON body，
+无 Path Variable；写端点在 auth 中间件未生效时 fail-close 拒绝）。
+
+### 端点速查（前缀 `/api/flow/v1`）
+
+| 端点 | 说明 |
+|------|------|
+| `POST /webhook-subscriptions/query` | 订阅分页（keyword/channel/active 过滤；secret 掩码） |
+| `GET  /webhook-subscriptions/detail?id=` | 订阅详情（secret 掩码） |
+| `POST /webhook-subscriptions/save` | 新建/更新（secret 留空或回传掩码 = 沿用旧值） |
+| `POST /webhook-subscriptions/delete` | 删除（**仅停用态可物理删**） |
+| `POST /webhook-subscriptions/set-active` | 启停（停用即不再生成投递行） |
+| `POST /webhook-subscriptions/test` | 测试投递（真实投递 + 审计行；同订阅 1 分钟 3 次限流） |
+| `GET  /webhook-subscriptions/channels` | 可用通道及 channel_config schema |
+| `POST /webhook-deliveries/query` | 投递流水分页（subscriptionId/state/channel/definitionKey） |
+| `POST /webhook-deliveries/retry` | 死信重发（DEAD / 租约过期 IN_FLIGHT → PENDING，attempts 归零） |
+| `POST /webhook-deliveries/skip` | 死信处置（DEAD → SKIPPED 人工留痕） |
+| `POST /webhook-deliveries/purge` | 清理 DONE/SKIPPED（beforeDays 默认 7） |
+
+### 示例 curl
+
+```bash
+BASE=http://127.0.0.1:8091/api/flow/v1
+H='Content-Type: application/json'
+AUTH='Authorization: Bearer <jwt>'   # 或 -H 'X-API-Key: <key>'
+
+# 建订阅（service_key 须在 [service_rpc.services] 目录登记；secret 每订阅独立）
+curl -s -X POST "$BASE/webhook-subscriptions/save" -H "$H" -H "$AUTH" -d '{
+  "name": "mdm 流程回调",
+  "channel": "webhook",
+  "channelConfig": { "service_key": "mdm", "callback_path": "/api/mdm/flow/callback", "secret": "<32位随机hex>" },
+  "definitionKeys": ["mdm_cr_approval"],
+  "eventTypes": ["instance.completed", "task.created"],
+  "active": true, "retryMax": 10
+}'
+
+# 测试投递（不走过滤规则，直达终态审计行；失败在 lastError/lastHttpStatus 留痕）
+curl -s -X POST "$BASE/webhook-subscriptions/test" -H "$H" -H "$AUTH" -d '{"id": 123}'
+
+# 死信速查 → 重发 / 处置
+curl -s -X POST "$BASE/webhook-deliveries/query" -H "$H" -H "$AUTH" \
+  -d '{"state": "DEAD", "page": 1, "pageSize": 20}'
+curl -s -X POST "$BASE/webhook-deliveries/retry" -H "$H" -H "$AUTH" -d '{"ids": [456]}'
+curl -s -X POST "$BASE/webhook-deliveries/skip"  -H "$H" -H "$AUTH" -d '{"ids": [456]}'
+```
+
+### 投递口径（运维须知）
+
+- **语义 at-least-once**：租约式抢占（多副本安全，逐行续租 + 持有者守卫）；发送方长停顿的
+  异常窗口可能双投，接收方按 delivery_id 或业务键幂等（对接文档 08 §8.6.1）。
+- **同订阅严格保序**：按落库序（seq）；某行退避等待会压住同订阅后续（有序优先），
+  终态（DONE/DEAD/SKIPPED）不阻塞。
+- **结果分类**：HTTP 408/429/5xx、超时、传输错误 → 退避重试（1s 起指数封顶 5min，
+  retry_max 含首发默认 10，首发到死信约 9~14 分钟）；其余 4xx（含 401/403）→ 直达死信。
+- **迁移**：`FLOW_WEBHOOK_TARGETS` 配置的存量目标在订阅表为空时**首启自动导入**
+  （名 `env-<服务键>`，secret 沿用全局 `FLOW_WEBHOOK_SIGNING_KEY` 不断签）；建议随后在
+  管理页改配每订阅独立密钥并同步接收端。`FLOW_WEBHOOK_MODE=legacy` 可临时回退内存链路
+  （集群级配置，全量同配或停写）。

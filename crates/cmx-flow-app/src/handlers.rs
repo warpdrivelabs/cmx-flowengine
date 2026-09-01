@@ -50,14 +50,40 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// 发一条生命周期事件：**双发**——出站 webhook（若启用）+ 进程内 SSE 广播（S3，始终）。
-/// 自动补上当前租户（SSE 按租户过滤）。webhook 关也能 SSE，故不再以 webhook 启用为前提。
-fn publish_event(rt: &FlowRuntime, event: FlowEvent) {
-    let event = event.tenant(Some(crate::tenant::current_tenant()));
-    if rt.webhook.is_enabled() {
-        rt.webhook.emit(event.clone());
+/// 发一批生命周期事件：**双发**——出站 webhook（按 MODE 分流）+ 进程内 SSE 广播（S3，始终）。
+/// 自动补上当前租户（SSE 按租户过滤）。同请求的事件在 emit 点收齐后单批写入（001 方案 §4.1）。
+///
+/// **SSE 半边不受 MODE 影响**：两种模式照常广播。webhook 半边：
+/// - outbox（默认）→ 事件落投递行（订阅匹配 + uk 幂等），投递 poller 租约式异步投递；
+/// - legacy → 现行内存链路（WebhookSender，保留至 M3）。
+async fn publish_events(rt: &FlowRuntime, events: Vec<FlowEvent>) {
+    if events.is_empty() {
+        return;
     }
-    crate::events::publish(event);
+    let events: Vec<FlowEvent> = events
+        .into_iter()
+        .map(|e| e.tenant(Some(crate::tenant::current_tenant())))
+        .collect();
+    for e in &events {
+        crate::events::publish(e.clone());
+    }
+    match crate::webhook_outbox::webhook_mode() {
+        crate::webhook_outbox::WebhookMode::Outbox => {
+            crate::webhook_outbox::emit_to_outbox(&events).await;
+        }
+        crate::webhook_outbox::WebhookMode::Legacy => {
+            if rt.webhook.is_enabled() {
+                for e in events {
+                    rt.webhook.emit(e);
+                }
+            }
+        }
+    }
+}
+
+/// 发一条生命周期事件（[`publish_events`] 的单事件便捷形态）。
+async fn publish_event(rt: &FlowRuntime, event: FlowEvent) {
+    publish_events(rt, vec![event]).await;
 }
 
 /// 从实例快照投影出 state/definitionKey/businessKey（webhook 事件公共字段）。
@@ -77,10 +103,12 @@ async fn emit_instance_event(rt: &FlowRuntime, kind: FlowEventKind, instance_id:
             .state(state)
             .definition_key(def_key)
             .business_key(biz_key),
-    );
+    )
+    .await;
 }
 
 /// 为 ExecutionResult 的每个当前未办结任务 emit 一条 task 事件（task.created / task.reassigned）。
+/// 同一次推进的多条事件收齐后**单批写入**（001 方案 §4.1）。
 async fn emit_task_events(
     rt: &FlowRuntime,
     kind: FlowEventKind,
@@ -98,39 +126,49 @@ async fn emit_task_events(
         Err(_) => (None, None),
     };
     let ts = now_rfc3339();
-    for t in &result.open_tasks {
-        publish_event(
-            rt,
+    let events = result
+        .open_tasks
+        .iter()
+        .map(|t| {
             FlowEvent::new(kind, &result.instance_id, ts.clone())
                 .definition_key(def_key.clone())
                 .business_key(biz_key.clone())
                 .task(Some(t.id.clone()), Some(t.node_bpmn_id.clone()))
-                .assignee(t.assignee.clone()),
-        );
-    }
+                .assignee(t.assignee.clone())
+        })
+        .collect();
+    publish_events(rt, events).await;
 }
 
 /// emit 一条 task.reassigned（转办/委派/加签后新办理人 = to_user）。
+///
+/// 001 方案 §4.1 前置补齐：**补设 definition_key**（此前 2/6 事件载荷不带，订阅按
+/// definitionKey 过滤的前提不成立——借快照一并取 node_bpmn_id）。
 async fn emit_reassigned(rt: &FlowRuntime, instance_id: &str, task_id: &str, to_user: &str) {
-    // 补 node_bpmn_id（借快照找该任务；找不到就不带）。
-    let node = rt
+    // 补 node_bpmn_id + definition_key（借快照找该任务；找不到就不带）。
+    let (node, def_key) = rt
         .engine
         .store()
         .load_snapshot(instance_id)
         .await
         .ok()
-        .and_then(|snap| {
-            snap.tasks
+        .map(|snap| {
+            let node = snap
+                .tasks
                 .iter()
                 .find(|t| t.id == task_id)
-                .map(|t| t.node_bpmn_id.clone())
-        });
+                .map(|t| t.node_bpmn_id.clone());
+            (node, Some(snap.instance.definition_key.clone()))
+        })
+        .unwrap_or((None, None));
     publish_event(
         rt,
         FlowEvent::new(FlowEventKind::TaskReassigned, instance_id, now_rfc3339())
+            .definition_key(def_key)
             .task(Some(task_id.to_string()), node)
             .assignee(Some(to_user.to_string())),
-    );
+    )
+    .await;
 }
 
 // ————————————————————— 错误桥 —————————————————————
@@ -1349,32 +1387,40 @@ pub async fn complete_task(
     // 生命周期事件（webhook + SSE 双发）：该任务已办结；若实例随之完成发 instance.completed，
     // 否则为新产生的待办发 task.created。
     {
+        // 借快照补 definitionKey（001 前置修复：TaskCompleted 此前不带，订阅过滤前提不成立）
+        // 并筛出新待办（009-3 修复：快照 tasks 含已办结历史行，只对本轮**新开**任务 emit）。
+        let snap = rt.engine.store().load_snapshot(&req.instance_id).await.ok();
+        let def_key = snap.as_ref().map(|s| s.instance.definition_key.clone());
+        let biz_key = snap.as_ref().and_then(|s| s.instance.business_key.clone());
         publish_event(
             &rt,
             FlowEvent::new(FlowEventKind::TaskCompleted, &req.instance_id, now_rfc3339())
+                .definition_key(def_key.clone())
+                .business_key(biz_key.clone())
                 .task(Some(task_id.clone()), Some(node_bpmn_id.clone())),
-        );
-        if let Ok(snap) = rt.engine.store().load_snapshot(&req.instance_id).await {
+        )
+        .await;
+        if let Some(snap) = snap {
             use cmx_flow_model::InstanceState;
             if snap.instance.state == InstanceState::Completed {
                 emit_instance_event(&rt, FlowEventKind::InstanceCompleted, &req.instance_id).await;
             } else {
-                // 新开的待办（办结推进后可能产生下一环节任务）。跳过刚办结的任务本身
-                // ——M1 简化把已办结任务仍保留在 tasks 表里（见 InstanceSnapshot.tasks 注释），
-                // 不排除会把它误当"新建"重复 emit。
-                for t in &snap.tasks {
-                    if t.id == task_id {
-                        continue;
-                    }
-                    publish_event(
-                        &rt,
-                        FlowEvent::new(FlowEventKind::TaskCreated, &req.instance_id, now_rfc3339())
-                            .definition_key(Some(snap.instance.definition_key.clone()))
-                            .business_key(snap.instance.business_key.clone())
+                // 新开的待办（办结推进后可能产生下一环节任务）。009-3：只 emit **未办结**且
+                // 非刚办结本身的任务——历史已办结行随快照返回，旧代码会把它们误当"新建"重复 emit。
+                let ts = now_rfc3339();
+                let events = snap
+                    .tasks
+                    .iter()
+                    .filter(|t| !t.completed && t.id != task_id)
+                    .map(|t| {
+                        FlowEvent::new(FlowEventKind::TaskCreated, &req.instance_id, ts.clone())
+                            .definition_key(def_key.clone())
+                            .business_key(biz_key.clone())
                             .task(Some(t.id.clone()), Some(t.node_bpmn_id.clone()))
-                            .assignee(t.assignee.clone()),
-                    );
-                }
+                            .assignee(t.assignee.clone())
+                    })
+                    .collect();
+                publish_events(&rt, events).await;
             }
         }
     }

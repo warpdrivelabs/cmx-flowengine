@@ -43,3 +43,10 @@ hex = "0.4"
 # 集成测试：进程内 axum 桩服务 + 引擎跑候选池
 tokio = { workspace = true }
 axum = { workspace = true }
+
+# MQ 通道骨架 feature 门控（001 方案 §4.4：本期只立抽象，M4+ 引入客户端并放开）。
+# 未启用时通道不进注册表 → save 端点拒绝建对应订阅（防建出永远重试的死订阅）。
+[features]
+default = []
+channel-kafka = []
+channel-rabbitmq = []

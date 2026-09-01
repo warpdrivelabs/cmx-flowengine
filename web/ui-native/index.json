@@ -56,6 +56,13 @@
       "details": "native_pages 四区表单注册表管理工作台（002 债务落地）：explorer kind 筛选+关键字过滤+绑定卡片列表（内置/console=none 角标）、content 编辑表单（字段按 kind 联动、formKey 编辑态禁改）、property 字段说明+消费方/seed 复位警示；数据源 /api/flow/forms（列表/upsert/delete）。",
       "sourceType": "js",
       "relPath": "flow/form-binding-admin.js"
+    },
+    {
+      "id": "portal.flow.webhook-admin",
+      "name": "Webhook 订阅管理",
+      "details": "native_pages 三区出站 webhook 订阅管理（001 方案 M2）：explorer 订阅列表(启停/通道/服务键/env 导入角标)、content 双 tab(订阅编辑：通道下拉/secret 只写掩码随机生成/definitionKeys 多选/eventTypes 推荐集/retry_max + 测试投递 + 启停；投递流水：状态过滤 + 死信勾选重发/处置)、property 投递口径说明(保序/退避/at-least-once/首启导入迁移)。数据源 /api/flow/v1/webhook-subscriptions/* 与 /webhook-deliveries/*。",
+      "sourceType": "js",
+      "relPath": "flow/webhook-admin.js"
     }
   ]
 }

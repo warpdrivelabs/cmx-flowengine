@@ -31,12 +31,15 @@ pub mod stats;
 pub mod tenancy;
 pub mod tenant;
 pub mod views;
+pub mod webhook_admin;
+pub mod webhook_outbox;
+pub mod webhook_store;
 
 pub use auth::auth as auth_middleware;
 pub use observe::observe as observe_middleware;
 pub use engine::{
     FLOW_DB_ID, FlowRuntime, IAM_DB_ID, current_flow_db_id, flow, flow_for_tenant,
-    spawn_async_job_poller, spawn_timer_poller,
+    spawn_async_job_poller, spawn_timer_poller, spawn_webhook_delivery_poller,
 };
 pub use resp::{ApiResp, FlowError, Result};
 pub use tenant::{TenantCtx, current_tenant, current_user, identity_snapshot};
@@ -262,5 +265,50 @@ where
         .route("/stats/detail", get(stats::stats_detail))
         // —— 客户端连接监控（连接数/协议/身份/方法/参数/返回值等全维度） ——
         .route("/clients", get(observe::client_stats))
+        // —— 出站 webhook 订阅管理（001 方案 §五：11 端点随 M1；rebuild 随 M3） ——
+        .route(
+            "/webhook-subscriptions/query",
+            post(webhook_admin::query_subscriptions),
+        )
+        .route(
+            "/webhook-subscriptions/detail",
+            get(webhook_admin::get_subscription_detail),
+        )
+        .route(
+            "/webhook-subscriptions/save",
+            post(webhook_admin::save_subscription),
+        )
+        .route(
+            "/webhook-subscriptions/delete",
+            post(webhook_admin::delete_subscription),
+        )
+        .route(
+            "/webhook-subscriptions/set-active",
+            post(webhook_admin::set_subscription_active),
+        )
+        .route(
+            "/webhook-subscriptions/test",
+            post(webhook_admin::test_subscription),
+        )
+        .route(
+            "/webhook-subscriptions/channels",
+            get(webhook_admin::list_channels),
+        )
+        .route(
+            "/webhook-deliveries/query",
+            post(webhook_admin::query_deliveries),
+        )
+        .route(
+            "/webhook-deliveries/retry",
+            post(webhook_admin::retry_deliveries),
+        )
+        .route(
+            "/webhook-deliveries/skip",
+            post(webhook_admin::skip_deliveries),
+        )
+        .route(
+            "/webhook-deliveries/purge",
+            post(webhook_admin::purge_deliveries),
+        )
 }
 

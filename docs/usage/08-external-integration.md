@@ -198,9 +198,10 @@ curl -X POST http://flow:8091/api/flow/v1/messages/correlate \
 
 | 环境变量 | 说明 |
 |----------|------|
-| `FLOW_WEBHOOK_TARGETS` | 逗号分隔的目标条目，每条 `服务目录键:回调路径`（如 `mdm:/api/mdm/flow/callback`）——键经 `[service_rpc.services]` 定位地址，路径归接收方定义；格式不合法的条目启动时 warn 跳过；空 = 禁用 |
-| `FLOW_WEBHOOK_SIGNING_KEY` | HMAC-SHA256 签名密钥（可选；须与每个接收端的共享密钥一致，如 mdm 的 `[mdm.flow].webhook_secret`） |
-| `FLOW_WEBHOOK_MAX_RETRIES` | 重试次数（默认 3） |
+| `FLOW_WEBHOOK_MODE` | 投递链路：`outbox`（默认，持久化队列 + 死信，推荐）/ `legacy`（内存链路）。见 [09 §9.14](09-operations-and-admin.md) |
+| `FLOW_WEBHOOK_TARGETS` | 逗号分隔的目标条目，每条 `服务目录键:回调路径`（如 `mdm:/api/mdm/flow/callback`）——键经 `[service_rpc.services]` 定位地址，路径归接收方定义；格式不合法的条目启动时 warn 跳过。**outbox 模式：仅作首启导入源**（运行时以订阅表为准，管理页/REST 维护）；legacy 模式：运行时目标；空 = 禁用 |
+| `FLOW_WEBHOOK_SIGNING_KEY` | HMAC-SHA256 签名密钥（可选；须与每个接收端的共享密钥一致，如 mdm 的 `[mdm.flow].webhook_secret`）。outbox 模式 = 首启导入行的初始 secret（建议随后改配每订阅独立密钥并同步接收端） |
+| `FLOW_WEBHOOK_MAX_RETRIES` | 重试次数（默认 3；仅 legacy——outbox 的重试上限在订阅行 retry_max，默认 10 含首发） |
 
 ### 事件类型
 
@@ -213,7 +214,7 @@ curl -X POST http://flow:8091/api/flow/v1/messages/correlate \
 ```
 content-type: application/json
 x-cmx-flow-event: instance.started
-x-cmx-flow-delivery: <instanceId>-<occurredAt>              # 幂等 id，可据此去重
+x-cmx-flow-delivery: <instanceId>-<taskId?->-<occurredAt>    # 幂等 id，可据此去重（§8.6.1）
 x-cmx-flow-signature: sha256=<hex(HMAC-SHA256(body, key))>  # 对 body 原始字节计算
 ```
 
@@ -234,7 +235,7 @@ x-cmx-flow-signature: sha256=<hex(HMAC-SHA256(body, key))>  # 对 body 原始字
 }
 ```
 
-投递：mpsc 队列（容量 1024）+ 后台任务，指数退避（1s,2s,4s… 上限 1<<6）重试至 `FLOW_WEBHOOK_MAX_RETRIES`（非 2xx / 传输错误才算失败）。队列满/无订阅者 → 静默丢弃（非关键路径，绝不阻塞业务）。
+投递（`FLOW_WEBHOOK_MODE=outbox` 默认）：事件先落持久化投递队列再由后台 poller 投递（进程重启不丢），退避 1s 起指数封顶 5min、重试耗尽进死信（管理端可重发/处置）。**投递语义 = at-least-once**（见 §8.6.1）。legacy 模式为 mpsc 内存队列（重启丢、无死信，M3 移除）。
 
 ### 验签（接收端）
 
@@ -246,6 +247,17 @@ def verify(body_bytes, sig_header, key):
 ```
 
 接收端要点：密钥未配置 = 拒收（签名即凭证）；`x-cmx-flow-delivery` 可做幂等去重；不关心的事件直接 200 丢弃即可（发送方不因业务忽略而重试）。
+
+### 8.6.1 幂等投递头与 at-least-once（2026-09-01 升级）
+
+- **`x-cmx-flow-delivery` 值格式升级**：task.* 事件从 `{instanceId}-{occurredAt}` 升级为
+  `{instanceId}-{taskId}-{occurredAt}`（实例级事件仍为两段）——修复一次推进产生多个并行
+  任务时多条事件共用同一幂等键的碰撞。键**更精确**，按该头去重的接收方只会更少误吞，
+  逻辑无须修改。
+- **投递语义 = at-least-once**：常态下每事件每订阅恰投一次；发送方长停顿等异常窗口内同一
+  事件可能重复投递。**接收方必须按 `x-cmx-flow-delivery` 头或业务键（definitionKey +
+  businessKey + 事件类型 + 状态机）幂等**。存量接收方 mdm 靠回调侧五规则状态机天然幂等，
+  零改动。
 
 ## 8.7 事件订阅：SSE（实时流）
 

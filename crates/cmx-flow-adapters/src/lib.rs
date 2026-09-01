@@ -12,6 +12,9 @@
 //! url 直连）；对端协议保持自定义裸 JSON。本 crate 依赖引擎 trait 层 + 基座，不直接
 //! 依赖任何 HTTP 客户端库。
 
+pub mod channel;
+pub mod channel_mq;
+pub mod channel_webhook;
 pub mod config;
 pub mod delegate;
 pub mod identity;
@@ -19,6 +22,10 @@ pub mod mock;
 pub mod subflow;
 pub mod webhook;
 
+pub use channel::{
+    ChannelRegistry, DeliveryChannel, DeliveryOutcome, DeliveryTask, global_registry,
+};
+pub use channel_webhook::WebhookChannel;
 pub use config::{AdapterConfig, AdapterMode, WebhookConfig, WebhookTarget};
 pub use delegate::HttpDelegate;
 pub use identity::HttpAssigneeResolver;

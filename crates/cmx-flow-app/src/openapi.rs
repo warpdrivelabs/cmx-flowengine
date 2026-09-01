@@ -126,4 +126,16 @@ const ENDPOINTS: &[Ep] = &[
     (HttpMethod::Get, "/startable", "表单", "可发起流程列表", &[]),
     // 实时
     (HttpMethod::Get, "/events", "实时", "SSE 生命周期事件流", &[]),
+    // 出站 webhook 订阅管理（001 方案：11 端点随 M1；rebuild 随 M3，届时补录）
+    (HttpMethod::Post, "/webhook-subscriptions/query", "Webhook订阅", "订阅分页列表（secret 掩码）", &[]),
+    (HttpMethod::Get, "/webhook-subscriptions/detail", "Webhook订阅", "订阅详情（id 走 query；secret 掩码）", &[]),
+    (HttpMethod::Post, "/webhook-subscriptions/save", "Webhook订阅", "新建/更新订阅（通道校验注册表；secret 掩码回传=沿用旧值）", &[]),
+    (HttpMethod::Post, "/webhook-subscriptions/delete", "Webhook订阅", "删除订阅（仅停用态可物理删）", &[]),
+    (HttpMethod::Post, "/webhook-subscriptions/set-active", "Webhook订阅", "启停订阅（停用即不再生成投递行）", &[]),
+    (HttpMethod::Post, "/webhook-subscriptions/test", "Webhook订阅", "测试投递（真实投递+审计行；同订阅 1 分钟 3 次限流）", &[]),
+    (HttpMethod::Get, "/webhook-subscriptions/channels", "Webhook订阅", "可用通道及 channel_config schema", &[]),
+    (HttpMethod::Post, "/webhook-deliveries/query", "Webhook订阅", "投递流水分页（按订阅/状态/通道过滤）", &[]),
+    (HttpMethod::Post, "/webhook-deliveries/retry", "Webhook订阅", "死信重发（DEAD/租约过期 IN_FLIGHT → PENDING）", &[]),
+    (HttpMethod::Post, "/webhook-deliveries/skip", "Webhook订阅", "死信处置（DEAD → SKIPPED 留痕）", &[]),
+    (HttpMethod::Post, "/webhook-deliveries/purge", "Webhook订阅", "清理 DONE/SKIPPED 行（beforeDays 默认 7）", &[]),
 ];

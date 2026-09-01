@@ -362,13 +362,32 @@ async fn build_for(
     // 2c) F1/F3 集成支撑表（该租户库）：单据↔实例关联 + 任务意见留痕。幂等自举，失败仅告警。
     //     build_for 在请求 scope 外运行，故用 tenant::scope 包一层，让 biz_link 里的
     //     current_flow_db_id() 解析到本租户库（否则回退默认租户库，multi 下会串库）。
-    crate::tenant::scope(crate::tenant::TenantCtx::new(tenant), async {
+    let flow_db = flow_db_id.to_string();
+    crate::tenant::scope(crate::tenant::TenantCtx::new(tenant), async move {
         if let Err(e) = crate::biz_link::ensure_schema().await {
             tracing::warn!(error = %e, "F1/F3 集成表建表失败（单据关联/意见留痕将不可用）");
         }
         // 2d) F4 表单注册表种入内置示例绑定（幂等）。失败仅告警。
         if let Err(e) = crate::biz_link::seed_form_bindings().await {
             tracing::warn!(error = %e, "F4 表单绑定种子失败（待办打开表单将退回硬编码兜底）");
+        }
+        // 2e) 出站 webhook 两表（001 方案）：订阅 + 持久化投递队列，幂等自举。
+        if let Err(e) = crate::webhook_store::ensure_schema(&flow_db).await {
+            tracing::warn!(error = %e, "webhook 订阅/投递表建表失败（出站事件投递将不可用）");
+        }
+        // 2f) 首启 env 导入（001 方案 §7）：空表才种、name 确定性、secret 沿用全局密钥。
+        let webhook_cfg = AdapterConfig::from_env().webhook;
+        match crate::webhook_store::import_env_subscriptions(
+            &flow_db,
+            tenant,
+            &webhook_cfg.targets,
+            webhook_cfg.signing_key.as_deref(),
+        )
+        .await
+        {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(tenant, imported = n, "webhook 订阅首启导入完成"),
+            Err(e) => tracing::warn!(error = %e, "webhook 订阅首启导入失败（可重启重试，幂等）"),
         }
     })
     .await;
@@ -419,14 +438,18 @@ async fn build_for(
         tracing::warn!(error = %e, "变量历史表建表失败（变量历史不可用）");
     }
 
-    // 4) 出站 webhook 发送器：配了 FLOW_WEBHOOK_TARGETS（服务目录键:回调路径）则起后台
-    //    投递 worker，否则 disabled（emit no-op）。契约自包含在 adapters::webhook
-    //    （HMAC 签名 + 基座裸投递 2xx 判定，对外文档 docs/usage/08 §8.5）。
-    let webhook = if cfg.webhook.is_enabled() {
+    // 4) 出站 webhook 发送器（001 方案 §4.1 双轨 MODE 分流）：
+    //    - outbox（默认）：投递走「事件落库 → webhook_delivery_poller」，WebhookSender 不启用；
+    //    - legacy：现行内存链路（mpsc + 串行 worker，保留至 M3）。
+    //    配了 FLOW_WEBHOOK_TARGETS 且 MODE=legacy 则起后台 worker，否则 disabled（emit no-op）。
+    //    契约自包含在 adapters::webhook（HMAC 签名 + 基座裸投递 2xx 判定，docs/usage/08 §8.5）。
+    let webhook = if crate::webhook_outbox::webhook_mode() == crate::webhook_outbox::WebhookMode::Legacy
+        && cfg.webhook.is_enabled()
+    {
         tracing::info!(
             targets = cfg.webhook.targets.len(),
             signed = cfg.webhook.signing_key.is_some(),
-            "出站 webhook 已启用（生命周期事件通知目标服务）"
+            "出站 webhook 已启用（legacy 内存链路；FLOW_WEBHOOK_MODE=legacy）"
         );
         WebhookSender::spawn_worker(
             cfg.webhook.targets.clone(),
@@ -536,9 +559,46 @@ pub async fn spawn_async_job_poller() -> crate::resp::Result<()> {
     Ok(())
 }
 
+/// 启动后台投递 poller（001 方案 §4.2，仅 outbox 模式）：每 2 秒对**所有已建租户运行态**
+/// 抢占并投递一批到期的出站事件行。
+///
+/// 与异步 Job 执行器同构的多副本安全：租约列（claim 打锁 + 逐行续租 + 持有者守卫落结果，
+/// `webhook_outbox::LEASE_SECS`）+ SKIP LOCKED——N 副本各自跑本 poller，租约有效期内抢到
+/// 互不相交的行集；投递语义 at-least-once（接收方按 delivery_id 或业务键幂等）。
+/// legacy 模式不启动（内存链路自带 worker）。
+pub async fn spawn_webhook_delivery_poller() -> crate::resp::Result<()> {
+    use crate::webhook_outbox::{WebhookMode, poll_once, webhook_mode};
+    if webhook_mode() != WebhookMode::Outbox {
+        tracing::info!("出站 webhook 走 legacy 内存链路（FLOW_WEBHOOK_MODE=legacy），投递 poller 未启动");
+        return Ok(());
+    }
+    let _ = flow_for_tenant(DEFAULT_TENANT).await?;
+    let worker_id = format!(
+        "webhook-worker-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    );
+    tracing::info!("✅ 出站 webhook 投递 poller 已启动（租约 + SKIP LOCKED 集群安全，worker={worker_id}）");
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
+        loop {
+            ticker.tick().await;
+            let rts: Vec<Arc<FlowRuntime>> = runtimes()
+                .read()
+                .await
+                .values()
+                .filter_map(|cell| cell.get().cloned())
+                .collect();
+            for rt in rts {
+                poll_once(&rt, &worker_id).await;
+            }
+        }
+    });
+    Ok(())
+}
+
 /// serviceTask delegate：按金额算风险等级写回变量（从 demo 移植）。
 struct RiskDelegate;
-
 #[async_trait]
 impl JavaDelegate for RiskDelegate {
     async fn execute(&self, ctx: &mut DelegateContext<'_>) -> Result<(), cmx_flow_engine::DelegateError> {

@@ -132,9 +132,18 @@ impl FlowEvent {
         self
     }
 
-    /// 投递幂等 id（`{instanceId}-{occurredAt}`，进 [`DELIVERY_HEADER`]）。
+    /// 投递幂等 id（`{instanceId}-{taskId?}-{occurredAt}`，进 [`DELIVERY_HEADER`]）。
+    ///
+    /// 001 方案 §4.1 升级：有 taskId 时拼入——修复一次推进产生多个并行任务时多条事件
+    /// 共用同一 delivery_id 的碰撞（同一 occurred_at 复用）。键更精确对接收方幂等无破坏
+    /// （按该头去重的接入方只会更少误吞；升级说明见 docs/usage/08 §8.6）。
     pub fn delivery_id(&self) -> String {
-        format!("{}-{}", self.instance_id, self.occurred_at)
+        match self.task_id.as_deref() {
+            Some(tid) if !tid.is_empty() => {
+                format!("{}-{}-{}", self.instance_id, tid, self.occurred_at)
+            }
+            _ => format!("{}-{}", self.instance_id, self.occurred_at),
+        }
     }
 }
 
@@ -285,7 +294,10 @@ mod tests {
         assert_eq!(v["nodeBpmnId"], "review_1");
         assert_eq!(v["occurredAt"], "2026-08-31T10:00:00Z");
         assert!(v.get("businessKey").is_none(), "None 字段不上线");
-        assert_eq!(ev.delivery_id(), "i-1-2026-08-31T10:00:00Z");
+        // 001 升级：带 taskId 的 delivery_id 含任务号；无 taskId 退回两段形态。
+        assert_eq!(ev.delivery_id(), "i-1-t-9-2026-08-31T10:00:00Z");
+        let no_task = FlowEvent::new(FlowEventKind::InstanceStarted, "i-2", "t2".into());
+        assert_eq!(no_task.delivery_id(), "i-2-t2");
     }
 
     /// 签名形状与稳定性：`sha256=` 前缀 + 64 位小写 hex；同 body/密钥稳定，密钥变则变。
