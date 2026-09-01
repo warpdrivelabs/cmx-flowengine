@@ -38,7 +38,7 @@ async fn post_start(body: serde_json::Value) -> (StatusCode, String) {
 async fn missing_definition_key_is_http_400() {
     let (status, body) = post_start(json!({})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body.contains("\"code\":2"), "信封 code=2: {body}");
+    assert!(body.contains("\"code\":400"), "信封 code=400: {body}");
     assert!(body.contains("缺少 definitionKey"), "{body}");
 }
 
@@ -48,7 +48,7 @@ async fn blank_definition_key_is_http_400_too() {
     for key in ["", "   "] {
         let (status, body) = post_start(json!({ "definitionKey": key })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "key={key:?}");
-        assert!(body.contains("\"code\":2"), "key={key:?}: {body}");
+        assert!(body.contains("\"code\":400"), "key={key:?}: {body}");
     }
 }
 
