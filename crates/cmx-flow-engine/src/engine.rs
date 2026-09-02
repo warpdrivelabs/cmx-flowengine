@@ -354,7 +354,10 @@ impl<S: RuntimeStore> Engine<S> {
     /// 在消息订阅表查找 `kind=Start + message_name + tenant_id` 的记录，取到 `definition_key`，
     /// 然后发起实例（等价于带 `MessageStartEvent` 节点的定义的 `start_process`）。
     /// `business_key` 和 `dimensions` 与普通发起相同。若无匹配订阅返回 `DefinitionNotFound` 错误。
-    pub async fn start_by_message(
+        // S-13 接线义务：本路径 system_id=None——一旦未来开 HTTP 入口，须从 handler 的
+    // current_system() 传入（否则结构化 key 发起的实例 system_id=NULL，成为
+    // 自己 system 过滤列表里看不见的孤儿数据）。当前仅测试调用（p3_a2）。
+pub async fn start_by_message(
         &self,
         message_name: &str,
         tenant_id: &str,
@@ -953,7 +956,45 @@ impl<S: RuntimeStore> Engine<S> {
                 return Ok(()); // 顶层实例，无父可唤醒。
             };
 
-            let mut parent = self.store.load_snapshot(&parent_id).await?;
+            // X3-9（RA-01，红队修订）：父推进 CAS 冲突 = 并发写者（父的另一并行令牌被办结/
+            // 定时器触发）——有限次重载重放（推进逻辑天然幂等：父令牌 WaitingSubflow 幂等
+            // 检查收敛）。**禁止降级 warn**：子实例已终态后无任何再触发事件源，静默吞掉
+            // 冲突 = 父流程永久卡死且零信号——比向调用方报错更糟。
+            let mut attempt = 0u32;
+            loop {
+                attempt += 1;
+                match self.advance_parent_after_subflow(&child, &parent_id, &parent_token_id).await {
+                    Ok(()) => return Ok(()),
+                    Err(e)
+                        if matches!(&e, Error::Store(cmx_flow_model::StoreError::Conflict(_)))
+                            && attempt < 3 =>
+                    {
+                        tracing::warn!(parent = %parent_id, attempt,
+                            "子流程回写父实例冲突（父被并发推进），重载重放");
+                        continue;
+                    }
+                    Err(e)
+                        if matches!(&e, Error::Store(cmx_flow_model::StoreError::Conflict(_))) =>
+                    {
+                        tracing::error!(parent = %parent_id,
+                            "子流程回写父实例冲突重试耗尽（父令牌可能卡 WaitingSubflow，需人工 retry-incident / jump 纠偏）");
+                        return Err(e);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        })
+    }
+
+    /// [`complete_subflow`] 的单轮父推进（可重入：每轮从库重载父快照重放）。
+    fn advance_parent_after_subflow<'a>(
+        &'a self,
+        child: &'a InstanceSnapshot,
+        parent_id: &'a str,
+        parent_token_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut parent = self.store.load_snapshot(parent_id).await?;
             let now = self.clock.now();
             let def = self.get_definition(&parent.instance.definition_key)?;
 
@@ -1013,9 +1054,9 @@ impl<S: RuntimeStore> Engine<S> {
 
             // 父推进后可能又停在新的 callActivity，或自身完成再唤醒祖父。
             if parent.instance.state == InstanceState::Completed {
-                self.complete_subflow(&parent_id).await?;
+                self.complete_subflow(parent_id).await?;
             } else {
-                self.launch_subflows_for(&parent_id).await?;
+                self.launch_subflows_for(parent_id).await?;
             }
             Ok(())
         })
@@ -1679,7 +1720,14 @@ impl<S: RuntimeStore> Engine<S> {
             }
         }
         if reactivated == 0 {
-            // 无 incident：幂等返回当前视图，不写库。
+            // 无 incident：幂等返回当前视图，不写库。若实例已终态（取消/办结）而台账仍
+            // OPEN（幽灵行，审查 O-04），此处收账——这是默认部署（auto-retry 关闭）下
+            // 幽灵 OPEN 的兜底收敛点。
+            if snapshot.instance.state.is_terminal() {
+                if let Err(e) = self.store.resolve_incidents_by_instance(instance_id).await {
+                    tracing::warn!(instance = %instance_id, error = %e, "终态实例幽灵 incident 收账失败");
+                }
+            }
             return Ok(Self::result_of(&snapshot));
         }
         tracing::info!(instance = %instance_id, reactivated, "重试 incident：重新激活令牌");
@@ -2273,6 +2321,15 @@ impl<S: RuntimeStore> Engine<S> {
             self.store.save_snapshot(&snapshot).await?;
             // P3：实例终止，清理全部消息订阅（Catch 类型；Start 类型随定义，不清理）。
             let _ = self.store.delete_subscriptions_by_instance(&snapshot.instance.id).await;
+            // 011（审查 O-04）：终态化后关闭全部 OPEN incident 台账——否则幽灵 OPEN 行永久
+            // 残留（清单虚高、auto-retry 反复空转且 reactivated==0 永不收账）。
+            if let Err(e) = self
+                .store
+                .resolve_incidents_by_instance(&snapshot.instance.id)
+                .await
+            {
+                tracing::warn!(instance = %snapshot.instance.id, error = %e, "终止后关闭 incident 台账失败（不阻塞取消）");
+            }
             Ok(Self::result_of(&snapshot))
         })
     }
@@ -2437,6 +2494,9 @@ impl<S: RuntimeStore> Engine<S> {
                     Err(cmx_flow_model::StoreError::Conflict(msg)) => {
                         tracing::warn!(instance = %instance_id, error = %msg,
                             "定时器触发保存冲突：实例已被并发推进，放弃本批触发（多副本抢占语义）");
+                        // C-06：内存推进已回滚——fired 里的本实例条目须一并剔除，
+                        // 否则 poller 对着「实际未触发」的条目打「⏰ 已触发」日志（可观测性失真）。
+                        fired.retain(|f| f.instance_id != instance_id);
                         continue;
                     }
                     Err(e) => return Err(e.into()),
@@ -2629,7 +2689,7 @@ impl<S: RuntimeStore> Engine<S> {
                             let tok = &mut snapshot.tokens[idx];
                             tok.state = TokenState::Incident;
                             tok.updated_at = now;
-                            self.upsert_incident_aux(&snapshot, &node_bpmn, Some(&token_id), &msg, retries)
+                            self.upsert_incident_aux(snapshot, node_bpmn.as_str(), Some(&token_id), &msg, retries)
                                 .await;
                         }
                     }
@@ -3107,7 +3167,7 @@ impl<S: RuntimeStore> Engine<S> {
                         let tok = &mut snapshot.tokens[idx];
                         tok.state = TokenState::Incident;
                         tok.updated_at = now;
-                        self.upsert_incident_aux(&snapshot, &gw_bpmn, Some(&token_id), &e.to_string(), retries)
+                        self.upsert_incident_aux(snapshot, gw_bpmn.as_str(), Some(&token_id), &e.to_string(), retries)
                             .await;
                     } else {
                         // 所有竞争事件注册成功：令牌停在网关，等第一个事件触发。
@@ -3166,7 +3226,7 @@ impl<S: RuntimeStore> Engine<S> {
                         let tok = &mut snapshot.tokens[idx];
                         tok.state = TokenState::Incident;
                         tok.updated_at = now;
-                        self.upsert_incident_aux(&snapshot, &node_bpmn, Some(&token_id), &e.to_string(), retries)
+                        self.upsert_incident_aux(snapshot, node_bpmn.as_str(), Some(&token_id), &e.to_string(), retries)
                             .await;
                     } else {
                         let tok = &mut snapshot.tokens[idx];
@@ -3197,13 +3257,14 @@ impl<S: RuntimeStore> Engine<S> {
         job_id: &str,
         variables: Variables,
     ) -> Result<Option<ExecutionResult>> {
-        let pair = self
+        let deleted = self
             .store
             .complete_async_job(job_id, Some(serde_json::to_value(&variables).unwrap_or_default()))
             .await?;
-        let Some((instance_id, token_id)) = pair else {
+        let Some(job) = deleted else {
             return Ok(None);
         };
+        let (instance_id, token_id) = (job.instance_id.clone(), job.token_id.clone());
         let mut snapshot = self.store.load_snapshot(&instance_id).await?;
         // 本作业已在 store 侧删除。若快照的 async_jobs 缓冲里仍留着它（内存实现按整快照存），
         // 必须先剔除——否则本段结束的 flush_pending_async_jobs 会把已完成作业重新写回抢占池，
@@ -3232,6 +3293,11 @@ impl<S: RuntimeStore> Engine<S> {
         let node_bpmn = snapshot.tokens[token_idx].node_bpmn_id.clone();
         // delegate 已由 worker 成功执行 → 清掉该节点可能存在的 incident 痕迹（与同步路径一致）。
         clear_incident(&mut snapshot.instance.variables, &node_bpmn);
+        // 011 台账闭环（审查 RA-03）：成功路径精确关闭该节点 OPEN 行——死信重投/退避重抢
+        // 恢复的作业都汇聚到这里，不补则幽灵 OPEN 永久残留（auto-retry 空转）。
+        if let Err(e) = self.store.resolve_incident_by_node(&instance_id, &node_bpmn).await {
+            tracing::warn!(instance = %instance_id, node = %node_bpmn, error = %e, "incident 台账关闭失败（不阻塞推进）");
+        }
         let node = def
             .node_by_bpmn(&node_bpmn)
             .ok_or_else(|| Error::IllegalTokenState(format!("节点 {node_bpmn} 不在定义中")))?;
@@ -3243,7 +3309,21 @@ impl<S: RuntimeStore> Engine<S> {
         tok.state = TokenState::Active;
         tok.updated_at = now;
         self.run_to_wait(&def, &mut snapshot, now).await?;
-        self.store.save_snapshot(&snapshot).await?;
+        // CAS 冲突补偿（审查 C-01）：作业行已在 store 侧删除、delegate 已执行，若实例 save
+        // 冲突直接上抛会令令牌永卡 WaitingAsync 且无作业可唤醒。补偿重插（upsert 幂等，
+        // 保留原租约）后作业在租约过期（≤60s）时可被重新抢占——delegate 至少一次重执行，
+        // 对齐 trigger_due_timers「冲突后作业行保留」语义；带 topic 的外部作业依赖外部
+        // worker 再次轮询（409 响应即「稍后可重试」信号）。
+        if let Err(err) = self.store.save_snapshot(&snapshot).await {
+            if matches!(err, cmx_flow_model::StoreError::Conflict(_)) {
+                if let Err(re) = self.store.upsert_async_job(&job).await {
+                    tracing::error!(job = %job_id, error = %re, "CAS 冲突后补偿重插作业失败（令牌可能卡 WaitingAsync，需人工 retry-incident）");
+                } else {
+                    tracing::warn!(job = %job_id, instance = %instance_id, "实例保存冲突，作业行已补偿重插（租约过期后可重抢）");
+                }
+            }
+            return Err(err.into());
+        }
         self.flush_pending(&snapshot).await;
         self.flush_pending_async_jobs(&snapshot).await;
         Ok(Some(Self::result_of(&snapshot)))
@@ -3379,7 +3459,13 @@ impl<S: RuntimeStore> Engine<S> {
             if hit {
                 let retries = record_incident(&mut snap.instance.variables, &job.node_bpmn_id, error);
                 snap.instance.updated_at = self.clock.now();
-                self.store.save_snapshot(&snap).await?;
+                // C-07：本路径 save `?` 上抛会被 run_async_jobs 的 warn 吞掉，而作业行已在
+                // store 侧删除——令牌卡 WaitingAsync 只能靠死信行人工重投恢复，必须保信号。
+                if let Err(e) = self.store.save_snapshot(&snap).await {
+                    tracing::error!(job = %job.id, instance = %job.instance_id, error = %e,
+                        "incident 落库保存失败（作业行已删，令牌卡 WaitingAsync——死信行可经 /dead-letter-jobs 重投恢复）");
+                    return Err(e.into());
+                }
                 self.upsert_incident_aux(&snap, &job.node_bpmn_id, Some(&job.token_id), error, retries)
                     .await;
             }

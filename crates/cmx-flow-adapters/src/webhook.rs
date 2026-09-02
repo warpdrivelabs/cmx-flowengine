@@ -1,27 +1,18 @@
-//! 出站生命周期 webhook（方案 §4④ 的出站半）：flow 把实例/任务生命周期事件通知目标服务。
+//! 出站生命周期 webhook 的**对外契约层**（三契约头 + 事件载荷 + HMAC 签名 + HTTP 2xx 判定）。
 //!
-//! 设计（用户定）：**app 层发**（handler 调引擎成功后 emit，引擎零改）+ **后台异步 + 重试**
-//! （事件入内存队列，后台 task 逐个发，失败指数退避重试若干次，不阻塞 handler 响应）。
-//!
-//! **对外回调契约（自包含，无 SDK）**：订阅方（mdm 或任意外部/三方系统）不会共享本仓的
-//! Rust crate，契约只存在于 HTTP 层——**文档是真源**（`docs/usage/08-external-integration.md`
-//! §8.5），双端各自实现、集成测试对拍。这与服务间调用（内部微服务，cmx-service-rpc 基座 +
-//! 标准信封）是两类东西：
-//!   - 目标 = 服务目录键 + 回调路径（`FLOW_WEBHOOK_TARGETS` 条目 `键:路径`，如
-//!     `mdm:/api/mdm/flow/callback`；键经 `[service_rpc.services]` 定位）；
-//!   - 安全 = 每条请求带 [`SIGNATURE_HEADER`]：`sha256=<hex(HMAC-SHA256(body, signing_key))>`
-//!     （对实际发送字节签名，接收端按共享密钥验签防伪造）+ 事件名 / 幂等投递头；
+//! 001-M3：legacy 内存链路（mpsc 队列 + 后台串行 worker + 指数退避重试）已删除，
+//! 投递统一走 outbox 持久化管线（`cmx-flow-app/src/webhook_outbox.rs`，租约抢占 +
+//! 同订阅保序 + 死信处置）；本文件只保留**契约自包含部分**，供 `channel_webhook`
+//! 组装请求复用。契约文档真源：`docs/usage/08-external-integration.md` §8.5/§8.6：
+//!   - 目标 = 服务目录键 + 回调路径（订阅 `channel_config` 的 service_key/callback_path，
+//!     键经 `[service_rpc.services]` 目录定位）；
+//!   - 安全 = 每条请求带 [`SIGNATURE_HEADER`]：`sha256=<hex(HMAC-SHA256(body, secret))>`
+//!     （对实际发送字节签名，接收端按订阅独立 secret 验签防伪造）+ 事件名 / 幂等投递头；
 //!   - 成功判定 = **HTTP 2xx**（接收方协议不受 CMX 信封约束，响应体不解析）。
-//!
-//! 传输复用 cmx-service-rpc 基座（目录定位 / 超时 / 熔断），仅取其裸响应层（`execute`）。
 
-use crate::config::WebhookTarget;
 use hmac::{Hmac, Mac};
 use serde::Serialize;
 use sha2::Sha256;
-use tokio::sync::mpsc;
-
-use cmx_service_rpc::{RpcRequest, ServiceRpcHandle};
 
 /// HMAC 签名头（值形如 `sha256=<hex(HMAC-SHA256(body, secret))>`，对 body 原始字节计算）。
 pub const SIGNATURE_HEADER: &str = "x-cmx-flow-signature";
@@ -57,7 +48,7 @@ impl FlowEventKind {
     }
 }
 
-/// 一条出站事件（app 层构造，塞进队列；camelCase wire DTO，即对外契约的载荷格式）。
+/// 一条出站事件（app 层构造；camelCase wire DTO，即对外契约的载荷格式）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlowEvent {
@@ -155,124 +146,9 @@ pub fn sign_body(secret: &str, body: &[u8]) -> String {
     format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
 }
 
-/// webhook 发送器句柄：app 层持有它，`emit` 非阻塞入队。
-///
-/// 内部一个 mpsc 队列 + 一个后台 task 消费（`spawn_worker` 起）。队列满或无订阅端时 emit 静默丢弃
-/// （webhook 是通知，非关键路径——不阻塞业务、不因第三方拖垮 flow）。
-#[derive(Clone)]
-pub struct WebhookSender {
-    tx: Option<mpsc::Sender<FlowEvent>>,
-}
-
-impl WebhookSender {
-    /// 空发送器（webhook 关闭时用；emit 是 no-op）。
-    pub fn disabled() -> Self {
-        Self { tx: None }
-    }
-
-    /// 起一个后台发送 worker，返回句柄。
-    ///
-    /// - `targets`：目标列表（服务目录键 + 回调路径，每事件投递给全部目标）。
-    /// - `signing_key`：HMAC 签名密钥（须与接收端共享密钥一致）。
-    /// - `max_retries`：单条单目标失败重试次数（指数退避 1s/2s/4s…）。
-    ///
-    /// 传输经全局 service_rpc 基座（装配链更早处 `init_infra` 已初始化）；基座未初始化时
-    /// 降级 disabled（warn）——webhook 是通知非关键路径，不值得让它阻断服务启动。
-    pub fn spawn_worker(
-        targets: Vec<WebhookTarget>,
-        signing_key: Option<String>,
-        max_retries: u32,
-    ) -> Self {
-        if targets.is_empty() {
-            return Self::disabled();
-        }
-        let Some(rpc) = cmx_service_rpc::global_arc() else {
-            tracing::warn!("webhook 已配目标但 service_rpc 基座未初始化，webhook 关闭");
-            return Self::disabled();
-        };
-        let (tx, mut rx) = mpsc::channel::<FlowEvent>(1024);
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                for target in &targets {
-                    deliver(&rpc, target, &event, signing_key.as_deref().unwrap_or(""), max_retries)
-                        .await;
-                }
-            }
-        });
-        Self { tx: Some(tx) }
-    }
-
-    /// 非阻塞发一条事件。队列满/无订阅端则丢弃（只 warn）。
-    pub fn emit(&self, event: FlowEvent) {
-        if let Some(tx) = &self.tx {
-            if let Err(e) = tx.try_send(event) {
-                tracing::warn!(error = %e, "webhook 事件入队失败（队列满/关闭），丢弃");
-            }
-        }
-    }
-
-    /// 是否启用（有后台 worker）。
-    pub fn is_enabled(&self) -> bool {
-        self.tx.is_some()
-    }
-}
-
-/// 投递一条事件到一个目标：序列化 → 签名（对实际发送字节）→ 基座裸 POST → 失败指数退避重试。
-///
-/// 成功判定 = HTTP 2xx（`execute` 取原始响应，不解析 body——接收方是任意外部系统，
-/// 不受 CMX 信封约束）；非 2xx / 传输错误进重试。
-async fn deliver(
-    rpc: &ServiceRpcHandle,
-    target: &WebhookTarget,
-    event: &FlowEvent,
-    secret: &str,
-    max_retries: u32,
-) {
-    // body 用紧凑 JSON；签名对 body 字节，必须与发出的字节一致（Raw body 保证）。
-    let body = match serde_json::to_vec(event) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::error!(event = %event.event, error = %e, "webhook 事件序列化失败，丢弃");
-            return;
-        }
-    };
-    let mut attempt = 0u32;
-    loop {
-        let req = RpcRequest::post(target.key.clone(), target.path.clone())
-            .raw_body(body.clone(), "application/json")
-            .header(EVENT_HEADER, event.event.clone())
-            .header(DELIVERY_HEADER, event.delivery_id())
-            .header(SIGNATURE_HEADER, sign_body(secret, &body));
-        match rpc.execute(req).await {
-            Ok(_) => {
-                tracing::debug!(event = %event.event, key = %target.key, "webhook 投递成功");
-                return;
-            }
-            Err(e) => {
-                tracing::warn!(event = %event.event, key = %target.key, attempt, error = %e, "webhook 投递失败");
-            }
-        }
-        if attempt >= max_retries {
-            tracing::warn!(event = %event.event, key = %target.key, "webhook 重试耗尽，放弃");
-            return;
-        }
-        // 指数退避：1s, 2s, 4s…
-        let backoff = std::time::Duration::from_secs(1u64 << attempt.min(6));
-        tokio::time::sleep(backoff).await;
-        attempt += 1;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn disabled_sender_emit_is_noop() {
-        let s = WebhookSender::disabled();
-        assert!(!s.is_enabled());
-        s.emit(FlowEvent::new(FlowEventKind::InstanceStarted, "i1", "t".into())); // 不 panic
-    }
 
     #[test]
     fn event_kind_names() {

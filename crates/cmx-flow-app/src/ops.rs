@@ -51,12 +51,15 @@ pub struct InstancesQuery {
 /// POST /instances/query —— 实例清单分页查询（016）。
 pub async fn query_instances(Json(req): Json<InstancesQuery>) -> Result<Json<ApiResp<Value>>> {
     let rt = flow().await?;
+    // X2-3（S-04）：initiator 是可选请求参数——走 effective_query_user（服务端身份优先；
+    // 非 admin 传他人 → 403，admin 显式传 = 真代查），不再「传谁查谁」。
+    let initiator = crate::handlers::effective_query_user(req.initiator.as_deref())?;
     let f = crate::biz_link::TodoFilter {
         keyword: req.keyword,
         definition_key: req.definition_key,
         node_bpmn_id: None,
         state: req.state,
-        initiator: req.initiator,
+        initiator,
         system_id: crate::tenant::current_system(),
         page: req.page.unwrap_or(1),
         page_size: req.page_size.unwrap_or(20),
@@ -284,6 +287,19 @@ pub async fn query_incidents(Json(req): Json<IncidentsQuery>) -> Result<Json<Api
 /// ③死信数；④运行实例数；⑤outbox 内存计数器（入队失败/幽灵绑定/查找失败/旁路失败）——
 /// 丢弃计数见 `/webhook-subscriptions/mon`（per-subscription 维度）。DB 聚合失败按 0 上报
 /// （Prometheus 抓取不能 500；连续 0 值本身即异常信号）。
+/// /metrics 端点包装（X3-13/O-12）：响应头带 Prometheus 文本格式版本参数
+///（主流抓取器兼容裸 text/plain，此为规范对齐）。
+pub async fn metrics_endpoint() -> axum::response::Response {
+    let body = prometheus_metrics().await;
+    axum::response::IntoResponse::into_response((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    ))
+}
+
 pub async fn prometheus_metrics() -> String {
     use std::sync::atomic::Ordering;
     let delivery_done = count_one("SELECT COUNT(*) AS n FROM cmx_flow_webhook_delivery WHERE state='DONE'", "m_done").await;
@@ -298,7 +314,7 @@ pub async fn prometheus_metrics() -> String {
     let mut m = |name: &str, help: &str, val: i64| {
         out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} gauge\n{name} {val}\n"));
     };
-    m("cmx_flow_delivery_done", "webhook 投递成功行数（累计）", delivery_done);
+    m("cmx_flow_delivery_done", "webhook 投递成功行数（当前存量，随 retention 清理下降）", delivery_done);
     m("cmx_flow_delivery_pending", "webhook 待投/投递中行数", delivery_pending);
     m("cmx_flow_delivery_dead", "webhook 死信行数（重试耗尽）", delivery_dead);
     m("cmx_flow_delivery_skipped", "webhook 人工跳过行数", delivery_skipped);
@@ -308,7 +324,9 @@ pub async fn prometheus_metrics() -> String {
     let mut g = |name: &str, help: &str, val: u64| {
         out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} counter\n{name} {val}\n"));
     };
-    g("cmx_flow_business_errors_total", "业务失败响应数（HTTP 200 + code=1 信封）", BUSINESS_ERRORS.load(Ordering::Relaxed));
+    // O-07：口径如实缩小——本计数仅覆盖 ops 查询端点（3 端点 6 类查询错误）；
+    // 全服务信封级计数下沉随 013 另行（勿当全站业务失败率告警）。
+    g("cmx_flow_business_errors_total", "ops 查询端点业务失败数（HTTP 200 + code=1 信封，非全站口径）", BUSINESS_ERRORS.load(Ordering::Relaxed));
     g("cmx_flow_outbox_insert_errors_total", "webhook 投递行入队失败次数", crate::webhook_outbox::OUTBOX_INSERT_ERRORS.load(Ordering::Relaxed));
     g("cmx_flow_webhook_ghost_bindings_total", "幽灵绑定丢弃事件数（订阅已删）", crate::webhook_outbox::GHOST_BINDINGS.load(Ordering::Relaxed));
     g("cmx_flow_webhook_emit_lookup_errors_total", "emit 查询订阅失败次数", crate::webhook_outbox::EMIT_LOOKUP_ERRORS.load(Ordering::Relaxed));

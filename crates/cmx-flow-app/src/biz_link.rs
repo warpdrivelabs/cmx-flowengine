@@ -1060,3 +1060,54 @@ fn get_ts_rfc3339(
         _ => None,
     }
 }
+
+
+/// 实例 system_id 归属匹配（005/X2-6 详情面收紧）：结构化 key 声明的 system 须与实例
+/// `system_id` 一致；实例不存在（交后续 404）或 system_id 为 NULL（存量两阶段）均放行。
+pub async fn instance_system_matches(instance_id: &str, system: &str) -> Result<bool, String> {
+    use cmx_core::model::cell::DataValue;
+    use cmx_database_pg::{SqlParams, query_sql_with_params};
+    let ds = query_sql_with_params(
+        &crate::engine::current_flow_db_id(),
+        None,
+        "SELECT system_id FROM cmx_flow_instance WHERE id = $1",
+        SqlParams::DataValues(vec![DataValue::String(instance_id.to_string())]),
+        "biz_instance_system",
+    )
+    .await
+    .map_err(|e| format!("查实例 system_id 失败: {e}"))?;
+    let sid = ds
+        .iter()
+        .next()
+        .and_then(|row| row.get_by_name(ds.schema.as_ref(), "system_id"))
+        .cloned();
+    match sid {
+        None => Ok(true),
+        Some(DataValue::Null) => Ok(true),
+        Some(DataValue::String(v)) => Ok(v == system),
+        Some(_) => Ok(false),
+    }
+}
+
+/// 抄送行归属人（S-12：mark_cc_read 防代标记他人已读）。行不存在 → None。
+pub async fn cc_owner(cc_id: &str) -> Result<Option<String>, String> {
+    use cmx_core::model::cell::DataValue;
+    use cmx_database_pg::{SqlParams, query_sql_with_params};
+    let ds = query_sql_with_params(
+        &crate::engine::current_flow_db_id(),
+        None,
+        "SELECT to_user_id FROM cmx_flow_cc WHERE id = $1",
+        SqlParams::DataValues(vec![DataValue::String(cc_id.to_string())]),
+        "biz_cc_owner",
+    )
+    .await
+    .map_err(|e| format!("查抄送归属失败: {e}"))?;
+    Ok(ds
+        .iter()
+        .next()
+        .and_then(|row| row.get_by_name(ds.schema.as_ref(), "to_user_id"))
+        .and_then(|v| match v {
+            DataValue::String(u) => Some(u.clone()),
+            _ => None,
+        }))
+}

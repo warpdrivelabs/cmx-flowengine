@@ -159,3 +159,11 @@ async fn webhook_channel_full_chain() {
         "超时/不可达应 Retryable，实际 {outcome:?}"
     );
 }
+
+/// 契约常量静态断言（防头名漂移——接收端按文档实现的锚点；承接自已删除的 legacy 集成测试）。
+#[test]
+fn webhook_contract_constants() {
+    assert_eq!(cmx_flow_adapters::SIGNATURE_HEADER, "x-cmx-flow-signature");
+    assert_eq!(cmx_flow_adapters::EVENT_HEADER, "x-cmx-flow-event");
+    assert_eq!(cmx_flow_adapters::DELIVERY_HEADER, "x-cmx-flow-delivery");
+}

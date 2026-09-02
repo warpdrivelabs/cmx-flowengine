@@ -22,7 +22,7 @@ use tokio::sync::{OnceCell, RwLock};
 
 use cmx_flow_adapters::{
     AdapterConfig, AdapterMode, HttpAssigneeResolver, HttpDelegate, HttpDimensionResolver,
-    HttpSubflowRouter, MockAssigneeResolver, MockDelegate, MockSubflowRouter, WebhookSender,
+    HttpSubflowRouter, MockAssigneeResolver, MockDelegate, MockSubflowRouter,
 };
 use cmx_flow_def::{DefinitionService, PgDefinitionStore};
 use cmx_flow_engine::{DelegateContext, Engine, JavaDelegate, ProcessDefinition};
@@ -104,8 +104,6 @@ pub struct FlowRuntime {
     pub var_history_store: Arc<PgVarHistoryStore>,
     /// 已注册的自分级路由维度字典（RD2）：供 /flow/dimensions 列举 + 维度条目读取。org 内建不在内。
     pub dimension_specs: Arc<Vec<DimRegistration>>,
-    /// 出站生命周期 webhook 发送器（app 层 handler emit 事件，后台异步投递第三方）。
-    pub webhook: WebhookSender,
     /// 本运行时所属租户（供后台任务/日志标识）。
     pub tenant: String,
 }
@@ -454,15 +452,6 @@ async fn build_for(
         tracing::warn!(error = %e, "变量历史表建表失败（变量历史不可用）");
     }
 
-    // 4) 出站 webhook（001-M3：legacy 内存链路已删除，outbox 唯一——投递走「事件落库 →
-    //    webhook_delivery_poller」，WebhookSender 恒 disabled，emit no-op）。
-    if cfg.webhook.is_enabled() {
-        tracing::warn!(
-            "FLOW_WEBHOOK_TARGETS 已配置但 legacy 内存链路已随 001-M3 删除；投递统一走订阅入库（outbox）。             请改用 POST /webhook-subscriptions 注册订阅（L1 默认层可由 env 导入承接 FLOW_WEBHOOK_TARGETS）"
-        );
-    }
-    let webhook = WebhookSender::disabled();
-
     Ok(FlowRuntime {
         engine: Arc::new(engine),
         definitions: Arc::new(RwLock::new(definitions)),
@@ -471,7 +460,6 @@ async fn build_for(
         decision_store: Arc::new(decision_store),
         var_history_store: Arc::new(var_history_store),
         dimension_specs: Arc::new(dim_regs),
-        webhook,
         tenant: tenant.to_string(),
     })
 }
@@ -618,7 +606,7 @@ fn retention_days(env_key: &str, default_days: i64) -> i64 {
 /// 删除一批终态实例的**全部运行态行**（hi 归档保留，审计不断链）。
 /// 返回 (实例数, 删除总行数)。单实例 10 表同事务删除（007 剥离后 cc/台账也一并清理——
 /// 它们只随 010 的终态清理物理删除）。
-async fn purge_terminal_instances(db_id: &str, days: i64) -> Result<(usize, usize), String> {
+pub async fn purge_terminal_instances(db_id: &str, days: i64) -> Result<(usize, usize), String> {
     use cmx_core::model::cell::DataValue;
     use cmx_database_pg::{SqlParams, query_sql_with_params};
     // 先取一批候选（每轮最多 200 实例，防长事务）。
@@ -652,6 +640,10 @@ async fn purge_terminal_instances(db_id: &str, days: i64) -> Result<(usize, usiz
             "cmx_flow_task_delegation",
             "cmx_flow_message_subscription",
             "cmx_flow_async_job",
+            // 审查 O-02 补齐：incident 台账（OPEN 行指向已删实例成幽灵、RESOLVED 无限累积）
+            // 与死信行（实例已删则重投必败，随实例按同一保留期清理）。
+            "cmx_flow_incident",
+            "cmx_flow_deadletter_job",
             "cmx_flow_instance",
         ];
         let mut ops: Vec<(String, SqlParams)> = Vec::new();
@@ -701,8 +693,7 @@ pub async fn spawn_delivery_retention() -> crate::resp::Result<()> {
     // 001-M3：legacy 已删，投递行恒存在——delivery 清理不再依赖模式判断。
     let instance_days = retention_days("flow.retention.instance_days", INSTANCE_RETENTION_DAYS);
     let delivery_days = retention_days("flow.retention.delivery_days", DELIVERY_RETENTION_DAYS);
-    let outbox = true;
-    if instance_days <= 0 && (!outbox || delivery_days <= 0) {
+    if instance_days <= 0 && delivery_days <= 0 {
         tracing::info!("retention 全部禁用（instance_days={instance_days}, delivery_days={delivery_days}），清理任务未启动");
         return Ok(());
     }
@@ -730,8 +721,8 @@ pub async fn spawn_delivery_retention() -> crate::resp::Result<()> {
                         Err(e) => tracing::warn!(tenant = %rt.tenant, error = %e, "终态实例清理失败"),
                     }
                 }
-                // ② 投递流水清理（仅 outbox）。
-                if outbox && delivery_days > 0 {
+                // ② 投递流水清理（outbox 唯一模式，001-M3 后无 legacy 分支）。
+                if delivery_days > 0 {
                     match crate::webhook_store::purge_deliveries(
                         &db_id,
                         &rt.tenant,
@@ -783,15 +774,21 @@ pub async fn spawn_incident_retry() -> crate::resp::Result<()> {
             for rt in rts {
                 // 取该租户库 OPEN incident 的实例 id（每轮限 20）。
                 let db_id = crate::tenancy::TenancyConfig::global().flow_db_id(&rt.tenant);
+                // DISTINCT + ORDER BY 非选择列在 PG 报错（审查 O-01）：聚合等价改写，
+                // 最旧 OPEN 优先（FIFO）；失败必须可见——静默 continue 会让该功能整体失效零信号。
                 let ds = cmx_database_pg::query_sql(
                     &db_id,
                     None,
-                    "SELECT DISTINCT instance_id FROM cmx_flow_incident \
-                     WHERE state = 'OPEN' ORDER BY updated_at LIMIT 20",
+                    "SELECT instance_id FROM cmx_flow_incident \
+                     WHERE state = 'OPEN' GROUP BY instance_id \
+                     ORDER BY max(updated_at) LIMIT 20",
                     "flow_incident_retry_scan",
                 )
                 .await;
-                let Ok(ds) = ds else { continue };
+                let Ok(ds) = ds else {
+                    tracing::warn!(tenant = %rt.tenant, "incident 重试扫描查询失败（本轮跳过）");
+                    continue;
+                };
                 let ids: Vec<String> = ds
                     .iter()
                     .filter_map(|row| {

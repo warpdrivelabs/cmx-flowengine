@@ -31,6 +31,4 @@ pub use delegate::HttpDelegate;
 pub use identity::HttpAssigneeResolver;
 pub use mock::{MockAssigneeResolver, MockDelegate, MockSubflowRouter};
 pub use subflow::{HttpDimensionResolver, HttpSubflowRouter, MockDimensionResolver};
-pub use webhook::{
-    FlowEvent, FlowEventKind, WebhookSender, DELIVERY_HEADER, EVENT_HEADER, SIGNATURE_HEADER,
-};
+pub use webhook::{FlowEvent, FlowEventKind, DELIVERY_HEADER, EVENT_HEADER, SIGNATURE_HEADER};

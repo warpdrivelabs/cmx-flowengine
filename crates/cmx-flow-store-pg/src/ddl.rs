@@ -123,7 +123,8 @@ pub const DDL_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_task_candidate_instance ON cmx_flow_task_candidate (instance_id)",
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_task_candidate_user ON cmx_flow_task_candidate (resolved_user_id)",
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_task_candidate_task ON cmx_flow_task_candidate (task_id)",
-    // —— 抄送记录表（M4.2：只读知会 + 已读追踪；随快照全删重插，实例终态随聚合归档） —— //
+    // —— 抄送记录表（M4.2：只读知会 + 已读追踪；007 旁路剥离——不随快照删重插，
+    //     insert_cc 走 ON CONFLICT 幂等追加且不覆盖 read_at，实例终态随 010 retention 清理） —— //
     r#"CREATE TABLE IF NOT EXISTS cmx_flow_cc (
         id            VARCHAR(64)  PRIMARY KEY,
         instance_id   VARCHAR(64)  NOT NULL,
@@ -136,7 +137,8 @@ pub const DDL_STATEMENTS: &[&str] = &[
     )"#,
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_cc_instance ON cmx_flow_cc (instance_id)",
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_cc_to_user ON cmx_flow_cc (to_user_id, read_at)",
-    // —— 转签台账表（M4.3：转办/加签/委派流转链；随快照全删重插） —— //
+    // —— 转签台账表（M4.3：转办/加签/委派流转链；007 旁路剥离——不随快照删重插，
+    //     insert_delegation 走 ON CONFLICT DO NOTHING 幂等追加） —— //
     r#"CREATE TABLE IF NOT EXISTS cmx_flow_task_delegation (
         id            VARCHAR(64)  PRIMARY KEY,
         task_id       VARCHAR(64)  NOT NULL,

@@ -22,7 +22,7 @@ use cmx_flow_engine::{
 use cmx_flow_store_pg::{PgIamAssigneeResolver, PgSubflowRouter};
 
 use crate::engine::{FlowRuntime, current_iam_db_id, flow};
-use crate::views::{definition_view, instance_state_str, instance_view, summary_view};
+use crate::views::{definition_view, instance_state_str, instance_view};
 
 use cmx_flow_adapters::{FlowEvent, FlowEventKind};
 
@@ -59,7 +59,7 @@ fn now_rfc3339() -> String {
 ///
 /// `bound_subscriber` = 实例的发起绑定订阅 id（v2.4 三级路由 L2；None = 未绑定走规则 2）。
 /// **wire 载荷零变更**：绑定关系只在 emit 侧参与路由匹配，不进事件体（方案 §3.3）。
-async fn publish_events(_rt: &FlowRuntime, events: Vec<FlowEvent>, bound_subscriber: Option<i64>) {
+async fn publish_events(_rt: &FlowRuntime, events: Vec<FlowEvent>, route: crate::webhook_outbox::SubscriberRoute) {
     if events.is_empty() {
         return;
     }
@@ -71,35 +71,49 @@ async fn publish_events(_rt: &FlowRuntime, events: Vec<FlowEvent>, bound_subscri
         crate::events::publish(e.clone());
     }
     // 001-M3：legacy 内存链路已删除（FLOW_WEBHOOK_MODE=legacy 不再有独立分支），outbox 唯一。
-    crate::webhook_outbox::emit_to_outbox(&events, bound_subscriber).await;
+    crate::webhook_outbox::emit_to_outbox(&events, route).await;
 }
 
 /// 发一条生命周期事件（[`publish_events`] 的单事件便捷形态）。
-async fn publish_event(rt: &FlowRuntime, event: FlowEvent, bound_subscriber: Option<i64>) {
-    publish_events(rt, vec![event], bound_subscriber).await;
+async fn publish_event(
+    rt: &FlowRuntime,
+    event: FlowEvent,
+    route: crate::webhook_outbox::SubscriberRoute,
+) {
+    publish_events(rt, vec![event], route).await;
+}
+
+/// 快照读取结果 → 订阅路由三态（X2-1：读失败 ≠ 未绑定，折叠会让绑定实例事件被广播）。
+fn route_of(loaded: Option<cmx_flow_model::runtime::InstanceSnapshot>)
+-> crate::webhook_outbox::SubscriberRoute {
+    match loaded {
+        None => crate::webhook_outbox::SubscriberRoute::Unknown,
+        Some(snap) => match snap.instance.subscriber_id {
+            Some(sid) => crate::webhook_outbox::SubscriberRoute::Bound(sid),
+            None => crate::webhook_outbox::SubscriberRoute::Unbound,
+        },
+    }
 }
 
 /// 从实例快照投影出 state/definitionKey/businessKey（webhook 事件公共字段）。
 async fn emit_instance_event(rt: &FlowRuntime, kind: FlowEventKind, instance_id: &str) {
     // 借快照补齐展示字段 + 发起绑定（零新增读放大：复用本次重读）；取不到就只带 instance_id
     // （事件是通知，不因取数失败阻断；绑定未知时路由侧 fail-close 只投显式旁听）。
-    let (state, def_key, biz_key, subscriber) =
-        match rt.engine.store().load_snapshot(instance_id).await {
-            Ok(snap) => (
-                Some(instance_state_str(snap.instance.state).to_string()),
-                Some(snap.instance.definition_key.clone()),
-                snap.instance.business_key.clone(),
-                snap.instance.subscriber_id,
-            ),
-            Err(_) => (None, None, None, None),
-        };
+    let loaded = rt.engine.store().load_snapshot(instance_id).await.ok();
+    let (state, def_key, biz_key) = loaded.as_ref().map(|snap| {
+        (
+            Some(instance_state_str(snap.instance.state).to_string()),
+            Some(snap.instance.definition_key.clone()),
+            snap.instance.business_key.clone(),
+        )
+    }).unwrap_or((None, None, None));
     publish_event(
         rt,
         FlowEvent::new(kind, instance_id, now_rfc3339())
             .state(state)
             .definition_key(def_key)
             .business_key(biz_key),
-        subscriber,
+        route_of(loaded),
     )
     .await;
 }
@@ -115,15 +129,17 @@ async fn emit_task_events(
         return;
     }
     // 补齐 definitionKey/businessKey + 发起绑定（借快照一次，零新增读放大）。
-    let (def_key, biz_key, subscriber) =
-        match rt.engine.store().load_snapshot(&result.instance_id).await {
-            Ok(snap) => (
+    let loaded = rt.engine.store().load_snapshot(&result.instance_id).await.ok();
+    let (def_key, biz_key) = loaded
+        .as_ref()
+        .map(|snap| {
+            (
                 Some(snap.instance.definition_key.clone()),
                 snap.instance.business_key.clone(),
-                snap.instance.subscriber_id,
-            ),
-            Err(_) => (None, None, None),
-        };
+            )
+        })
+        .unwrap_or((None, None));
+    let subscriber = route_of(loaded);
     let ts = now_rfc3339();
     let events = result
         .open_tasks
@@ -145,28 +161,25 @@ async fn emit_task_events(
 /// definitionKey 过滤的前提不成立——借快照一并取 node_bpmn_id）。
 async fn emit_reassigned(rt: &FlowRuntime, instance_id: &str, task_id: &str, to_user: &str) {
     // 补 node_bpmn_id + definition_key（借快照找该任务；找不到就不带）。
-    let (node, def_key, subscriber) = rt
-        .engine
-        .store()
-        .load_snapshot(instance_id)
-        .await
-        .ok()
+    let loaded = rt.engine.store().load_snapshot(instance_id).await.ok();
+    let (node, def_key) = loaded
+        .as_ref()
         .map(|snap| {
             let node = snap
                 .tasks
                 .iter()
                 .find(|t| t.id == task_id)
                 .map(|t| t.node_bpmn_id.clone());
-            (node, Some(snap.instance.definition_key.clone()), snap.instance.subscriber_id)
+            (node, Some(snap.instance.definition_key.clone()))
         })
-        .unwrap_or((None, None, None));
+        .unwrap_or((None, None));
     publish_event(
         rt,
         FlowEvent::new(FlowEventKind::TaskReassigned, instance_id, now_rfc3339())
             .definition_key(def_key)
             .task(Some(task_id.to_string()), node)
             .assignee(Some(to_user.to_string())),
-        subscriber,
+        route_of(loaded),
     )
     .await;
 }
@@ -221,7 +234,7 @@ fn ensure_delegation_valid() -> Result<()> {
 ///   flow-admin 角色豁免（运维台代查）。
 /// - 无服务端身份（auth off / 纯服务 key）：沿用 query 值——M2M 场景用户维度本就是路由参数，
 ///   off 模式是显式 opt-in 的无鉴权形态（批次 0 已 fail-fast）。
-fn effective_query_user(query_user: Option<&str>) -> Result<Option<String>> {
+pub fn effective_query_user(query_user: Option<&str>) -> Result<Option<String>> {
     let q = query_user.map(str::trim).filter(|s| !s.is_empty());
     match crate::tenant::current_user() {
         Some(server_user) => match q {
@@ -230,6 +243,9 @@ fn effective_query_user(query_user: Option<&str>) -> Result<Option<String>> {
                     "IDENTITY_MISMATCH: 服务端身份 {server_user} 与请求自报身份 {qu} 不一致，拒绝代查（运维代查请使用 {FLOW_ADMIN_ROLE} 角色）"
                 )))
             }
+            // X2-3b（S-08）：admin 显式传 qu = 真代查（此前被静默替换为 admin 自己，
+            // 「运维台代查」名不副实）；行为变化面 = 本函数全部 5 个调用点。
+            Some(qu) if qu != server_user => Ok(Some(qu.to_string())),
             _ => Ok(Some(server_user)),
         },
         None => Ok(q.map(|s| s.to_string())),
@@ -255,6 +271,19 @@ fn require_actor_matches(body_user: &str, action: &str) -> Result<()> {
 /// 形态放行——系统边界由 003 结构化 key 声明治理，此处只收「用户身份横向读取」面。
 async fn ensure_instance_participant(rt: &FlowRuntime, instance_id: &str) -> Result<()> {
     let _ = rt;
+    // X2-6（S-05，用户拍板收紧）：005 的 system 隔离闭环到详情面——结构化 key 声明了
+    // system 时，实例 system_id 不匹配即 403（NULL 存量行放行，两阶段迁移口径）。
+    if let Some(sys) = crate::tenant::current_system() {
+        match crate::biz_link::instance_system_matches(instance_id, &sys).await {
+            Ok(false) => {
+                return Err(FlowError::forbidden(format!(
+                    "SYSTEM_MISMATCH: 系统 {sys} 的 key 无权读取实例 {instance_id}（跨系统归属）"
+                )))
+            }
+            Ok(true) => {}
+            Err(e) => return Err(msg_err(e)),
+        }
+    }
     let Some(user) = crate::tenant::current_user() else {
         return Ok(());
     };
@@ -279,6 +308,38 @@ fn ensure_definition_allowed(definition_key: &str) -> Result<()> {
         return Err(FlowError::forbidden(format!(
             "DEFINITION_NOT_ALLOWED: 系统 {system} 的 key 声明不含流程 {definition_key} 的发起权限"
         )));
+    }
+    Ok(())
+}
+
+/// 破坏性干预闸（X2-7，用户拍板本批收紧）：migrate/jump/suspend/resume/retry-incident/
+/// dead-letter 处置类动作——用户身份须持 [`FLOW_ADMIN_ROLE`]；系统 key / off 形态放行
+/// （两阶段：019 key 轮换 + 结构化拆分后收紧为 system 匹配）。坏委托令牌一律拒绝。
+fn ensure_ops_access(action: &str) -> Result<()> {
+    ensure_delegation_valid()?;
+    if let Some(user) = crate::tenant::current_user()
+        && !is_flow_admin()
+    {
+        return Err(FlowError::forbidden(format!(
+            "FLOW_ADMIN_REQUIRED: 动作 {action} 需 {FLOW_ADMIN_ROLE} 角色（当前用户 {user}）"
+        )));
+    }
+    Ok(())
+}
+
+/// 变量操纵类端点的 system 归属（X2-7）：correlate/set-variables/async-jobs 等「向实例
+/// merge 任意变量」的原语——结构化 key 只能操纵本系统实例（X2-6 同口径）。
+async fn ensure_instance_system(instance_id: &str, action: &str) -> Result<()> {
+    if let Some(sys) = crate::tenant::current_system() {
+        match crate::biz_link::instance_system_matches(instance_id, &sys).await {
+            Ok(false) => {
+                return Err(FlowError::forbidden(format!(
+                    "SYSTEM_MISMATCH: 系统 {sys} 的 key 无权对实例 {instance_id} 执行 {action}（跨系统归属）"
+                )))
+            }
+            Ok(true) => {}
+            Err(e) => return Err(msg_err(e)),
+        }
     }
     Ok(())
 }
@@ -435,8 +496,11 @@ pub struct SaveDraftReq {
 pub async fn save_definition_draft(
     Json(req): Json<SaveDraftReq>,
 ) -> Result<Json<ApiResp<Value>>> {
-    // 006：存草稿是写操作（覆盖既有草稿），与发布同门槛；key 由服务端从 name 派生。
-    ensure_write_access(&req.name, "保存流程草稿")?;
+    // 006：存草稿是写操作（覆盖既有草稿），与发布同门槛。闸校验对象 = BPMN `<process id>`
+    // 派生的真实 key（审查 S-01：按 name 校验可「合规 name + BPMN 写他人命名空间」绕过；
+    // validate_bpmn 与 save_draft_checked 内部派生同源同值，双编译毫秒级）。
+    let draft_key = cmx_flow_def::validate_bpmn(&req.bpmn_xml).map_err(def_err)?;
+    ensure_write_access(&draft_key, "保存流程草稿")?;
     let rt = flow().await?;
     let actor = req
         .updated_by
@@ -1024,14 +1088,23 @@ pub async fn start_instance(
 /// 列全部实例。
 pub async fn list_instances(
 ) -> Result<Json<ApiResp<Value>>> {
-    let rt = flow().await?;
-    let summaries = rt
-        .engine
-        .store()
-        .list_instances(100)
+    let _rt = flow().await?;
+    // X2-3a（S-04）：裸全量 100 条吐业务摘要（applicant/amount）无任何过滤——至少收
+    // system 隔离面：结构化 key 只见本系统实例（走 017 参数化分页路径；用户身份横向
+    // 读取面由 /instances/query 的 effective_query_user 口径治理，本存量端点 v1 不动分页）。
+    let f = crate::biz_link::TodoFilter {
+        system_id: crate::tenant::current_system(),
+        ..Default::default()
+    };
+    let page = crate::biz_link::list_instances_paged(&f)
         .await
-        .map_err(|e| msg_err(format!("查询实例列表失败: {e}")))?;
-    let instances: Vec<Value> = summaries.iter().map(summary_view).collect();
+        .map_err(msg_err)?;
+    let defs = _rt.definitions.read().await;
+    let instances: Vec<Value> = page
+        .rows
+        .iter()
+        .map(|t| raw_todo_json(t, &defs))
+        .collect();
     Ok(Json(ApiResp::ok(json!({ "instances": instances }))))
 }
 
@@ -1174,10 +1247,12 @@ pub async fn get_withdrawable(
     Path(id): Path<String>,
     Query(q): Query<WithdrawableQuery>,
 ) -> Result<Json<ApiResp<Value>>> {
+    // S-12：user 走 effective_query_user（原「传谁查谁」可枚举他人实例可撤回状态）。
+    let user = effective_query_user(Some(q.user.as_str()))?.unwrap_or_default();
     let rt = flow().await?;
     let (ok, reason) = rt
         .engine
-        .can_withdraw(&id, &q.user)
+        .can_withdraw(&id, &user)
         .await
         .map_err(engine_err)?;
     Ok(Json(ApiResp::ok(json!({ "withdrawable": ok, "reason": reason }))))
@@ -1341,10 +1416,23 @@ pub async fn get_instance_biz(
 pub async fn get_biz_instances(
     Path((biz_table, biz_id)): Path<(String, String)>,
 ) -> Result<Json<ApiResp<Value>>> {
+    // S-12：按任意 table/id 探测实例——用户身份挂参与方过滤（key/off 维持 M2M 路由语义）。
     let _rt = flow().await?;
-    let instances = crate::biz_link::instances_of_biz(&biz_table, &biz_id)
+    let mut instances = crate::biz_link::instances_of_biz(&biz_table, &biz_id)
         .await
         .map_err(msg_err)?;
+    if let Some(user) = crate::tenant::current_user()
+        && !is_flow_admin()
+    {
+        let mut filtered = Vec::with_capacity(instances.len());
+        for inst in instances.iter() {
+            let iid = inst.get("instanceId").and_then(|v| v.as_str()).unwrap_or_default();
+            if crate::biz_link::user_participates(iid, &user).await.unwrap_or(false) {
+                filtered.push(inst.clone());
+            }
+        }
+        instances = filtered;
+    }
     Ok(Json(ApiResp::ok(json!({ "instances": instances }))))
 }
 
@@ -1637,7 +1725,7 @@ pub async fn complete_task(
         let snap = rt.engine.store().load_snapshot(&req.instance_id).await.ok();
         let def_key = snap.as_ref().map(|s| s.instance.definition_key.clone());
         let biz_key = snap.as_ref().and_then(|s| s.instance.business_key.clone());
-        let subscriber = snap.as_ref().and_then(|s| s.instance.subscriber_id);
+        let subscriber = route_of(snap.as_ref().cloned());
         publish_event(
             &rt,
             FlowEvent::new(FlowEventKind::TaskCompleted, &req.instance_id, now_rfc3339())
@@ -1751,9 +1839,23 @@ pub async fn reject_task(
     Path(task_id): Path<String>,
     Json(req): Json<RejectReq>,
 ) -> Result<Json<ApiResp<Value>>> {
-    // 004：退回人以服务端身份为准（自报不一致拒绝）；坏委托令牌拒绝。
+    // 004/S-11：退回人以服务端身份为准（自报不一致拒绝）；坏委托令牌拒绝。对齐
+    // complete 的 T0b 口径：auth 中间件已生效却无用户身份（纯 key 调 JWT-only 部署）也拒绝；
+    // from_user 缺省时兜底服务端身份并校验（原「不传即跳过校验」是绕过面）。
     ensure_delegation_valid()?;
-    if let Some(fu) = req.from_user.as_deref().filter(|s| !s.trim().is_empty()) {
+    if crate::auth::auth_middleware_active() && crate::tenant::current_user().is_none() {
+        return Err(FlowError::bad_request(
+            "MISSING_USER_IDENTITY: 退回需要用户身份（auth 已生效但未解出用户）",
+        ));
+    }
+    let effective_from = req
+        .from_user
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(crate::tenant::current_display_user);
+    if let Some(fu) = effective_from.as_deref() {
         require_actor_matches(fu, "退回")?;
     }
     let rt = flow().await?;
@@ -1901,8 +2003,9 @@ pub async fn set_instance_variables(
     Path(instance_id): Path<String>,
     Json(req): Json<SetVarsReq>,
 ) -> Result<Json<ApiResp<Value>>> {
-    // 004：改变量是干预动作且留痕 changed_by，坏委托令牌拒绝。
+    // 004/X2-7：改变量是干预动作且留痕 changed_by——补 system 归属（结构化 key 只能改本系统实例）。
     ensure_delegation_valid()?;
+    ensure_instance_system(&instance_id, "修改变量").await?;
     let rt = flow().await?;
     let vars = Variables::from_json(req.variables.clone());
     // 变量历史：改动前取旧值 + 当前节点上下文。
@@ -1934,6 +2037,8 @@ pub async fn set_instance_variables(
 pub async fn suspend_instance(
     Path(instance_id): Path<String>,
 ) -> Result<Json<ApiResp<Value>>> {
+    ensure_ops_access("挂起实例")?;
+    ensure_instance_system(&instance_id, "挂起实例").await?;
     let rt = flow().await?;
     rt.engine.suspend_process(&instance_id).await.map_err(engine_err)?;
     load_view(&rt, &instance_id).await
@@ -1943,6 +2048,8 @@ pub async fn suspend_instance(
 pub async fn resume_instance(
     Path(instance_id): Path<String>,
 ) -> Result<Json<ApiResp<Value>>> {
+    ensure_ops_access("恢复实例")?;
+    ensure_instance_system(&instance_id, "恢复实例").await?;
     let rt = flow().await?;
     rt.engine.resume_process(&instance_id).await.map_err(engine_err)?;
     load_view(&rt, &instance_id).await
@@ -1963,8 +2070,9 @@ pub async fn jump_instance(
     Path(instance_id): Path<String>,
     Json(req): Json<JumpReq>,
 ) -> Result<Json<ApiResp<Value>>> {
-    // 004：跳转是管理员级干预（直接改令牌位置），坏委托令牌拒绝。
-    ensure_delegation_valid()?;
+    // 004/X2-7：跳转是管理员级干预（直接改令牌位置）——升级为 flow-admin 闸 + system 归属。
+    ensure_ops_access("跳转实例")?;
+    ensure_instance_system(&instance_id, "跳转实例").await?;
     let rt = flow().await?;
     rt.engine
         .jump_to(&instance_id, &req.target_bpmn_id, req.reason.as_deref())
@@ -1989,6 +2097,11 @@ pub async fn urge_task(
     Path(task_id): Path<String>,
     Json(req): Json<UrgeReq>,
 ) -> Result<Json<ApiResp<Value>>> {
+    // X2-7：催办以 from_user 名义发提醒——delegation 拒坏令牌 + 操作者身份校验。
+    ensure_delegation_valid()?;
+    if let Some(fu) = req.from_user.as_deref().filter(|s| !s.trim().is_empty()) {
+        require_actor_matches(fu, "催办")?;
+    }
     let rt = flow().await?;
     rt.engine
         .urge_task(
@@ -2025,6 +2138,12 @@ pub struct CorrelateReq {
 pub async fn correlate_message(
     Json(req): Json<CorrelateReq>,
 ) -> Result<Json<ApiResp<Value>>> {
+    // X2-7：correlate 可向实例 merge 任意变量（变量驱动网关走向）——delegation 拒坏令牌
+    // + 指定实例时校验 system 归属。
+    ensure_delegation_valid()?;
+    if let Some(iid) = req.instance_id.as_deref().filter(|s| !s.is_empty()) {
+        ensure_instance_system(iid, "消息相关").await?;
+    }
     let rt = flow().await?;
     let vars = Variables::from_json(req.variables.clone());
     let result = rt
@@ -2046,6 +2165,9 @@ pub async fn retry_incident(
     Path(instance_id): Path<String>,
     Json(req): Json<RetryIncidentReq>,
 ) -> Result<Json<ApiResp<Value>>> {
+    // X2-7（S-10/O-17）：重试 = 重新推进实例 + merge 请求变量——干预闸 + system 归属。
+    ensure_ops_access("重试 incident")?;
+    ensure_instance_system(&instance_id, "重试 incident").await?;
     let rt = flow().await?;
     let vars = Variables::from_json(req.variables.clone());
     rt.engine
@@ -2633,6 +2755,8 @@ pub async fn complete_async_job(
     Path(job_id): Path<String>,
     Json(req): Json<CompleteAsyncReq>,
 ) -> Result<Json<ApiResp<Value>>> {
+    // X2-7：worker 回调可 merge 任意变量——坏委托令牌拒绝（key 通道两阶段维持）。
+    ensure_delegation_valid()?;
     let rt = flow().await?;
     let vars = if req.variables.is_null() {
         Variables::new()
@@ -2668,6 +2792,7 @@ pub async fn fail_async_job(
     Path(job_id): Path<String>,
     Json(req): Json<FailAsyncReq>,
 ) -> Result<Json<ApiResp<Value>>> {
+    ensure_delegation_valid()?;
     let rt = flow().await?;
     let error = req.error.as_deref().unwrap_or("外部 worker 未提供失败原因");
     let retryable = rt
@@ -2712,6 +2837,8 @@ pub async fn list_dead_letter_jobs() -> Result<Json<ApiResp<Value>>> {
 /// 重投一条死信作业（P2）：`POST /dead-letter-jobs/{id}/retry`。
 /// 重建 AsyncJob + 令牌回 WaitingAsync + 删死信行；worker 下一轮重抢执行。
 pub async fn retry_dead_letter_job(Path(job_id): Path<String>) -> Result<Json<ApiResp<Value>>> {
+    // X2-7：死信重投重建作业推进实例——运维处置闸。
+    ensure_ops_access("死信重投")?;
     let rt = flow().await?;
     let retried = rt
         .engine
@@ -2723,6 +2850,7 @@ pub async fn retry_dead_letter_job(Path(job_id): Path<String>) -> Result<Json<Ap
 
 /// 丢弃一条死信作业（P2）：`DELETE /dead-letter-jobs/{id}`。令牌保持 Incident。
 pub async fn discard_dead_letter_job(Path(job_id): Path<String>) -> Result<Json<ApiResp<Value>>> {
+    ensure_ops_access("死信丢弃")?;
     let rt = flow().await?;
     rt.engine
         .discard_dead_letter_job(&job_id)
@@ -2880,6 +3008,18 @@ pub async fn list_cc(
 pub async fn mark_cc_read(
     Path(cc_id): Path<String>,
 ) -> Result<Json<ApiResp<Value>>> {
+    // S-12：防代标记他人已读（干扰他人未读计数）——有用户身份时校验抄送归属。
+    if let Some(user) = crate::tenant::current_user() {
+        match crate::biz_link::cc_owner(&cc_id).await {
+            Ok(Some(owner)) if owner != user && !is_flow_admin() => {
+                return Err(FlowError::forbidden(format!(
+                    "NOT_CC_OWNER: 用户 {user} 不是抄送 {cc_id} 的接收人，拒绝标记已读"
+                )))
+            }
+            Ok(_) => {}
+            Err(e) => return Err(msg_err(e)),
+        }
+    }
     let rt = flow().await?;
     let ok = rt.engine.mark_cc_read(&cc_id).await.map_err(engine_err)?;
     Ok(Json(ApiResp::ok(json!({ "ok": ok }))))
@@ -3007,6 +3147,10 @@ pub struct UpsertBindingReq {
 pub async fn upsert_subflow_binding(
     Json(req): Json<UpsertBindingReq>,
 ) -> Result<Json<ApiResp<Value>>> {
+    // X2-4（S-06）：绑定决定 called_key 路由到哪个 target——是影响运行路由的写操作，
+    // 与定义/表单同门槛（006）；called_key 与 target_key 双资源校验（两者都可撞名互覆）。
+    ensure_write_access(&req.called_key, "保存子流程绑定")?;
+    ensure_write_access(&req.target_key, "保存子流程绑定")?;
     let rt = flow().await?;
     let dim_key = req.dim_key.as_deref().filter(|s| !s.is_empty()).unwrap_or("org");
     // 维度取值：优先 dimValue；缺省回退旧 orgId（仅 org 维度语义）。空串归一为 None（兜底）。
@@ -3047,6 +3191,9 @@ fn binding_id(called_key: &str, dim_key: &str, dim_value: Option<&str>) -> Strin
 pub async fn delete_subflow_binding(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResp<Value>>> {
+    // X2-4（S-06）：绑定 id 是派生散列无法反解资源键——删除挂干预闸（用户须 flow-admin；
+    // upsert 侧已有 called_key/target_key 双资源闸，删除不能再制造跨系统路由）。
+    ensure_ops_access("删除子流程绑定")?;
     let rt = flow().await?;
     rt.binding_store.delete(&id).await.map_err(msg_err)?;
     Ok(Json(ApiResp::ok(json!({ "deleted": id }))))

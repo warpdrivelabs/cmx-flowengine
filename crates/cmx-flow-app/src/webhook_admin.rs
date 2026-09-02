@@ -31,13 +31,37 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ———————— 鉴权门 ————————
 
-/// 写端点 fail-close：auth 中间件未挂/off 形态即拒绝（001 方案 §五；安全不排 M3）。
+/// 写端点角色闸（X2-2，用户拍板：平台 admin 过渡豁免）。
+///
+/// 纯角色判定、不看 auth mode（off + 合法 key 不受影响——off 模式 ctx 无 roles，
+/// 无角色身份自然被拒，等效 fail-close 且测试可注入身份）：
+/// - `service`（M2M API key 身份）放行——两阶段：019 轮换 + 结构化 key 拆分后收紧为
+///   system × 订阅 service_key 匹配；
+/// - `flow-webhook-admin` / `flow-admin`（占位角色）放行；
+/// - 平台 `admin` 过渡豁免（RB-01：门户反代剥 key 只透传 JWT，浏览器管理页用户当前
+///   无占位角色——直接上线即断管理页写操作；角色体系对齐后移除本豁免）。
+/// 拒绝一律 403（修 W-13：原 business_error 200+code=1 让按状态码统计的监控漏计）。
 fn ensure_auth_gate() -> Result<()> {
-    if !crate::auth::auth_middleware_active() {
-        return Err(FlowError::business_error(
-            "webhook 管理写端点要求 auth 中间件生效（fail-close）",
-        ));
+    let roles = crate::tenant::current_roles();
+    let allowed = [
+        "service",
+        crate::handlers::FLOW_ADMIN_ROLE,
+        WEBHOOK_ADMIN_ROLE,
+        "admin", // 过渡豁免（见 docstring）
+    ];
+    if !roles.iter().any(|r| allowed.contains(&r.as_str())) {
+        let who = crate::tenant::current_display_user()
+            .unwrap_or_else(|| "anonymous".into());
+        return Err(FlowError::forbidden(format!(
+            "WEBHOOK_ADMIN_REQUIRED: webhook 管理写端点需 {WEBHOOK_ADMIN_ROLE}/{} 角色或系统 key（service 身份）；当前身份 {who} 未持有",
+            crate::handlers::FLOW_ADMIN_ROLE
+        )));
     }
+    tracing::info!(
+        operator = crate::tenant::current_display_user().unwrap_or_else(|| "service".into()),
+        roles = ?roles,
+        "webhook 管理写操作审计"
+    );
     Ok(())
 }
 
@@ -46,14 +70,19 @@ fn ensure_auth_gate() -> Result<()> {
 const MASK: &str = "******";
 
 /// 掩码：短密钥整体打码，长密钥露前 4 后 4。
+/// W-08：多字节 UTF-8（中文/emoji）secret 会被字节切片 panic（query/detail 直接 500）
+/// ——按字符取前后各 4 位（secret 通常是 ascii hex，此为防御性正确性）。
 fn mask_secret(s: &str) -> String {
     if s.is_empty() {
         return String::new();
     }
-    if s.len() <= 8 {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= 8 {
         MASK.to_string()
     } else {
-        format!("{}{MASK}{}", &s[..4], &s[s.len() - 4..])
+        let head: String = chars[..4].iter().collect();
+        let tail: String = chars[chars.len() - 4..].iter().collect();
+        format!("{head}{MASK}{tail}")
     }
 }
 
@@ -319,24 +348,15 @@ pub async fn save_subscription(Json(req): Json<SaveSubReq>) -> Result<Json<ApiRe
     validate_event_types(&req.event_types)?;
     let retry_max = req.retry_max.unwrap_or(10).clamp(1, 50) as i32;
 
-    // 通配确认防线（方案 §四 R10/R-P1）：编辑把非空 definition_keys 改成空（= 通配 = 广播面
-    // 全开）须显式 allowWildcard: true——防页面/调用方一次普通保存静默清空存量显式定义集。
-    if req.definition_keys.is_empty()
-        && let Some(id) = req.id
-    {
-        let old_keys = webhook_store::get_subscription(&db(), &crate::tenant::current_tenant(), id)
-            .await
-            .map_err(msg_err)?
-            .map(|o| o.definition_keys)
-            .unwrap_or_default();
-        if !old_keys.is_empty() && req.allow_wildcard != Some(true) {
-            return Err(bad_err(
-                "WILDCARD_CONFIRM_REQUIRED: 该订阅现含显式定义集，本次保存将清空为通配（订阅全部流程）。如确认请携带 allowWildcard=true".into(),
-            ));
-        }
+    // W-14：归一化 definition_keys（trim/去空/去重 + 单键长度）——subscribe API 有
+    // norm_def_keys 而 save 没有，经 save 写入 " a"/重复/空串会成隐性哑键（匹配全等永不命中）。
+    let definition_keys = norm_def_keys(&req.definition_keys);
+    if definition_keys.iter().any(|k| k.len() > 128) {
+        return Err(msg_err("definitionKeys 单键 ≤128 字符".into()));
     }
 
-    // secret 沿用语义：编辑时留空/掩码回传 = 保留旧值（先取旧行）。
+    // 通配确认防线（方案 §四 R10/R-P1）+ secret 沿用取旧行——合并为**一次**查询
+    //（W-14：原实现同 id 双查）。
     let old = match req.id {
         Some(id) => {
             webhook_store::get_subscription(&db(), &crate::tenant::current_tenant(), id)
@@ -359,6 +379,15 @@ pub async fn save_subscription(Json(req): Json<SaveSubReq>) -> Result<Json<ApiRe
             binding_count: 0,
         },
     };
+    // 通配确认防线（方案 §四 R10/R-P1）：非空 → 空须显式 allowWildcard。
+    if definition_keys.is_empty()
+        && !old.definition_keys.is_empty()
+        && req.allow_wildcard != Some(true)
+    {
+        return Err(bad_err(
+            "WILDCARD_CONFIRM_REQUIRED: 该订阅现含显式定义集，本次保存将清空为通配（订阅全部流程）。如确认请携带 allowWildcard=true".into(),
+        ));
+    }
     let mut config = req.channel_config.clone();
     if config.get("secret").is_none() || resolve_incoming_secret(config.get("secret").and_then(Value::as_str)).is_none() {
         // 入参缺 secret 或掩码：新建 = 置空（validate 会拒），编辑 = 沿用旧值。
@@ -388,7 +417,7 @@ pub async fn save_subscription(Json(req): Json<SaveSubReq>) -> Result<Json<ApiRe
             name: name.to_string(),
             channel: req.channel.clone(),
             channel_config: config,
-            definition_keys: req.definition_keys,
+            definition_keys,
             event_types: req.event_types,
             active: req.active.unwrap_or(true),
             retry_max,
@@ -504,9 +533,28 @@ pub async fn subscribe_definitions(
             "WILDCARD_IMMUTABLE: 通配订阅（定义集为空 = 全部）不可改为显式，请新建订阅后再订阅".into(),
         ));
     }
-    webhook_store::subscribe_definitions(&db(), &tenant, name, &keys)
+    let n = webhook_store::subscribe_definitions(&db(), &tenant, name, &keys)
         .await
         .map_err(msg_err)?;
+    if n == 0 {
+        // W-02：预检与 UPDATE 之间的并发窗口（被停用/改 env/窄化）——重查分类拒绝，
+        // 不得静默假成功（响应声称并入、实际 definitionKeys 还是旧集）。
+        let cur = webhook_store::get_subscription_by_name(&db(), &tenant, name)
+            .await
+            .map_err(msg_err)?;
+        let reason = match &cur {
+            None => "SUBSCRIBER_NOT_FOUND: 订阅已不存在".to_string(),
+            Some(c) if !c.active => format!("SUBSCRIBER_INACTIVE: 订阅已被停用: {name}"),
+            Some(c) if c.source == "env" => {
+                "ENV_SUBSCRIPTION_IMMUTABLE: 订阅已被转为环境导入行".to_string()
+            }
+            Some(c) if c.definition_keys.is_empty() => {
+                "WILDCARD_IMMUTABLE: 订阅已被改为通配".to_string()
+            }
+            Some(_) => "SUBSCRIBE_CONFLICT: 定义订阅未生效（并发变更），请重试".to_string(),
+        };
+        return Err(bad_err(reason));
+    }
     // operator 审计（§2.2 修订口径）：定义订阅改的是接收面，操作人必须留痕。
     tracing::info!(
         operator = ?crate::tenant::current_user(),
@@ -569,9 +617,24 @@ pub async fn unsubscribe_definitions(
             "DEFINITION_SET_EMPTY: 本次退订将清空定义集（= 通配全部流程）。如需彻底退订请停用订阅或联系管理员".into(),
         ));
     }
-    webhook_store::unsubscribe_definitions(&db(), &tenant, name, &keys)
+    let n = webhook_store::unsubscribe_definitions(&db(), &tenant, name, &keys)
         .await
         .map_err(msg_err)?;
+    if n == 0 {
+        // W-02：并发窗口（被停用/并发 subscribe 后空化谓词不满足）——重查分类拒绝。
+        let cur = webhook_store::get_subscription_by_name(&db(), &tenant, name)
+            .await
+            .map_err(msg_err)?;
+        let reason = match &cur {
+            None => "SUBSCRIBER_NOT_FOUND: 订阅已不存在".to_string(),
+            Some(c) if !c.active => format!("SUBSCRIBER_INACTIVE: 订阅已被停用: {name}"),
+            Some(c) if c.definition_keys.is_empty() => {
+                "WILDCARD_IMMUTABLE: 订阅已被改为通配".to_string()
+            }
+            Some(_) => "DEFINITION_SET_EMPTY: 并发退订已清空/本批定义集已不存在，剩余集见响应".to_string(),
+        };
+        return Err(bad_err(reason));
+    }
     tracing::info!(
         operator = ?crate::tenant::current_user(),
         subscription = %name,
@@ -904,11 +967,22 @@ pub async fn rebuild_subscription(
             tenant: Some(tenant.clone()),
             occurred_at: ended_at,
         };
+        let iid = get_s("id").unwrap_or_default();
         rows.push(crate::webhook_store::DeliveryInsert {
             subscription_id: sub.id,
             subscription_name: sub.name.clone(),
             channel: sub.channel.clone(),
-            event_id: uuid::Uuid::new_v4().to_string(),
+            // W-03：确定性 event_id（方案 v2.3 §五「按事件重算，uk 幂等跳过已存在行」）
+            // ——随机 uuid 使重复 rebuild 每次都产生重复投递行，幂等责任被整体转嫁接收方；
+            // rebuild 是对账补偿工具，运维重复点击/脚本重跑是常态操作。
+            // 事件类型缩码（cmp=completed / trm=terminated）+ instance_id 去连字符：
+            // 64 字符限内（rb-19雪花-32iid-3缩码 = 59），确定性不损（同订阅内三元组仍唯一）。
+            event_id: format!(
+                "rb-{}-{}-{}",
+                sub.id,
+                iid.replace('-', ""),
+                if event_type == "instance.completed" { "cmp" } else { "trm" }
+            ),
             delivery_id: event.delivery_id(),
             source: "rebuild",
             event_type: event.event.clone(),

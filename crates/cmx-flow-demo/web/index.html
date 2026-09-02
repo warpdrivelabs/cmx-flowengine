@@ -355,7 +355,7 @@ async function loadInstances(){
         <span class="who">${tag}${escapeHtml(it.applicant||'?')}${amountPart}</span>
         <span class="pill ${it.state}">${it.state}</span>
       </div>
-      <div class="meta">${(isCs||isTimed||isCand)?'':'风险:'+(it.riskLevel||'-')+' · '}待办 ${it.openTaskCount} · ${escapeHtml(it.businessKey||'')}</div>
+      <div class="meta">待办 ${it.openTaskCount} · ${escapeHtml(it.businessKey||'')}</div>
     </div>`;}).join('');
 }
 
@@ -380,7 +380,7 @@ function renderDetail(){
     <span>类型: ${DEF_CN[SELECTED.definitionKey]||SELECTED.definitionKey}</span>
     <span>申请人: ${escapeHtml(v.applicant||'-')}</span>
     ${isTimed?'':`<span>额度: ¥${fmt(v.amount)}</span>`}
-    ${isCs?(v.approvers?`<span>会签人: ${escapeHtml((v.approvers||[]).join('、'))}</span>`:''):(isTimed?'':`<span>风险等级: ${v.riskLevel||'-'}</span>`)}
+    ${isCs?(v.approvers?`<span>会签人: ${escapeHtml((v.approvers||[]).join('、'))}</span>`):''}
     <span>状态: ${SELECTED.state}</span>
   </div>`;
 

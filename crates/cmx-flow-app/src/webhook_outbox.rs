@@ -26,40 +26,6 @@ use crate::webhook_store::{
 };
 
 // ============================================================
-// MODE
-// ============================================================
-
-/// webhook 投递模式（001-M3 收口：legacy 内存链路已删除，outbox 唯一——枚举保留供
-/// 配置解析/测试识别显式传值，所有运行分支不再区分）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WebhookMode {
-    /// 持久化投递队列（唯一模式）：事件先落库再投递，重启不丢、有死信。
-    Outbox,
-}
-
-/// 读 `FLOW_WEBHOOK_MODE`（缺省/未知 → outbox；显式传 `legacy` → warn 一次并按 outbox 运行
-/// ——发布说明义务：legacy 链路已删除，存量部署需改走订阅注册）。
-pub fn webhook_mode() -> WebhookMode {
-    static MODE: std::sync::OnceLock<WebhookMode> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| {
-        match std::env::var("FLOW_WEBHOOK_MODE")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "legacy" => {
-                tracing::warn!(
-                    "FLOW_WEBHOOK_MODE=legacy 已无效（001-M3 删除 legacy 内存链路），按 outbox 运行"
-                );
-                WebhookMode::Outbox
-            }
-            _ => WebhookMode::Outbox,
-        }
-    })
-}
-
-// ============================================================
 // emit 侧：事件 → 投递行（事务提交后、单批写入）
 // ============================================================
 
@@ -121,22 +87,44 @@ pub fn mon_snapshot() -> serde_json::Value {
 /// - **fail-close**（R3）：S 点查失败/未知时不降级规则 2 广播——只清空定向支路，旁听支路照常。
 /// - 白名单外/停用/幽灵 → 丢弃 + 计数（§3.6），不回退默认层（防泄露）。
 ///
+/// 实例订阅绑定的路由状态（三态，X2-1 fail-close 修复 W-01）。
+///
+/// handler 层借快照读取绑定时，**读失败 ≠ 未绑定**：折叠为同一个 `None` 会让绑定实例
+/// 的事件在异常窗口被广播给全部通配订阅（v2.4 要消除的泄露面）。`Unknown` 走 fail-close
+/// ——只求旁听支路（显式声明定义集的订阅），绝不降级规则 2（方案 §3.2 R3）。
+/// 被排除的更轻选项（RB-09 记录）：Unknown 时完全不投（只 SSE+计数）——不取，因旁听订阅
+/// 是接收方显式声明，异常窗口静默全丢比少投更伤信任。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubscriberRoute {
+    /// 快照读取成功且实例已绑定订阅（定向必达 + 旁听）。
+    Bound(i64),
+    /// 快照读取成功，实例未绑定（规则 2 全量匹配——与 v2.3 行为一致）。
+    Unbound,
+    /// 快照读取失败，绑定未知：fail-close 只投显式旁听 + 计数。
+    Unknown,
+}
+
 /// 写入失败只记 error 日志 + 计数——emit 是通知路径，不因投递行写不进阻断业务。
-pub async fn emit_to_outbox(
-    events: &[cmx_flow_adapters::FlowEvent],
-    bound_subscriber: Option<i64>,
-) {
+pub async fn emit_to_outbox(events: &[cmx_flow_adapters::FlowEvent], route: SubscriberRoute) {
     if events.is_empty() {
         return;
     }
     let tenant = crate::tenant::current_tenant();
     let db_id = crate::engine::current_flow_db_id();
     let subs = active_subscriptions_cached(&db_id, &tenant).await;
+    // W-06：S 主键点查批外一次（轻量路由查询，无 binding_count 子查询）——同批 N 事件
+    // 共用同一定向支路结果；点查失败按 fail-close（仅旁听）处理，逐事件不再重查。
+    let bound_sub: Option<Result<Option<SubRow>, String>> = match route {
+        SubscriberRoute::Bound(sid) => Some(
+            crate::webhook_store::get_subscription_for_route(&db_id, &tenant, sid).await,
+        ),
+        _ => None,
+    };
     let mut rows = Vec::new();
     for event in events {
         // 候选集（并集后再落行——同一订阅被多条路径命中只产生一行，R25）。
-        let candidates: Vec<(SubRow, bool)> = match bound_subscriber {
-            None => {
+        let candidates: Vec<(SubRow, bool)> = match route {
+            SubscriberRoute::Unbound => {
                 if subs.is_empty() {
                     continue;
                 }
@@ -145,10 +133,33 @@ pub async fn emit_to_outbox(
                     .map(|s| (s.clone(), false))
                     .collect()
             }
-            Some(sid) => {
+            SubscriberRoute::Unknown => {
+                // fail-close（W-01/R3）：绑定未知不降级规则 2 广播——只投显式旁听支路。
+                EMIT_LOOKUP_ERRORS.fetch_add(1, Ordering::Relaxed);
+                if subs.is_empty() {
+                    tracing::warn!(
+                        instance = %event.instance_id,
+                        event = %event.event,
+                        "绑定未知且订阅缓存为空，事件零投递（fail-close）"
+                    );
+                    continue;
+                }
+                tracing::warn!(
+                    instance = %event.instance_id,
+                    event = %event.event,
+                    "绑定未知（快照读取失败），fail-close：仅投显式旁听订阅"
+                );
+                let cands: Vec<(SubRow, bool)> = subs
+                    .iter()
+                    .filter(|r| listen_matches(r, event))
+                    .map(|r| (r.clone(), false))
+                    .collect();
+                cands
+            }
+            SubscriberRoute::Bound(sid) => {
                 let mut cands: Vec<(SubRow, bool)> = Vec::new();
-                // —— 定向支路：S 主键点查（不过缓存；索引命中，事件量级下成本可忽略）——
-                match crate::webhook_store::get_subscription(&db_id, &tenant, sid).await {
+                // —— 定向支路：S 主键点查（不过缓存；批外已查，此处消费结果）——
+                match bound_sub.clone().expect("Bound 分支必有点查结果") {
                     Ok(Some(s)) if s.active => {
                         if s.event_types.is_empty() || s.event_types.contains(&event.event) {
                             cands.push((s, true));
@@ -535,9 +546,4 @@ mod tests {
         assert_eq!(backoff_after(20), chrono::Duration::seconds(300));
     }
 
-    /// MODE 解析（001-M3 收口）：任何值恒为 outbox（legacy 已删，显式传值也按 outbox 运行）。
-    #[test]
-    fn mode_parse_always_outbox() {
-        assert_eq!(WebhookMode::Outbox, WebhookMode::Outbox);
-    }
 }

@@ -878,6 +878,9 @@ function openStartForm (defKey, sourceEl) {
       workspace: { id: `flow_start_${sid}`, params: startCtx, content: contentRegion, property: { caption: '发起', icon: 'add-activity', views: [propView] } },
     }
     openWorkNode(workNode, sourceEl)
+  }).catch((e) => {
+    // O-05：发起入口同补——绑定缺失/注册表不可达时可见反馈（原 unhandled rejection）。
+    toast('打开发起表单失败: ' + ((e && e.message) || e))
   })
 }
 
@@ -891,6 +894,9 @@ function openTaskForm (taskId, sourceEl) {
     // kind='workspace'：打开节点定义的完整工作台（content=业务表单/菜单），property 叠加审批视图。
     if (f && f.kind === 'workspace' && f.workspaceNode) return buildWorkspaceWorknode(t, f, sourceEl, { readonly: false })
     return buildAndOpenTaskForm(t, f, sourceEl)
+  }).catch((e) => {
+    // O-05：表单绑定缺失/注册表不可达时给出可见反馈（原 unhandled rejection 点按无反应）。
+    toast('打开办理表单失败: ' + ((e && e.message) || e))
   })
 }
 

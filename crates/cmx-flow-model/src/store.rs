@@ -23,7 +23,8 @@ pub enum StoreError {
     #[error("存储层错误: {0}")]
     Backend(String),
 
-    /// 乐观并发冲突（M1 预留，暂不启用版本号）。
+    /// 乐观并发冲突（007 已启用：save 须以 load 所得 version 做 CAS 比对，
+    /// 0 行命中返回本错误；实现见 store-pg `update_instance_cas` / memory_store 同构实现）。
     #[error("并发冲突: {0}")]
     Conflict(String),
 }
@@ -154,13 +155,14 @@ pub trait RuntimeStore: Send + Sync {
         limit: usize,
     ) -> StoreResult<Vec<crate::runtime::AsyncJob>>;
 
-    /// 完成一个 AsyncJob：删除记录（或标记 done），并把对应令牌 instance 加载回调用者处理。
-    /// 返回 instance_id + token_id，引擎据此继续推进。
+    /// 完成一个 AsyncJob：删除记录（或标记 done），返回被删除的完整作业（引擎据此定位
+    /// 令牌坐标并继续推进；实例 save 与 CAS 冲突时用它**补偿重插**——作业行复活后可在
+    /// 租约过期后被重新抢占，delegate 至少一次重执行，对齐 trigger_due_timers 语义）。
     async fn complete_async_job(
         &self,
         job_id: &str,
         result_variables: Option<serde_json::Value>,
-    ) -> StoreResult<Option<(String, String)>>;
+    ) -> StoreResult<Option<crate::runtime::AsyncJob>>;
 
     /// 失败一个 AsyncJob：重试次数 -1；若 retries <= 0 则转死信（或删除）。
     /// 返回是否仍有重试余地（true = 仍可重试，false = 已死信/删除）。
@@ -228,6 +230,16 @@ pub trait RuntimeStore: Send + Sync {
     }
 
     /// 实例重试成功后把其全部 OPEN incident 置 RESOLVED。默认 no-op。
+    /// 关闭实例内单个节点的 OPEN incident（complete_async_job 成功路径精确收账——
+    /// 不误关同实例其它并行故障节点的台账）。
+    async fn resolve_incident_by_node(
+        &self,
+        _instance_id: &str,
+        _node_bpmn_id: &str,
+    ) -> StoreResult<()> {
+        Ok(())
+    }
+
     async fn resolve_incidents_by_instance(&self, _instance_id: &str) -> StoreResult<()> {
         Ok(())
     }

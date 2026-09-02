@@ -809,6 +809,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmx-flow-demo"
+version = "0.1.12"
+dependencies = [
+ "async-trait",
+ "axum",
+ "cmx-core",
+ "cmx-database-pg",
+ "cmx-flow-bpmn",
+ "cmx-flow-def",
+ "cmx-flow-engine",
+ "cmx-flow-model",
+ "cmx-flow-store-pg",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "cmx-flow-engine"
 version = "0.1.12"
 dependencies = [
@@ -883,6 +904,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

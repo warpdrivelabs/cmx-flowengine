@@ -77,11 +77,26 @@ impl RuntimeStore for InMemoryStore {
     }
 
     async fn save_snapshot(&self, snapshot: &InstanceSnapshot) -> StoreResult<()> {
+        // X3-7（C-03）：与 PG 实现的 CAS 语义对齐（文件头「语义与 PG 对齐」此前对 CAS 不
+        // 成立）——以 load 所得 version 比对，冲突返回 Conflict；成功对**存储副本** version+1
+        //（不回写调用者，与 PG 的 `SET version=version+1` 逐字节对齐）。常规单测由此可覆盖
+        // 冲突分支（PG 门控测试之外的第二通道）。
         let mut guard = self.inner.lock().await;
-        if !guard.contains_key(&snapshot.instance.id) {
-            return Err(StoreError::InstanceNotFound(snapshot.instance.id.clone()));
+        let expected = snapshot.version;
+        match guard.get_mut(&snapshot.instance.id) {
+            None => return Err(StoreError::InstanceNotFound(snapshot.instance.id.clone())),
+            Some(stored) => {
+                if stored.version != expected {
+                    return Err(StoreError::Conflict(format!(
+                        "实例 {} 已被并发修改（内存存储期望 version={expected}，实际 {}）",
+                        snapshot.instance.id, stored.version
+                    )));
+                }
+                let mut next = stripped(snapshot);
+                next.version = expected + 1;
+                *stored = next;
+            }
         }
-        guard.insert(snapshot.instance.id.clone(), stripped(snapshot));
         Ok(())
     }
 
@@ -313,13 +328,9 @@ impl RuntimeStore for InMemoryStore {
         &self,
         job_id: &str,
         _result_variables: Option<serde_json::Value>,
-    ) -> StoreResult<Option<(String, String)>> {
+    ) -> StoreResult<Option<AsyncJob>> {
         let mut guard = self.async_jobs.lock().await;
-        if let Some(job) = guard.remove(job_id) {
-            Ok(Some((job.instance_id, job.token_id)))
-        } else {
-            Ok(None)
-        }
+        Ok(guard.remove(job_id))
     }
 
     async fn fail_async_job(

@@ -95,14 +95,12 @@ impl WebhookTarget {
 ///   - `FLOW_WEBHOOK_TARGETS`：逗号分隔的目标条目列表，每条 `服务键:回调路径`（如
 ///     `mdm:/api/mdm/flow/callback`）——键经 `[service_rpc.services]` 定位，路径归接收方
 ///     定义。格式不合法的条目 warn 跳过；列表空 = 关闭 webhook）。
-///   - `FLOW_WEBHOOK_SIGNING_KEY`：HMAC-SHA256 签名密钥（须与接收端共享——如 mdm 的
-///     `[mdm.flow].webhook_secret`；空 = 仍签名但接收端按空密钥拒收——生产必配）。
-///   - `FLOW_WEBHOOK_MAX_RETRIES`：单条投递失败重试次数（默认 3）。
+///   - `FLOW_WEBHOOK_SIGNING_KEY`：HMAC-SHA256 签名密钥（首启 env 导入行的过渡共享密钥；
+///     独立 secret 由订阅 `channel_config` 承载——001 订阅入库）。
 #[derive(Debug, Clone, Default)]
 pub struct WebhookConfig {
     pub targets: Vec<WebhookTarget>,
     pub signing_key: Option<String>,
-    pub max_retries: u32,
 }
 
 impl WebhookConfig {
@@ -127,15 +125,7 @@ impl WebhookConfig {
         Self {
             targets,
             signing_key: env_opt("FLOW_WEBHOOK_SIGNING_KEY"),
-            max_retries: env_opt("FLOW_WEBHOOK_MAX_RETRIES")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(3),
         }
-    }
-
-    /// 是否启用（配了至少一个目标服务键）。
-    pub fn is_enabled(&self) -> bool {
-        !self.targets.is_empty()
     }
 }
 

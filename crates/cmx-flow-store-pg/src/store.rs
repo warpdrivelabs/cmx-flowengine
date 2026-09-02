@@ -73,12 +73,16 @@ impl PgRuntimeStore {
             .map_err(|e| StoreError::Backend(format!("开启事务失败: {e}")))?;
 
         for (sql, params) in cas_ops {
-            let affected = execute_sql_with_params(&self.db_id, Some(&txn_id), &sql, params)
+            // 错误分支须真正 await 回滚（map_err 同步闭包里丢弃 future 会让事务悬挂——审查 C-02）。
+            let affected = match execute_sql_with_params(&self.db_id, Some(&txn_id), &sql, params)
                 .await
-                .map_err(|e| {
-                    let _ = txn_ctx.rollback(&txn_id);
-                    StoreError::Backend(format!("事务内执行失败: {e}"))
-                })?;
+            {
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = txn_ctx.rollback(&txn_id).await;
+                    return Err(StoreError::Backend(format!("事务内执行失败: {e}")));
+                }
+            };
             if affected == 0 {
                 let _ = txn_ctx.rollback(&txn_id).await;
                 return Err(StoreError::Conflict(format!(
@@ -627,16 +631,17 @@ impl RuntimeStore for PgRuntimeStore {
         &self,
         job_id: &str,
         _result_variables: Option<serde_json::Value>,
-    ) -> StoreResult<Option<(String, String)>> {
-        // 删除作业并 RETURNING 其令牌坐标——引擎据此把令牌转 Active 继续推进。
+    ) -> StoreResult<Option<AsyncJob>> {
+        // 删除作业并 RETURNING 全列——引擎据此把令牌转 Active 继续推进；完整作业数据
+        // 供实例 save CAS 冲突时的补偿重插（作业行复活 → 租约过期后可重抢，审查 C-01）。
         // 结果变量由引擎在 complete_async_job 里 merge 进实例变量，不落本表（本表无变量列）。
-        let sql = "DELETE FROM cmx_flow_async_job WHERE id = $1 RETURNING instance_id, token_id"
+        let sql = "DELETE FROM cmx_flow_async_job WHERE id = $1 RETURNING id, instance_id,                    token_id, node_bpmn_id, delegate_key, topic, max_retries, retries,                    retry_backoff_seconds, locked_by, lock_expires_at, created_at"
             .to_string();
         let params = SqlParams::DataValues(vec![DataValue::String(job_id.to_string())]);
         let ds = query_sql_with_params(&self.db_id, None, &sql, params, "flow_complete_async")
             .await
             .map_err(|e| StoreError::Backend(format!("完成异步作业失败: {e}")))?;
-        Ok(mapping::first_instance_token_pair(&ds))
+        Ok(mapping::rows_to_async_jobs(&ds)?.into_iter().next())
     }
 
     async fn fail_async_job(&self, job_id: &str, _error: &str) -> StoreResult<bool> {
@@ -777,7 +782,10 @@ impl RuntimeStore for PgRuntimeStore {
               token_id = EXCLUDED.token_id, reason = EXCLUDED.reason, retries = EXCLUDED.retries, \
               state = 'OPEN', updated_at = EXCLUDED.updated_at";
         let params = SqlParams::DataValues(vec![
-            DataValue::String(format!("inc-{}-{}", inc.instance_id, inc.node_bpmn_id)),
+            // O-08：主键用 uuid——原 `inc-{instance_id}-{node}` 拼串在 node>19 字符时超出
+            // VARCHAR(64) 被 PG 拒绝（upsert_incident_aux 仅 warn，台账静默丢失）；幂等由
+            // uk(instance_id, node_bpmn_id) 的 ON CONFLICT 承担，主键无语义职责。
+            DataValue::String(uuid::Uuid::new_v4().to_string()),
             DataValue::String(inc.instance_id.clone()),
             mapping::opt_text(&inc.token_id),
             DataValue::String(inc.node_bpmn_id.clone()),
@@ -791,6 +799,23 @@ impl RuntimeStore for PgRuntimeStore {
         execute_sql_with_params(&self.db_id, None, sql, params)
             .await
             .map_err(|e| StoreError::Backend(format!("登记 incident 失败: {e}")))?;
+        Ok(())
+    }
+
+    async fn resolve_incident_by_node(
+        &self,
+        instance_id: &str,
+        node_bpmn_id: &str,
+    ) -> StoreResult<()> {
+        let sql = "UPDATE cmx_flow_incident SET state = 'RESOLVED', updated_at = $3                    WHERE instance_id = $1 AND node_bpmn_id = $2 AND state = 'OPEN'";
+        let params = SqlParams::DataValues(vec![
+            DataValue::String(instance_id.to_string()),
+            DataValue::String(node_bpmn_id.to_string()),
+            DataValue::DateTime(chrono::Utc::now()),
+        ]);
+        execute_sql_with_params(&self.db_id, None, sql, params)
+            .await
+            .map_err(|e| StoreError::Backend(format!("关闭节点 incident 失败: {e}")))?;
         Ok(())
     }
 

@@ -27,3 +27,5 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 # JSON（variables jsonb 列 <-> serde_json::Value）
 serde_json = { workspace = true }
+# incident 台账主键（O-10：uuid 替代拼接串防超长）
+uuid = { workspace = true }

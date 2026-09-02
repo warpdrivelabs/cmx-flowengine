@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use cmx_core::model::cell::{DataValue, SqlTypeMarker};
-use cmx_database_pg::{SqlParams, execute_sql, execute_sql_with_params, query_sql, query_sql_with_params};
+use cmx_database_pg::{SqlParams, execute_sql, execute_sql_with_params, query_sql_with_params};
 use serde_json::{Value, json};
 
 use cmx_flow_adapters::WebhookTarget;
@@ -194,35 +194,54 @@ pub async fn list_subscriptions(
     tenant: &str,
     f: &SubFilter,
 ) -> Result<(Vec<Value>, i64), String> {
+    // X3-12：条件全参数化——tenant/channel 为等值绑定；keyword 为 LIKE 前后缀拼接
+    //（值经参数绑定，`%`/`_` 通配符在值内转义为字面量 + ESCAPE ''，注入面与误全表匹配
+    // 同时消除）；active 布尔内联（无注入面）；LIMIT/OFFSET 参数顺延。
     let (page, size) = f.norm();
-    let mut cond = format!("tenant_id = '{}'", esc(tenant));
+    let mut params: Vec<DataValue> = vec![DataValue::String(tenant.to_string())];
+    let mut pn = 1;
+    let mut cond = format!("tenant_id = ${pn}");
     if let Some(kw) = f.keyword.as_deref().filter(|s| !s.trim().is_empty()) {
-        // 017 小项：keyword 中的 LIKE 通配符转义为字面量（ESCAPE '\'）。
-        let kw = kw.trim().to_lowercase().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-        cond.push_str(&format!(" AND name LIKE '%{kw}%' ESCAPE '\\'"));
+        pn += 1;
+        let kw = kw
+            .trim()
+            .to_lowercase()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        cond.push_str(&format!(" AND lower(name) LIKE ${pn} ESCAPE '\'"));
+        params.push(DataValue::String(format!("%{kw}%")));
     }
     if let Some(ch) = f.channel.as_deref().filter(|s| !s.trim().is_empty()) {
-        cond.push_str(&format!(" AND channel = '{}'", esc(ch.trim())));
+        pn += 1;
+        cond.push_str(&format!(" AND channel = ${pn}"));
+        params.push(DataValue::String(ch.trim().to_string()));
     }
     if let Some(a) = f.active {
         cond.push_str(&format!(" AND active = {}", if a { "TRUE" } else { "FALSE" }));
     }
-    let total = query_one_i64(
+    let total = query_one_i64_p(
         db_id,
         &format!("SELECT COUNT(*) AS n FROM cmx_flow_webhook_subscription WHERE {cond}"),
+        SqlParams::DataValues(params.clone()),
         "wh_sub_count",
     )
     .await?;
     let offset = (page - 1) * size;
+    let mut list_params = params;
+    list_params.push(DataValue::Int(size));
+    list_params.push(DataValue::Int(offset));
     // 投影附非终态绑定实例数（v2.4 §3.6 可见性；订阅量小，相关子查询开销可忽略）。
     let sql = format!(
         "SELECT {SUB_COLS}, \
          (SELECT COUNT(*) FROM cmx_flow_instance i \
            WHERE i.subscriber_id = s.id AND i.state NOT IN ('COMPLETED','TERMINATED')) AS binding_count \
          FROM cmx_flow_webhook_subscription s WHERE {cond} \
-         ORDER BY created_at DESC LIMIT {size} OFFSET {offset}"
+         ORDER BY created_at DESC LIMIT ${} OFFSET ${}",
+        pn + 1,
+        pn + 2
     );
-    let rows = query_sub_rows(db_id, &sql, "wh_sub_list").await?;
+    let rows = query_sub_rows_p(db_id, &sql, SqlParams::DataValues(list_params), "wh_sub_list").await?;
     Ok((rows.iter().map(sub_json).collect(), total))
 }
 
@@ -233,10 +252,40 @@ pub async fn get_subscription(db_id: &str, tenant: &str, id: i64) -> Result<Opti
          (SELECT COUNT(*) FROM cmx_flow_instance i \
            WHERE i.subscriber_id = s.id AND i.state NOT IN ('COMPLETED','TERMINATED')) AS binding_count \
          FROM cmx_flow_webhook_subscription s \
-         WHERE id = {id} AND tenant_id = '{}'",
-        esc(tenant)
+         WHERE id = $1 AND tenant_id = $2"
     );
-    Ok(query_sub_rows(db_id, &sql, "wh_sub_get").await?.into_iter().next())
+    Ok(query_sub_rows_p(
+        db_id,
+        &sql,
+        SqlParams::DataValues(vec![DataValue::Int(id), DataValue::String(tenant.to_string())]),
+        "wh_sub_get",
+    )
+    .await?
+    .into_iter()
+    .next())
+}
+
+/// 路由专用主键点查（W-06）：emit 热路径的 S 点查复用带「非终态绑定实例 COUNT」相关
+/// 子查询的管理查询（实例表扫描），且同批 N 事件对同一 sid 重复点查 N 次——纯路由判定
+/// 不需要 binding_count。供 `emit_to_outbox` 批外点查一次复用。
+pub async fn get_subscription_for_route(
+    db_id: &str,
+    tenant: &str,
+    id: i64,
+) -> Result<Option<SubRow>, String> {
+    let sql = format!(
+        "SELECT {SUB_COLS} FROM cmx_flow_webhook_subscription s \
+         WHERE id = $1 AND tenant_id = $2"
+    );
+    Ok(query_sub_rows_p(
+        db_id,
+        &sql,
+        SqlParams::DataValues(vec![DataValue::Int(id), DataValue::String(tenant.to_string())]),
+        "wh_sub_route",
+    )
+    .await?
+    .into_iter()
+    .next())
 }
 
 /// 按一批 id 取订阅（poller 投递前取通道配置用；不筛 active——停用订阅的存量行仍投）。
@@ -249,16 +298,21 @@ pub async fn get_subscriptions_by_ids(
         return Ok(HashMap::new());
     }
     let id_list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    // id 为 i64 数值（无注入面）；tenant 走参数。
     let sql = format!(
         "SELECT {SUB_COLS} FROM cmx_flow_webhook_subscription \
-         WHERE id IN ({id_list}) AND tenant_id = '{}'",
-        esc(tenant)
+         WHERE id IN ({id_list}) AND tenant_id = $1"
     );
-    Ok(query_sub_rows(db_id, &sql, "wh_sub_by_ids")
-        .await?
-        .into_iter()
-        .map(|s| (s.id, s))
-        .collect())
+    Ok(query_sub_rows_p(
+        db_id,
+        &sql,
+        SqlParams::DataValues(vec![DataValue::String(tenant.to_string())]),
+        "wh_sub_by_ids",
+    )
+    .await?
+    .into_iter()
+    .map(|s| (s.id, s))
+    .collect())
 }
 
 /// 新建/更新一条订阅。新建用 Pk52 铸号；updated_at 由 DB 时钟 now() 赋值（决议 19）。
@@ -345,14 +399,20 @@ pub async fn get_subscription_by_name(
 ) -> Result<Option<SubRow>, String> {
     let sql = format!(
         "SELECT {SUB_COLS} FROM cmx_flow_webhook_subscription \
-         WHERE tenant_id = '{}' AND name = '{}'",
-        esc(tenant),
-        esc(name)
+         WHERE tenant_id = $1 AND name = $2"
     );
-    Ok(query_sub_rows(db_id, &sql, "wh_sub_by_name")
-        .await?
-        .into_iter()
-        .next())
+    Ok(query_sub_rows_p(
+        db_id,
+        &sql,
+        SqlParams::DataValues(vec![
+            DataValue::String(tenant.to_string()),
+            DataValue::String(name.to_string()),
+        ]),
+        "wh_sub_by_name",
+    )
+    .await?
+    .into_iter()
+    .next())
 }
 
 /// 定义订阅（L3）：把 definitionKeys **增量并入**指定订阅的 definition_keys。
@@ -367,7 +427,7 @@ pub async fn subscribe_definitions(
     tenant: &str,
     name: &str,
     keys: &[String],
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let keys_json = serde_json::to_string(keys).map_err(|e| format!("序列化定义集失败: {e}"))?;
     // 并集去重（DISTINCT 排序输出）；谓词拦：停用 / env 行 / 通配行。
     let sql = "UPDATE cmx_flow_webhook_subscription s \
@@ -388,7 +448,9 @@ pub async fn subscribe_definitions(
     if n > 0 {
         invalidate_cache(tenant);
     }
-    Ok(())
+    // W-02：返回行数——0 行 = 预检与 UPDATE 之间的并发窗口（订阅被停用/改 env/窄化），
+    // handler 须重查分类并 400，不得静默假成功。
+    Ok(n)
 }
 
 /// 定义退订（L3）：从 definition_keys **增量删除** definitionKeys。
@@ -401,7 +463,7 @@ pub async fn unsubscribe_definitions(
     tenant: &str,
     name: &str,
     keys: &[String],
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let keys_json = serde_json::to_string(keys).map_err(|e| format!("序列化定义集失败: {e}"))?;
     let sql = "UPDATE cmx_flow_webhook_subscription s \
                SET definition_keys = ( \
@@ -424,7 +486,8 @@ pub async fn unsubscribe_definitions(
     if n > 0 {
         invalidate_cache(tenant);
     }
-    Ok(())
+    // W-02：同 subscribe——0 行交 handler 分类（空化拦截 / 停用 / 并发 subscribe 后谓词不满足）。
+    Ok(n)
 }
 
 /// 启停订阅（停用即不再生成新投递行，存量行保留可查可清）。
@@ -512,12 +575,16 @@ pub async fn active_subscriptions_cached(db_id: &str, tenant: &str) -> Arc<Vec<S
 
 /// 活跃订阅版本指纹 (COUNT, MAX(updated_at))；表还没建/查询失败 → None（下次再对账）。
 async fn subscription_version(db_id: &str, tenant: &str) -> Option<(i64, Option<String>)> {
-    let sql = format!(
+    let ds = query_sql_with_params(
+        db_id,
+        None,
         "SELECT COUNT(*) AS n, MAX(updated_at) AS mx FROM cmx_flow_webhook_subscription \
-         WHERE tenant_id = '{}' AND active = TRUE",
-        esc(tenant)
-    );
-    let ds = query_sql(db_id, None, &sql, "wh_sub_version").await.ok()?;
+         WHERE tenant_id = $1 AND active = TRUE",
+        SqlParams::DataValues(vec![DataValue::String(tenant.to_string())]),
+        "wh_sub_version",
+    )
+    .await
+    .ok()?;
     let schema = ds.schema.as_ref();
     let row = ds.iter().next()?;
     Some((get_i64(row, schema, "n").unwrap_or(0), get_ts(row, schema, "mx")))
@@ -526,14 +593,28 @@ async fn subscription_version(db_id: &str, tenant: &str) -> Option<(i64, Option<
 async fn load_active_subscriptions(db_id: &str, tenant: &str) -> Result<Vec<SubRow>, String> {
     let sql = format!(
         "SELECT {SUB_COLS} FROM cmx_flow_webhook_subscription \
-         WHERE tenant_id = '{}' AND active = TRUE ORDER BY id",
-        esc(tenant)
+         WHERE tenant_id = $1 AND active = TRUE ORDER BY id"
     );
-    query_sub_rows(db_id, &sql, "wh_sub_active").await
+    query_sub_rows_p(
+        db_id,
+        &sql,
+        SqlParams::DataValues(vec![DataValue::String(tenant.to_string())]),
+        "wh_sub_active",
+    )
+    .await
 }
 
-async fn query_sub_rows(db_id: &str, sql: &str, tag: &str) -> Result<Vec<SubRow>, String> {
-    let ds = query_sql(db_id, None, sql, tag).await.map_err(|e| format!("查订阅失败: {e}"))?;
+/// X3-12（S-16，017 纪律收尾）：参数版——webhook_store 全部读侧 esc() 拼接改 $n 绑定
+///（与 biz_link 同纪律；esc 黑名单转义是公认反模式）。
+async fn query_sub_rows_p(
+    db_id: &str,
+    sql: &str,
+    params: SqlParams,
+    tag: &str,
+) -> Result<Vec<SubRow>, String> {
+    let ds = query_sql_with_params(db_id, None, sql, params, tag)
+        .await
+        .map_err(|e| format!("查订阅失败: {e}"))?;
     let schema = ds.schema.as_ref();
     Ok(ds.iter().filter_map(|row| sub_row(row, schema)).collect())
 }
@@ -559,12 +640,10 @@ pub async fn import_env_subscriptions(
     if targets.is_empty() {
         return Ok(0);
     }
-    let existing = query_one_i64(
+    let existing = query_one_i64_p(
         db_id,
-        &format!(
-            "SELECT COUNT(*) AS n FROM cmx_flow_webhook_subscription WHERE tenant_id = '{}'",
-            esc(tenant)
-        ),
+        "SELECT COUNT(*) AS n FROM cmx_flow_webhook_subscription WHERE tenant_id = $1",
+        SqlParams::DataValues(vec![DataValue::String(tenant.to_string())]),
         "wh_sub_import_count",
     )
     .await?;
@@ -782,10 +861,13 @@ pub async fn claim_due_deliveries(
 /// 批内逐行续租（v2.1 决议 15）：把本 worker 名下全部 IN_FLIGHT 行的租约延长一窗——
 /// 每完成一行调一次，使批长度不进入租约算术（租约 120s 只须大于单行 30s 超时）。
 pub async fn renew_leases(db_id: &str, worker: &str, lease_secs: i64) -> Result<u64, String> {
-    let sql = "UPDATE cmx_flow_webhook_delivery SET lock_expires_at = $1 \
+    // W-07：租约到期比较在 claim 侧用 DB now()——续租若用应用时钟，两钟偏差会让写入的
+    // lock_expires_at 相对 DB 现值被压缩（极端漂移下常态双投守卫失效）。统一 DB 时钟。
+    let sql = "UPDATE cmx_flow_webhook_delivery \
+               SET lock_expires_at = now() + ($1::int * interval '1 second') \
                WHERE locked_by = $2 AND state = 'IN_FLIGHT'";
     let params = SqlParams::DataValues(vec![
-        DataValue::DateTime(chrono::Utc::now() + chrono::Duration::seconds(lease_secs)),
+        DataValue::Int(lease_secs),
         DataValue::String(worker.to_string()),
     ]);
     execute_sql_with_params(db_id, None, sql, params)
@@ -796,7 +878,7 @@ pub async fn renew_leases(db_id: &str, worker: &str, lease_secs: i64) -> Result<
 /// 成功 → DONE。
 pub async fn finish_done(db_id: &str, id: i64, worker: &str) -> Result<bool, String> {
     let sql = "UPDATE cmx_flow_webhook_delivery SET state = 'DONE', delivered_at = now(), \
-               lock_expires_at = NULL, next_attempt_at = NULL, last_error = NULL \
+               locked_by = NULL, lock_expires_at = NULL, next_attempt_at = NULL, last_error = NULL \
                WHERE id = $1 AND locked_by = $2";
     let params = SqlParams::DataValues(vec![
         DataValue::Int(id),
@@ -943,32 +1025,51 @@ fn dlv_json(row: &cmx_core::model::data::dataset::Row, schema: &cmx_core::model:
 
 /// 投递流水分页（按 seq DESC；租户经 subscription 关联过滤）。
 pub async fn query_deliveries(db_id: &str, tenant: &str, f: &DlvFilter) -> Result<(Vec<Value>, i64), String> {
+    // X3-12：条件全参数化（$n 顺延），tenant/state/channel/definition_key 均绑定值。
     let (page, size) = f.norm();
-    let mut cond = format!("d.subscription_id IN (SELECT id FROM cmx_flow_webhook_subscription WHERE tenant_id = '{}')", esc(tenant));
+    let mut params: Vec<DataValue> = vec![DataValue::String(tenant.to_string())];
+    let mut pn = 1;
+    let mut cond = format!(
+        "d.subscription_id IN (SELECT id FROM cmx_flow_webhook_subscription WHERE tenant_id = ${pn})"
+    );
     if let Some(sid) = f.subscription_id {
-        cond.push_str(&format!(" AND d.subscription_id = {sid}"));
+        pn += 1;
+        cond.push_str(&format!(" AND d.subscription_id = ${pn}"));
+        params.push(DataValue::Int(sid));
     }
     if let Some(st) = f.state.as_deref().filter(|s| !s.trim().is_empty()) {
-        cond.push_str(&format!(" AND d.state = '{}'", esc(st.trim().to_uppercase().as_str())));
+        pn += 1;
+        cond.push_str(&format!(" AND d.state = ${pn}"));
+        params.push(DataValue::String(st.trim().to_uppercase()));
     }
     if let Some(ch) = f.channel.as_deref().filter(|s| !s.trim().is_empty()) {
-        cond.push_str(&format!(" AND d.channel = '{}'", esc(ch.trim())));
+        pn += 1;
+        cond.push_str(&format!(" AND d.channel = ${pn}"));
+        params.push(DataValue::String(ch.trim().to_string()));
     }
     if let Some(dk) = f.definition_key.as_deref().filter(|s| !s.trim().is_empty()) {
-        cond.push_str(&format!(" AND d.definition_key = '{}'", esc(dk.trim())));
+        pn += 1;
+        cond.push_str(&format!(" AND d.definition_key = ${pn}"));
+        params.push(DataValue::String(dk.trim().to_string()));
     }
-    let total = query_one_i64(
+    let total = query_one_i64_p(
         db_id,
         &format!("SELECT COUNT(*) AS n FROM cmx_flow_webhook_delivery d WHERE {cond}"),
+        SqlParams::DataValues(params.clone()),
         "wh_dlv_count",
     )
     .await?;
     let offset = (page - 1) * size;
+    let mut list_params = params;
+    list_params.push(DataValue::Int(size));
+    list_params.push(DataValue::Int(offset));
     let sql = format!(
         "SELECT {DLV_COLS} FROM cmx_flow_webhook_delivery d WHERE {cond} \
-         ORDER BY d.seq DESC LIMIT {size} OFFSET {offset}"
+         ORDER BY d.seq DESC LIMIT ${} OFFSET ${}",
+        pn + 1,
+        pn + 2
     );
-    let ds = query_sql(db_id, None, &sql, "wh_dlv_list")
+    let ds = query_sql_with_params(db_id, None, &sql, SqlParams::DataValues(list_params), "wh_dlv_list")
         .await
         .map_err(|e| format!("查投递流水失败: {e}"))?;
     let schema = ds.schema.as_ref();
@@ -985,9 +1086,9 @@ pub async fn retry_deliveries(
     subscription_id: Option<i64>,
     state: Option<&str>,
 ) -> Result<u64, String> {
+    // X3-12：tenant 参数化；ids/sid 为数值（无注入面）直接内联。
     let mut cond = format!(
-        "subscription_id IN (SELECT id FROM cmx_flow_webhook_subscription WHERE tenant_id = '{}')",
-        esc(tenant)
+        "subscription_id IN (SELECT id FROM cmx_flow_webhook_subscription WHERE tenant_id = $1)"
     );
     if !ids.is_empty() {
         let id_list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
@@ -1010,12 +1111,19 @@ pub async fn retry_deliveries(
         "UPDATE cmx_flow_webhook_delivery SET state = 'PENDING', attempts = 0, \
          next_attempt_at = now(), locked_by = NULL, lock_expires_at = NULL WHERE {cond}"
     );
-    execute_sql(db_id, None, &sql)
-        .await
-        .map_err(|e| format!("重发投递行失败: {e}"))
+    execute_sql_with_params(
+        db_id,
+        None,
+        &sql,
+        SqlParams::DataValues(vec![DataValue::String(tenant.to_string())]),
+    )
+    .await
+    .map_err(|e| format!("重发投递行失败: {e}"))
 }
 
 /// 死信处置：DEAD → SKIPPED（人工确认放弃的显式标记；终态本不阻塞保序，此为处置留痕）。
+/// X3-13（W-11）：同时放开 PENDING → SKIPPED——停用订阅的存量 PENDING 行会继续投出且
+/// 原无可清退入口（skip 只收 DEAD、purge 只收终态），此为人工弃投出口。
 pub async fn skip_deliveries(db_id: &str, tenant: &str, ids: &[i64]) -> Result<u64, String> {
     if ids.is_empty() {
         return Ok(0);
@@ -1024,17 +1132,28 @@ pub async fn skip_deliveries(db_id: &str, tenant: &str, ids: &[i64]) -> Result<u
     let sql = format!(
         "UPDATE cmx_flow_webhook_delivery SET state = 'SKIPPED', next_attempt_at = NULL, \
          locked_by = NULL, lock_expires_at = NULL \
-         WHERE id IN ({id_list}) AND state = 'DEAD' \
-         AND subscription_id IN (SELECT id FROM cmx_flow_webhook_subscription WHERE tenant_id = '{}')",
-        esc(tenant)
+         WHERE id IN ({id_list}) AND state IN ('DEAD','PENDING') \
+         AND subscription_id IN (SELECT id FROM cmx_flow_webhook_subscription WHERE tenant_id = $1)"
     );
-    execute_sql(db_id, None, &sql)
-        .await
-        .map_err(|e| format!("处置死信失败: {e}"))
+    execute_sql_with_params(
+        db_id,
+        None,
+        &sql,
+        SqlParams::DataValues(vec![DataValue::String(tenant.to_string())]),
+    )
+    .await
+    .map_err(|e| format!("处置死信失败: {e}"))
 }
 
 /// 手动清理 DONE / SKIPPED 行（保留 N 天；M3 起常态由自动清理承担，端点保留）。
+///
+/// X3-1（W-04 轻方案，用户拍板）：按行自身 `state + created_at` 全局清，**不做订阅
+/// 反查**——订阅物理删后其名下投递行曾被 IN 子查询永久挡住（查不见也清不掉，无限
+/// 增长）；库即租户边界（per-db = per-tenant），清理无租户语义。`tenant` 参数保留
+/// 兼容调用方（多租户库形态下各库独立扫描本就隔离）。被删订阅的孤儿行不可见性
+/// （管理页审计断链）降级为文档声明：subscription_name 快照仍在行内，DB 层可查。
 pub async fn purge_deliveries(db_id: &str, tenant: &str, before_days: i64, state: Option<&str>) -> Result<u64, String> {
+    let _ = tenant;
     let states = match state.map(str::trim).filter(|s| !s.is_empty()).map(str::to_uppercase) {
         Some(ref s) if s == "DONE" || s == "SKIPPED" => format!("'{s}'"),
         _ => "'DONE','SKIPPED'".to_string(),
@@ -1042,9 +1161,7 @@ pub async fn purge_deliveries(db_id: &str, tenant: &str, before_days: i64, state
     let days = before_days.clamp(1, 365);
     let sql = format!(
         "DELETE FROM cmx_flow_webhook_delivery WHERE state IN ({states}) \
-         AND created_at < now() - interval '{days} days' \
-         AND subscription_id IN (SELECT id FROM cmx_flow_webhook_subscription WHERE tenant_id = '{}')",
-        esc(tenant)
+         AND created_at < now() - interval '{days} days'"
     );
     execute_sql(db_id, None, &sql)
         .await
@@ -1070,17 +1187,20 @@ fn opt_int(v: Option<i64>) -> DataValue {
     }
 }
 
-fn esc(s: &str) -> String {
-    s.replace('\'', "''")
-}
-
-async fn query_one_i64(db_id: &str, sql: &str, tag: &str) -> Result<i64, String> {
-    let ds = query_sql(db_id, None, sql, tag).await.map_err(|e| format!("查询失败: {e}"))?;
-    let schema = ds.schema.as_ref();
+/// X3-12：参数版计数（tenant 等值绑定）。
+async fn query_one_i64_p(
+    db_id: &str,
+    sql: &str,
+    params: SqlParams,
+    tag: &str,
+) -> Result<i64, String> {
+    let ds = query_sql_with_params(db_id, None, sql, params, tag)
+        .await
+        .map_err(|e| format!("{tag} 失败: {e}"))?;
     Ok(ds
         .iter()
         .next()
-        .and_then(|row| get_i64(row, schema, "n"))
+        .and_then(|row| get_i64(row, ds.schema.as_ref(), "n"))
         .unwrap_or(0))
 }
 

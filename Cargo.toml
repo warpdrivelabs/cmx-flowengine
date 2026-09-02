@@ -11,6 +11,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/cmx-flow-demo",
     "crates/cmx-flow-model",
     "crates/cmx-flow-bpmn",
     "crates/cmx-flow-engine",
@@ -28,6 +29,7 @@ members = [
 # 生产库被 demo 二进制连过即永久入库）。members 保留可寻址；`default-members` 限定了
 # `cargo build` / `cargo test`（不带 -p 时）的默认范围——demo 需显式 `cargo run -p cmx-flow-demo`。
 default-members = [
+    "crates/cmx-flow-demo",
     "crates/cmx-flow-model",
     "crates/cmx-flow-bpmn",
     "crates/cmx-flow-engine",

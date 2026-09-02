@@ -337,6 +337,6 @@ where
             post(webhook_admin::rebuild_subscription),
         )
         .route("/incidents/query", post(ops::query_incidents))
-        .route("/metrics", get(ops::prometheus_metrics))
+        .route("/metrics", get(ops::metrics_endpoint))
 }
 

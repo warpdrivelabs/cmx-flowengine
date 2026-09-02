@@ -259,6 +259,20 @@ def verify(body_bytes, sig_header, key):
   businessKey + 事件类型 + 状态机）幂等**。存量接收方 mdm 靠回调侧五规则状态机天然幂等，
   零改动。
 
+### 8.6.2 停用语义与运维口径（2026-09-02 审查修复补录）
+
+- **停用订阅只影响新事件**：`set-active false` 后不再生成新投递行；**存量 PENDING 行会被
+  poller 继续投出**（含停用后新到期的退避重试行）。需要立即断流（如 secret 泄露应急）时，
+  用 `POST /webhook-deliveries/skip` 显式弃置存量行（DEAD 与 PENDING 均可 skip）。
+- **订阅物理删除后的流水**：投递行保留在库（`subscription_name` 快照可辨识）但**不再出现在
+  管理页**（租户过滤经订阅反查，订阅已删即不可见）；retention 清理按行自身 `state +
+  created_at` 全局执行（30 天），不会无限堆积。需要审计请先导出再删订阅。
+- **rebuild 补发的幂等**：补发行 event_id 确定性派生（`rb-{sub}-{instance}-{cmp|trm}`），
+  重复调用同一参数不会产生重复投递行（uk 幂等吸收）；**接收方仍按 at-least-once 幂等**
+  （rebuild 与原发事件是两条不同 event_id 的投递行）。
+- **鉴权头优先级**：`X-API-Key` 与 `Authorization` 并存时以 **API Key 服务身份为准**
+  （JWT 被忽略，服务端打 warn）——需要用户身份请勿同时携带 key。
+
 ## 8.7 事件订阅：SSE（实时流）
 
 `GET /api/flow/v1/events`（**仅 v1**）返回 `text/event-stream`：

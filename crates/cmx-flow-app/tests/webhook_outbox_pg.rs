@@ -18,6 +18,12 @@ use cmx_flow_app::webhook_store::{self, DeliveryInsert, DlvFilter, SubFilter, Su
 
 const TEST_TENANT: &str = "wh-it";
 
+/// 建表收敛：并行测试各自跑幂等 ALTER 会撞锁，进程内只做一次。
+static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+/// 同库串行：用例共享全局连接池/同库数据，并行互相干扰（连接 Closed / 行冲突），
+/// 全程互斥串行执行（与 incident_retention_pg 同修法）。
+static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// 注册测试数据源（TEST_PG_URL 未设 → None，调用方跳过）。
 async fn setup_db() -> Option<String> {
     let url = std::env::var("TEST_PG_URL").ok()?;
@@ -39,6 +45,11 @@ async fn setup_db() -> Option<String> {
         source_type: Some("default".to_string()),
     };
     manager.register_data_source(cfg).await.expect("注册测试数据源失败");
+    SCHEMA_READY
+        .get_or_init(|| async {
+            webhook_store::ensure_schema(&db_id).await.expect("建表失败");
+        })
+        .await;
     Some(db_id)
 }
 
@@ -116,6 +127,7 @@ async fn exec(db_id: &str, sql: &str) {
 #[tokio::test]
 #[ignore]
 async fn uk_dedup_and_claim_chain() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(db) = setup_db().await else { return };
     fresh(&db).await;
     let sub = upsert_test_sub(&db, "it-dedup").await;
@@ -149,6 +161,7 @@ async fn uk_dedup_and_claim_chain() {
 #[tokio::test]
 #[ignore]
 async fn ordering_guard_backoff_and_terminal() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(db) = setup_db().await else { return };
     fresh(&db).await;
     let sub = upsert_test_sub(&db, "it-order").await;
@@ -197,6 +210,7 @@ async fn ordering_guard_backoff_and_terminal() {
 #[tokio::test]
 #[ignore]
 async fn lease_expiry_reclaim() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(db) = setup_db().await else { return };
     fresh(&db).await;
     let sub = upsert_test_sub(&db, "it-lease").await;
@@ -204,12 +218,17 @@ async fn lease_expiry_reclaim() {
         .await
         .unwrap();
 
+    // claim 是 worker 级跨订阅抢占——共库 dev 环境下真实业务的到期 PENDING 行也会被
+    // 抢到（结构性限制），断言一律按本用例 event_id 过滤。
     let c1 = webhook_store::claim_due_deliveries(&db, "worker-crash", 120, 10).await.unwrap();
+    let c1: Vec<_> = c1.iter().filter(|d| d.event_id == "e-1").collect();
     assert_eq!(c1.len(), 1);
-    // 模拟 worker1 长停顿：租约自然过期。
-    exec(&db, "UPDATE cmx_flow_webhook_delivery SET lock_expires_at = now() - interval '1s'")
+    // 模拟 worker1 长停顿：租约自然过期（仅本用例行——共库 dev 环境有真实业务行）。
+    exec(&db, "UPDATE cmx_flow_webhook_delivery SET lock_expires_at = now() - interval '1s' \
+         WHERE event_id = 'e-1'")
         .await;
     let c2 = webhook_store::claim_due_deliveries(&db, "worker2", 120, 10).await.unwrap();
+    let c2: Vec<_> = c2.iter().filter(|d| d.event_id == "e-1").collect();
     assert_eq!(c2.len(), 1);
     assert_eq!(c2[0].id, c1[0].id);
     assert_eq!(c2[0].attempts, 2, "重抢应累加 attempts");
@@ -219,6 +238,7 @@ async fn lease_expiry_reclaim() {
 #[tokio::test]
 #[ignore]
 async fn dead_retry_skip_purge_lifecycle() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(db) = setup_db().await else { return };
     fresh(&db).await;
     let sub = upsert_test_sub(&db, "it-lifecycle").await; // retry_max = 3
@@ -246,11 +266,13 @@ async fn dead_retry_skip_purge_lifecycle() {
     )
     .await
     .unwrap();
-    assert_eq!(rows.len(), 1, "尝试未耗尽应回 PENDING");
-    assert!(rows[0]["nextAttemptAt"].is_string(), "退避到期时间应已设置");
+    let mine: Vec<_> = rows.iter().filter(|r| r["eventId"] == "e-1").collect();
+    assert_eq!(mine.len(), 1, "尝试未耗尽应回 PENDING");
+    assert!(mine[0]["nextAttemptAt"].is_string(), "退避到期时间应已设置");
 
-    // 退避到期（直接回拨，不空等）后再次抢占 → 尝试耗尽 → DEAD。
-    exec(&db, "UPDATE cmx_flow_webhook_delivery SET next_attempt_at = now() - interval '1s'")
+    // 退避到期（直接回拨，不空等）后再次抢占 → 尝试耗尽 → DEAD（仅本用例行）。
+    exec(&db, "UPDATE cmx_flow_webhook_delivery SET next_attempt_at = now() - interval '1s' \
+         WHERE event_id = 'e-1'")
         .await;
     // 尝试耗尽 → DEAD。
     let c = webhook_store::claim_due_deliveries(&db, "w", 120, 10).await.unwrap();
@@ -313,6 +335,7 @@ async fn dead_retry_skip_purge_lifecycle() {
 #[tokio::test]
 #[ignore]
 async fn import_env_subscriptions_idempotent() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(db) = setup_db().await else { return };
     fresh(&db).await;
     let targets = vec![
@@ -346,4 +369,105 @@ async fn import_env_subscriptions_idempotent() {
     assert_eq!(mdm["source"], json!("env"));
     assert_eq!(mdm["channelConfig"]["secret"], json!("global-key"), "导入行沿用全局密钥");
     assert_eq!(mdm["channelConfig"]["service_key"], json!("mdm"));
+}
+
+/// X3-T（W-03）：rebuild 确定性 event_id——同参数重复 rebuild 不再产生重复投递行
+///（uk(subscription_id, event_id) 幂等真正生效；随机 uuid 时每次重跑都是重复投递）。
+#[tokio::test]
+#[ignore]
+async fn rebuild_event_id_is_deterministic() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(db) = setup_db().await else { return };
+    fresh(&db).await;
+    let sub = upsert_test_sub(&db, "it-rebuild").await;
+    // 确定性 event_id 形态（与 webhook_admin rebuild 端点同式）。
+    let mk = |n: u32| crate::DeliveryInsert {
+        subscription_id: sub,
+        subscription_name: format!("it-rebuild-{n}"),
+        channel: "webhook".into(),
+        event_id: format!("rb-{sub}-i9-cmp"),
+        delivery_id: "i-9-t".into(),
+        source: "rebuild",
+        event_type: "instance.completed".into(),
+        definition_key: Some("mdm_x".into()),
+        business_key: None,
+        instance_id: "i-9".into(),
+        payload: serde_json::json!({ "event": "instance.completed", "instanceId": "i-9" }),
+        initial_state: "PENDING",
+        last_error: None,
+        last_http_status: None,
+        last_response_snippet: None,
+        delivered: false,
+        route_source: "matched",
+    };
+    // 两次「重跑 rebuild」（同 event_id、不同 subscription_name 快照）——uk 吸收第二次。
+    webhook_store::insert_deliveries(&db, &[mk(1)]).await.unwrap();
+    webhook_store::insert_deliveries(&db, &[mk(2)]).await.unwrap();
+    let c = count_deliveries(&db, "SELECT COUNT(*) AS n FROM cmx_flow_webhook_delivery \
+         WHERE subscription_id = $1 AND event_id = $2", vec![
+        cmx_core::model::cell::DataValue::Int(sub),
+        cmx_core::model::cell::DataValue::String(format!("rb-{sub}-i9-cmp")),
+    ]).await;
+    assert_eq!(c, 1, "确定性 event_id 下重复 rebuild 应被 uk 幂等吸收");
+}
+
+/// X3-T（X3-1/W-04）：purge 清孤儿行——订阅已物理删的投递行不再被订阅反查挡住。
+#[tokio::test]
+#[ignore]
+async fn purge_cleans_orphan_rows_of_deleted_subscription() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(db) = setup_db().await else { return };
+    fresh(&db).await;
+    let sub = upsert_test_sub(&db, "it-orphan").await;
+    webhook_store::insert_deliveries(&db, &[delivery(sub, "it-orphan", "e-orphan", "i-o")])
+        .await
+        .unwrap();
+    // 物理删订阅（先停用满足删除守卫）。
+    webhook_store::set_subscription_active(&db, TEST_TENANT, sub, false).await.unwrap();
+    webhook_store::delete_subscription(&db, TEST_TENANT, sub).await.unwrap();
+    // 把孤儿行做成「DONE 且超期」——retention 条件命中。
+    exec(&db, "UPDATE cmx_flow_webhook_delivery SET state = 'DONE', \
+         created_at = now() - interval '40 days' WHERE event_id = 'e-orphan'").await;
+    let n = webhook_store::purge_deliveries(&db, TEST_TENANT, 30, None).await.unwrap();
+    assert!(n >= 1, "孤儿行（订阅已删）应可被 retention 清理（原 IN 子查询永久挡住）");
+}
+
+/// X3-T（W-02）：subscribe 对停用/通配行返回 0 行（handler 侧据此 400）。
+#[tokio::test]
+#[ignore]
+async fn subscribe_returns_zero_rows_for_rejected_targets() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(db) = setup_db().await else { return };
+    fresh(&db).await;
+    // 通配行（definition_keys 空）——subscribe 应 0 行。
+    let wildcard = upsert_test_sub(&db, "it-wildcard").await;
+    let n = webhook_store::subscribe_definitions(&db, TEST_TENANT, "it-wildcard", &["mdm_x".into()])
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "通配行 subscribe 须 0 行（WILDCARD_IMMUTABLE 语义在 SQL 谓词）");
+    // 停用行——同样 0 行。
+    webhook_store::set_subscription_active(&db, TEST_TENANT, wildcard, false).await.unwrap();
+    let n2 = webhook_store::subscribe_definitions(&db, TEST_TENANT, "it-wildcard", &["mdm_x".into()])
+        .await
+        .unwrap();
+    assert_eq!(n2, 0, "停用订阅 subscribe 须 0 行");
+}
+
+async fn count_deliveries(db: &str, sql: &str, params: Vec<cmx_core::model::cell::DataValue>) -> i64 {
+    let ds = cmx_database_pg::query_sql_with_params(
+        db,
+        None,
+        sql,
+        cmx_database_pg::SqlParams::DataValues(params),
+        "it_count_dlv",
+    )
+    .await
+    .expect("计数失败");
+    ds.iter()
+        .next()
+        .and_then(|row| match row.get_by_name(ds.schema.as_ref(), "n") {
+            Some(cmx_core::model::cell::DataValue::Int(v)) => Some(*v),
+            _ => None,
+        })
+        .unwrap_or(-1)
 }

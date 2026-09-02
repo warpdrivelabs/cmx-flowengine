@@ -123,7 +123,7 @@ impl RuntimeStore for CapturingStore {
         &self,
         id: &str,
         rv: Option<serde_json::Value>,
-    ) -> StoreResult<Option<(String, String)>> {
+    ) -> StoreResult<Option<AsyncJob>> {
         self.inner.complete_async_job(id, rv).await
     }
     async fn fail_async_job(&self, id: &str, e: &str) -> StoreResult<bool> {
