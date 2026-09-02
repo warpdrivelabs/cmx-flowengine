@@ -330,7 +330,21 @@ const APPROVAL_ACTION_LABELS = {
 }
 
 // 与 task-form 保持同版本：待办中心轻量进度与办理页完整轨迹必须由同一套算法产出。
-const APPROVAL_VIEW_MODEL_VERSION = '20260831-step-time-1'
+const APPROVAL_VIEW_MODEL_VERSION = '20260902-allnodes-4'
+
+// 轨迹轴收录的节点种类：业务语义节点全收（发起/审批/子流程/自动任务）——
+// 定义接口返回全量 nodes，但轴上只呈现这些；网关与边界/消息/定时事件是路由管道，不进时间轴。
+// 结束节点也不进：不少定义把审批结果建成名为「已通过/已驳回」的 endEvent，当步骤显示会误读成待办，
+// 流程是否走完由单据状态表达。
+const TRAIL_NODE_KINDS = new Set([
+  'startEvent', 'userTask', 'serviceTask', 'businessRuleTask',
+  'callActivity', 'subProcess',
+])
+// 非 userTask 节点的种类徽标文案（渲染在步骤名旁，说明该步为何无办理人/意见）。
+const TRAIL_KIND_LABELS = {
+  startEvent: '发起', serviceTask: '自动', businessRuleTask: '规则',
+  callActivity: '子流程', subProcess: '子流程',
+}
 
 function normalizeApprovalAction (row, node) {
   const raw = String(row?.decision ?? '').trim()
@@ -366,8 +380,9 @@ function graphHasBranch (definition) {
 
 function buildApprovalSteps ({ instance, definition, comments, task }) {
   const inst = instance || {}
+  // 令牌里 ENDED 是历史终点（如停在结束节点的令牌），不算「当前」——否则已完实例的结束节点会显示成当前。
   const activeIds = new Set([
-    ...((inst.tokens || []).map((x) => String(x.nodeBpmnId || ''))),
+    ...((inst.tokens || []).filter((x) => String(x?.state || '') !== 'ENDED').map((x) => String(x.nodeBpmnId || ''))),
     ...((inst.activeNodes || []).map((x) => String(x || ''))),
   ].filter(Boolean))
   const tasks = inst.tasks || []
@@ -378,8 +393,11 @@ function buildApprovalSteps ({ instance, definition, comments, task }) {
   let nodes = []
   if (Array.isArray(definition?.nodes) && definition.nodes.length) {
     nodes = definition.nodes
-      .filter((n) => String(n?.kind || '') === 'userTask' || observedIds.has(String(n?.id || '')))
-      .map((n) => ({ ...n, id: String(n.id || ''), source: 'definition' }))
+      .filter((n) => TRAIL_NODE_KINDS.has(String(n?.kind || '')) || observedIds.has(String(n?.id || '')))
+      .map((n) => {
+        const kind = String(n?.kind || '')
+        return { ...n, id: String(n.id || ''), kind, name: n.name || (kind === 'startEvent' ? '发起' : '') || n.id, source: 'definition' }
+      })
   } else if (Array.isArray(inst.nodes) && inst.nodes.length) {
     nodes = inst.nodes.map((n) => ({ ...n, id: String(n.id || ''), source: 'instance' }))
   } else {
@@ -397,24 +415,64 @@ function buildApprovalSteps ({ instance, definition, comments, task }) {
   const normalized = (comments || []).map((c) => normalizeApprovalComment(c, nodes.find((n) => n.id === String(c.nodeBpmnId || ''))))
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
   const mismatch = normalized.some((c) => c.nodeId && !knownIds.has(c.nodeId))
+  const adj = new Map()
+  for (const e of (Array.isArray(definition?.edges) ? definition.edges : [])) {
+    const from = String(e?.from || ''); const to = String(e?.to || '')
+    if (!from || !to) continue
+    if (!adj.has(from)) adj.set(from, [])
+    adj.get(from).push(to)
+  }
+  const reachCache = new Map()
+  const reachFrom = (start) => {
+    if (!reachCache.has(start)) {
+      const seen = new Set(); const queue = (adj.get(start) || []).slice()
+      while (queue.length) {
+        const cur = queue.pop()
+        if (seen.has(cur)) continue
+        seen.add(cur)
+        for (const nx of (adj.get(cur) || [])) queue.push(nx)
+      }
+      reachCache.set(start, seen)
+    }
+    return reachCache.get(start)
+  }
+  // 退回判定：节点留有旧完成记录，但开放令牌在它上游（能顺边走到它）——流程已打回重办，
+  // 旧记录不算「已完成」，节点回到待处理（将重走）。正向推进时上游令牌够不到下游节点，不会误伤。
+  const hasActiveUpstream = (id) => nodes.some((n) => n.id !== id && activeIds.has(n.id) && reachFrom(n.id).has(id))
+  const returnedIds = new Set(nodes.filter((n) => completedIds.has(n.id) && !activeIds.has(n.id) && hasActiveUpstream(n.id)).map((n) => n.id))
+  // 证据集合：当前有令牌、或留有未被打回的完成任务记录的节点。子流程/自动任务执行后不在父实例
+  // 留任务痕迹，需要靠「下游已有证据」推断其已流转（退回产生的旧记录不算证据）。
+  const evidenceIds = new Set(nodes.filter((n) => activeIds.has(n.id) || (completedIds.has(n.id) && !returnedIds.has(n.id))).map((n) => n.id))
+  const downstreamHasEvidence = (start) => Array.from(reachFrom(start)).some((x) => evidenceIds.has(x))
+  const instanceTerminal = ['COMPLETED', 'TERMINATED'].includes(String(inst.state || ''))
+  const firstCommentAt = normalized[0]?.createdAt || ''
   const steps = nodes.map((node, index) => {
+    const isStart = node.kind === 'startEvent'
     const current = activeIds.has(node.id)
-    const done = !current && completedIds.has(node.id)
-    const uncertain = !current && !done && branch
+    // 无任务痕迹节点的状态推定：起点随实例必然已过；
+    // 子流程/自动任务仅线性流按下游证据推「已完成」——分支流里旁支会被下游汇合点误照亮，不冒认已完成。
+    // 未到达节点：实例还在跑 → 待处理；实例已完结/终止 → 未经过（分支跳过/退回未重走的节点如实呈现）。
+    const done = !current && (
+      (completedIds.has(node.id) && !returnedIds.has(node.id))
+      || isStart
+      || (!isStart && !branch && downstreamHasEvidence(node.id))
+    )
     const nodeTasks = tasks.filter((x) => String(x.nodeBpmnId || '') === node.id)
     const nodeComments = normalized.filter((c) => c.nodeId === node.id)
     const isSelectedTaskNode = current && String(task?.nodeBpmnId || '') === node.id
     const latestComment = nodeComments[nodeComments.length - 1] || null
     const stepTime = current
       ? (isSelectedTaskNode ? (task?.createdAt || task?.taskCreatedAt || '') : (latestComment?.createdAt || ''))
-      : (done ? (latestComment?.createdAt || '') : '')
+      : (done ? (latestComment?.createdAt || (isStart ? firstCommentAt : '')) : '')
     return {
       id: node.id, name: node.name || node.id, index,
-      status: current ? 'current' : (done ? 'done' : (uncertain ? 'possible' : 'pending')),
-      statusText: current ? '当前' : (done ? '已完成' : (uncertain ? '可能' : '待处理')),
+      status: current ? 'current' : (done ? 'done' : 'pending'),
+      statusText: current ? '当前' : (done ? (isStart ? '已发起' : '已完成') : (instanceTerminal ? '未经过' : '待处理')),
       time: stepTime,
       timeText: fmtTime(stepTime),
       timeLabel: current ? '到达时间' : (done ? '完成时间' : ''),
+      kindLabel: TRAIL_KIND_LABELS[node.kind] || '',
+      calledElement: String(node.calledElement || ''),
       actors: Array.from(new Set(nodeTasks.map((x) => x.assignee || x.ownerUserId).filter(Boolean))),
       comments: nodeComments,
       source: node.source,
@@ -515,7 +573,7 @@ function compactTimelineHtml (vm) {
   const rows = vm.steps.map((step, idx) => `<li class="todo-flow-node ${step.status}"${step.status === 'current' ? ' aria-current="step"' : ''}>
       <div class="todo-flow-rail"><span class="todo-flow-step">${step.status === 'done' ? '<ui5-icon name="accept"></ui5-icon>' : String(idx + 1)}</span></div>
       <div class="todo-flow-content">
-        <div class="todo-flow-title"><b>${esc(step.name)}</b><span class="todo-flow-state">${esc(step.statusText)}</span></div>
+        <div class="todo-flow-title"><b>${esc(step.name)}</b>${step.kindLabel ? `<span class="todo-flow-kind"${step.calledElement ? ` title="子流程：${esc(step.calledElement)}"` : ''}>${esc(step.kindLabel)}</span>` : ''}<span class="todo-flow-state">${esc(step.statusText)}</span></div>
         <div class="todo-flow-meta">
           <span class="todo-flow-time" title="${esc(step.timeLabel || '时间')}${step.timeText ? '：' + esc(step.timeText) : ''}"><ui5-icon name="history"></ui5-icon>${esc(step.timeText || '—')}</span>
           ${step.actors.length ? `<span class="todo-flow-actors">办理人：${step.actors.map((x) => esc(displayActor({ userId: x }))).join('、')}</span>` : ''}
@@ -1429,7 +1487,6 @@ function styleCss () {
   .todo-flow-node.done .todo-flow-step{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 48%,var(--line));background:var(--tile)}
   .todo-flow-node.current .todo-flow-step{color:var(--sapButton_Emphasized_TextColor,var(--sapContent_ContrastTextColor,var(--sapBaseColor)));border-color:var(--brand);background:var(--brand)}
   .todo-flow-node.pending .todo-flow-step{background:color-mix(in srgb,var(--ink) 3%,var(--tile))}
-  .todo-flow-node.possible .todo-flow-step{border-style:dashed}
   .todo-flow-node.other .todo-flow-step{width:10px;height:10px;margin:9px;border-style:dashed;background:transparent}
   .todo-flow-content{min-width:0;padding-top:4px}
   .todo-flow-title{display:flex;align-items:baseline;gap:8px;min-width:0}
@@ -1437,6 +1494,7 @@ function styleCss () {
   .todo-flow-node.pending .todo-flow-title b{color:var(--muted)}
   .todo-flow-node.current .todo-flow-title b{color:var(--brand);font-weight:700}
   .todo-flow-state{flex:0 0 auto;font-size:10.5px;font-weight:600;color:var(--muted);white-space:nowrap}
+  .todo-flow-kind{flex:0 0 auto;align-self:center;font-size:10px;font-weight:600;color:var(--muted);border:1px solid color-mix(in srgb,var(--muted) 45%,transparent);border-radius:999px;padding:1px 7px;white-space:nowrap}
   .todo-flow-node.done .todo-flow-state{color:var(--ok)}
   .todo-flow-node.current .todo-flow-state{color:var(--brand)}
   .todo-flow.compact .todo-flow-node{padding-bottom:12px}
