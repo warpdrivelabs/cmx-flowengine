@@ -1,0 +1,41 @@
+# E2E 本地覆盖配置（CONFIG_FILE 指定）· cmx-flow-server · 指向本机容器 PG · auth off · 接 rules
+[server]
+host = "0.0.0.0"
+port = 8091
+log_dir = "logs"
+log_level = "info"
+graceful_timeout_secs = 10
+
+[[databases]]
+db_id = "fico-db"
+db_name = "流程引擎库(E2E)"
+db_type = "postgres"
+db_url = "postgres://postgres:postgres@127.0.0.1:5432/fico"
+default = true
+
+[[databases]]
+db_id = "primary"
+db_name = "候选人/组织库(E2E)"
+db_type = "postgres"
+db_url = "postgres://postgres:postgres@127.0.0.1:5432/cmx"
+default = false
+
+# P1 租户契约：off 模式，租户取 X-Tenant 头（flow 出站附给 rules）
+[auth]
+mode = "off"
+
+[assets]
+ui_native_dir = "../cmx-container/assets/flow/web/ui-native"
+ui_html_dir = "../cmx-container/assets/flow/web/ui-html"
+
+[service_rpc]
+default_transport = "http"
+nacos_group = "DEFAULT_GROUP"
+timeout_ms = 30000
+retry_max = 1
+
+[service_rpc.services]
+rules = { url = "http://127.0.0.1:8094", discovery = "cmx-rulesengine" }
+
+[flow]
+db_id = "fico-db"
