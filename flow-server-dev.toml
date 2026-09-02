@@ -70,6 +70,10 @@ retry_max = 1
 
 [service_rpc.services]
 mdm = { url = "http://127.0.0.1:8095", discovery = "cmx-mdm-server" }
+# 规则引擎决策集成（方案 A · 默认关闭）：serviceTask delegate="rules:<decisionKey>" 外包给 cmx-rulesengine。
+# 启用：设 FLOW_RULES_MODE=http + FLOW_RULES_DECISIONS=key1,key2（可调用的决策键 allowlist），
+#       并解开下行服务目录项（FLOW_RULES_SERVICE 缺省 "rules"）。
+# rules = { url = "http://127.0.0.1:8094", discovery = "cmx-rulesengine" }
 
 # —— 流程引擎运行态库（005 短期：db_id 配置化，解「默认库绑死财务库」假耦合）——
 # 未配置时缺省 "fico-db"（零回归）；新环境建议配中性名（如 "flow-default"），

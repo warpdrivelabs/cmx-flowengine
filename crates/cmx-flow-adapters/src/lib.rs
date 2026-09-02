@@ -19,6 +19,7 @@ pub mod config;
 pub mod delegate;
 pub mod identity;
 pub mod mock;
+pub mod rules_delegate;
 pub mod subflow;
 pub mod webhook;
 
@@ -30,5 +31,6 @@ pub use config::{AdapterConfig, AdapterMode};
 pub use delegate::HttpDelegate;
 pub use identity::HttpAssigneeResolver;
 pub use mock::{MockAssigneeResolver, MockDelegate, MockSubflowRouter};
+pub use rules_delegate::{RulesEngineDelegate, TracePersist};
 pub use subflow::{HttpDimensionResolver, HttpSubflowRouter, MockDimensionResolver};
 pub use webhook::{FlowEvent, FlowEventKind, DELIVERY_HEADER, EVENT_HEADER, SIGNATURE_HEADER};

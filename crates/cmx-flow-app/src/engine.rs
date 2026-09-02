@@ -22,7 +22,8 @@ use tokio::sync::{OnceCell, RwLock};
 
 use cmx_flow_adapters::{
     AdapterConfig, AdapterMode, HttpAssigneeResolver, HttpDelegate, HttpDimensionResolver,
-    HttpSubflowRouter, MockAssigneeResolver, MockDelegate, MockSubflowRouter,
+    HttpSubflowRouter, MockAssigneeResolver, MockDelegate, MockSubflowRouter, RulesEngineDelegate,
+    TracePersist,
 };
 use cmx_flow_def::{DefinitionService, PgDefinitionStore};
 use cmx_flow_engine::{DelegateContext, Engine, JavaDelegate, ProcessDefinition};
@@ -364,6 +365,50 @@ async fn build_for(
         }
         // pg：无独立 delegate 概念，仅内置 riskDelegate（保持现状）。
         AdapterMode::Pg => {}
+    }
+
+    // 规则引擎决策集成（方案 A · P1）：把 businessRuleTask 级的「真决策」外包给 cmx-rulesengine。
+    // 默认关闭（FLOW_RULES_MODE 缺省/off → 零行为变化）；置 http 时，按 allowlist 为每个可调用的
+    // decisionKey 注册一个 RulesEngineDelegate，注册键 = `rules:<decisionKey>`——BPMN 里
+    // serviceTask 用 delegate="rules:<key>" 即路由到规则引擎。engine 核心/businessRuleTask 均不动。
+    //
+    // 决策键暴露走配置 allowlist（FLOW_RULES_DECISIONS=key1,key2）——引擎注册表是精确匹配、
+    // 无前缀回退，故 P1 在此显式注册，不碰引擎核（自动扫描定义需改引擎，留 P2 接缝方案 B）。
+    if matches!(AdapterMode::from_env("FLOW_RULES_MODE", AdapterMode::Mock), AdapterMode::Http) {
+        let service_key = std::env::var("FLOW_RULES_SERVICE").unwrap_or_else(|_| "rules".to_string());
+        let trace_persist = std::env::var("FLOW_RULES_TRACE_PERSIST")
+            .map(|v| TracePersist::parse(&v))
+            .unwrap_or_default();
+        let keys: Vec<String> = std::env::var("FLOW_RULES_DECISIONS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if keys.is_empty() {
+            tracing::warn!("FLOW_RULES_MODE=http 但 FLOW_RULES_DECISIONS 为空，未注册任何规则决策");
+        }
+        for key in keys {
+            match RulesEngineDelegate::new(
+                service_key.clone(),
+                key.clone(),
+                Some(tenant.to_string()),
+                trace_persist,
+            ) {
+                Some(d) => {
+                    let delegate_key = format!("rules:{key}");
+                    tracing::info!(
+                        service = service_key.as_str(),
+                        decision = key.as_str(),
+                        "规则决策外包 cmx-rulesengine，delegate 键={delegate_key}"
+                    );
+                    engine.register_delegate(delegate_key, d);
+                }
+                None => tracing::warn!(
+                    "FLOW_RULES_MODE=http 配了但基座未初始化（init_infra 未跑？），跳过规则决策 [{key}]"
+                ),
+            }
+        }
     }
 
     // 2b) 子流程绑定管理面（IAM 库）。生产库不由引擎 ensure_schema 覆盖，故此处兜底建表，
