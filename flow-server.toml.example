@@ -59,6 +59,12 @@ ui_html_dir   = "web/ui-html"
 # FLOW_IDENTITY_MODE = "mock" | "http" | "pg"   （+ FLOW_IDENTITY_URL）
 # FLOW_SUBFLOW_MODE  = "mock" | "http" | "pg"   （+ FLOW_SUBFLOW_URL）
 # FLOW_DELEGATE_MODE = "mock" | "http" | "pg"   （+ FLOW_DELEGATE_URL）
+# 规则引擎决策集成（方案 A · P1 · 默认关闭 = 零行为变化）：
+#   FLOW_RULES_MODE = "off"(默认) | "http"        置 http 启用
+#   FLOW_RULES_SERVICE = "rules"                  cmx-service-rpc 服务目录键（须在 [service_rpc.services] 登记指向 :8094）
+#   FLOW_RULES_DECISIONS = "creditScoring,amlScreening"   可调用的 decisionKey allowlist（逗号分隔）
+#   FLOW_RULES_TRACE_PERSIST = "logid"(默认) | "full" | "off"   决策 trace 回写 flow 变量历史的粒度
+#   用法：BPMN serviceTask delegate="rules:<decisionKey>"；租户经 X-Tenant 传给 rules（off 模式据此定位租户库）
 # 出站生命周期 webhook（S1）：FLOW_WEBHOOK_URLS / FLOW_WEBHOOK_SIGNING_KEY / FLOW_WEBHOOK_MAX_RETRIES
 # 多租户库 URL（multi 时，R3）：FLOW_TENANT_DB_URL_TEMPLATE / FLOW_TENANT_<T>_PG_URL 等
 #
