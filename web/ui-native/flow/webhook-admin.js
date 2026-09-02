@@ -122,6 +122,9 @@ function filteredItems () {
 function subCard (it) {
   const active = state.selected && state.selected.id === it.id
   const cfg = it.channelConfig || {}
+  // v2.4：过滤条件两段式（定义集/事件集）+ 只读统计（进行中绑定 / 累计丢弃，§3.6 可见性）。
+  const dks = it.definitionKeys || []
+  const ets = it.eventTypes || []
   return `<button class="wha-row ${active ? 'active' : ''}" data-id="${esc(String(it.id))}">
     <b>${esc(it.name || '')}</b>
     <small>${esc(cfg.service_key || '')}${cfg.callback_path ? ' · ' + esc(cfg.callback_path) : ''}</small>
@@ -129,7 +132,10 @@ function subCard (it) {
       <i class="wha-tag">${esc(it.channel || 'webhook')}</i>
       <i class="wha-tag ${it.active ? 'on' : 'off'}">${it.active ? '启用' : '停用'}</i>
       ${it.source === 'env' ? '<i class="wha-tag env">env 导入</i>' : ''}
+      <i class="wha-tag" title="定义集">${dks.length ? dks.length + ' 个定义' : '通配'}</i>
+      <i class="wha-tag" title="事件集">${ets.length ? ets.length + ' 类事件' : '全部事件'}</i>
     </span>
+    <small class="wha-stats">绑定中 ${esc(String(it.bindingCount ?? 0))} · 累计丢弃 ${esc(String(it.droppedCount ?? 0))}</small>
   </button>`
 }
 
@@ -207,8 +213,8 @@ const FIELDS = [
   { k: 'service_key', label: '目标服务键', required: true, hint: '[service_rpc.services] 目录键——内部走注册发现，外部登记静态 url' },
   { k: 'callback_path', label: '回调路径', ph: '/api/mdm/flow/callback', hint: '以 / 开头；缺省兼容 mdm 回调端点' },
   { k: 'secret', label: '签名密钥（只写）', hint: 'HMAC-SHA256 共享密钥：只写不回显（列表掩码）；留空或保持掩码 = 沿用旧值。改密钥须同步接收端' },
-  { k: 'definitionKeys', label: '订阅的流程（definitionKey）', hint: '不勾 = 订阅全部流程定义' },
-  { k: 'eventTypes', label: '订阅的事件类型', hint: '不勾 = 订阅全部 6 种事件；推荐集 = 实例办结 + 待办产生' },
+  // v2.4：定义集/事件集不再在页面勾选（编辑表单收敛）——定义订阅由接入方经定义订阅 API 维护
+  // （definitions/subscribe|unsubscribe），事件集为管理员/接收方白名单；保存契约 = 原样回传。
   { k: 'retry_max', label: '最大尝试次数（含首发）', hint: '默认 10 = 重试 9 次；1s 起指数退避封顶 5 分钟，首发到死信约 9~14 分钟' },
   { k: 'active', label: '启用', hint: '停用即不再生成新投递行（存量行保留可查可清）' },
 ]
@@ -221,6 +227,8 @@ function subFormHtml () {
     ${fieldInput(f)}
     <div class="wha-hint">${esc(f.hint || '')}</div>
   </div>`).join('')
+  // v2.4：定义订阅只读摘要区（编辑表单收敛——勾选框移除后在此只读展示，变更走定义订阅 API）。
+  const summary = defSummaryHtml()
   const toolbar = `<div class="wha-toolbar">
     <b class="wha-title">${isNew ? '新增订阅' : `编辑：${esc(state.selected.name || '')}`}</b>
     <span class="wha-tb-sp"></span>
@@ -232,7 +240,29 @@ function subFormHtml () {
   </div>`
   return `<div class="wha-subpane">
     ${toolbar}
-    <div class="wha-form">${fields}</div>
+    <div class="wha-form">${fields}${summary}</div>
+  </div>`
+}
+
+/// 定义订阅只读摘要（definition_keys · 通配标识 + event_types；v2.4 §五-1）。
+function defSummaryHtml () {
+  const d = state.draft || {}
+  const dks = d.definitionKeys || []
+  const ets = d.eventTypes || []
+  const defBadges = dks.length
+    ? `<span class="wha-tag">${dks.length} 个定义</span>` + dks.map((k) => `<code class="wha-defkey">${esc(k)}</code>`).join(' ')
+    : `<span class="wha-tag env">通配（定义集为空 = 全部流程）</span>`
+  const evtBadges = ets.length
+    ? ets.map((k) => `<code class="wha-defkey">${esc(k)}</code>`).join(' ')
+    : `<span class="wha-tag">全部 6 类事件</span>`
+  const note = state.selected
+    ? '定义订阅由接入方经定义订阅 API 维护（definitions/subscribe · unsubscribe）；本页只读展示，保存时原样回传不改动。'
+    : '新建订阅默认通配（定义集为空 = 全部），如需显式定义集请由接入方订阅。'
+  return `<div class="wha-field wha-defsum">
+    <label>定义订阅（只读）</label>
+    <div class="wha-checks"><div class="wha-defrow"><b>定义集</b>${defBadges}</div>
+    <div class="wha-defrow"><b>事件集</b>${evtBadges}</div></div>
+    <div class="wha-hint">${esc(note)}</div>
   </div>`
 }
 
@@ -253,6 +283,7 @@ function deliveriesHtml () {
       <td>${r.lastHttpStatus ? esc(String(r.lastHttpStatus)) : '-'}</td>
       <td class="mono" title="${esc(r.lastError || '')}">${esc((r.lastError || '-').slice(0, 60))}</td>
       <td>${esc(r.source)}</td>
+      <td><i class="wha-tag ${r.routeSource === 'bound' ? 'bound' : 'skipped'}">${r.routeSource === 'bound' ? '绑定' : '匹配'}</i></td>
     </tr>`
   }).join('')
   const pages = Math.max(1, Math.ceil(st.total / st.pageSize))
@@ -270,8 +301,8 @@ function deliveriesHtml () {
     </div>
     <div class="wha-table-wrap">
       <table class="wha-table">
-        <thead><tr><th></th><th>状态</th><th>事件</th><th>流程</th><th>订阅</th><th>尝试</th><th>HTTP</th><th>最近错误</th><th>来源</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="9" class="wha-empty-cell">暂无投递记录</td></tr>'}</tbody>
+        <thead><tr><th></th><th>状态</th><th>事件</th><th>流程</th><th>订阅</th><th>尝试</th><th>HTTP</th><th>最近错误</th><th>来源</th><th>路由来源</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="10" class="wha-empty-cell">暂无投递记录</td></tr>'}</tbody>
       </table>
     </div>
     <div class="wha-pager">
@@ -301,6 +332,17 @@ function propertyHtml () {
         向该订阅目标<b>真实投递</b>一条 <code>webhook.test</code> 伪事件（不走 definitionKeys/eventTypes 过滤），
         10s 短超时；结果同步返回并落审计行（失败也记 DONE + 错误留痕，不进死信队列）。同订阅 1 分钟至多 3 次。
       </div>
+      <div class="wha-sec">三级路由与定义订阅（v2.4）</div>
+      <div class="wha-note">
+        · <b>L1 默认回调</b>：env 导入的通配订阅（<span class="wha-tag env">env 导入</span>）按定义/事件匹配收未绑定实例的事件。<br>
+        · <b>L2 发起绑定</b>：发起流程时请求体带 <code>subscriber</code>（订阅名）→ 该实例全部事件定向投递，
+          并<b>屏蔽通配订阅</b>；绑定投递不受订阅自身定义集约束（全量定向委托），事件集白名单仍有效——
+          白名单外事件丢弃并计入「累计丢弃」。绑定实例详情可见 <code>subscriberId</code>。<br>
+        · <b>L3 定义订阅</b>：接入方经 <code>definitions/subscribe</code> / <code>definitions/unsubscribe</code>
+          增量维护定义集；显式声明定义集的订阅可<b>旁听</b>绑定实例（L2 不屏蔽 L3）。通配行 / env 行 / 停用订阅
+          不可经 API 变更；退订不允许清空定义集（空 = 通配，须走管理端显式确认）。<br>
+        · 已靠本页勾选维护定义集的存量订阅：页面收敛为只读摘要，后续变更走定义订阅 API。
+      </div>
       <div class="wha-sec">首启导入（存量迁移）</div>
       <div class="wha-note">
         订阅表为空且配置了 <code>FLOW_WEBHOOK_TARGETS</code> 时，引擎首启按 <code>env-&lt;服务键&gt;</code> 确定性名导入订阅行
@@ -323,7 +365,10 @@ function propertyHtml () {
 function blankDraft () {
   return {
     name: '', channel: 'webhook', service_key: '', callback_path: '/api/mdm/flow/callback',
-    secret: '', definitionKeys: [], eventTypes: EVENT_TYPES.filter((t) => t.rec).map((t) => t.key),
+    secret: '',
+    // v2.4（N-P1 修订）：定义集/事件集新建默认**空集 = 全部**——绑定语义下事件集是接收方
+    // 白名单，预填部分集会让绑定订阅静默丢 instance.started 等事件且页面无入口修改。
+    definitionKeys: [], eventTypes: [],
     retry_max: 10, active: true,
   }
 }
@@ -514,17 +559,30 @@ async function deleteSubscription () {
     toast('已删除')
     state.selected = null; state.draft = blankDraft()
     await loadList(); refreshAll()
+  // v2.4：删除被拒原因由后端区分（「订阅启用中」/「存在进行中的绑定实例 N 个」），全文 toast。
   } catch (e) { toast('删除失败: ' + e.message) }
 }
 
 async function toggleActive () {
   const it = state.selected
   if (!it) return
+  // v2.4（§3.5）：停用前提示进行中的绑定实例数——防一次普通停用无声切断一批实例的回调。
+  if (it.active) {
+    let binding = it.bindingCount ?? 0
+    try {
+      const d = await apiJson(`/api/flow/webhook-subscriptions/detail?id=${encodeURIComponent(String(it.id))}`)
+      binding = d?.bindingCount ?? binding
+    } catch { /* 查不到就按列表值提示 */ }
+    if (binding > 0 && !(await confirmBox(
+      `该订阅有 ${binding} 个进行中的绑定实例，停用后这些实例的事件将丢弃（不再投递，也不回退默认层）。确认停用？`,
+      '仍要停用'))) return
+  }
   try {
-    await apiJson('/api/flow/webhook-subscriptions/set-active', {
+    const r = await apiJson('/api/flow/webhook-subscriptions/set-active', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: it.id, active: !it.active }),
     })
+    if (!it.active && r) it.bindingCount = r.bindingCount ?? it.bindingCount
     toast(!it.active ? '已启用（≤5s 生效）' : '已停用（不再生成新投递行）')
     await loadList()
     selectRecord(it.id)
@@ -624,6 +682,11 @@ function styleCss () {
   .wha-tag.done { background: var(--ok-soft); color: var(--ok); }
   .wha-tag.dead { background: var(--danger-soft); color: var(--danger); }
   .wha-tag.skipped { background: color-mix(in srgb, var(--muted) 14%, transparent); color: var(--muted); }
+  .wha-tag.bound { background: var(--brand); color: var(--sapButton_Emphasized_TextColor, #fff); }
+  .wha-row .wha-stats { color: var(--muted); font-size: 10.5px; }
+  .wha-defsum .wha-defrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12.5px; }
+  .wha-defsum .wha-defrow b { color: var(--muted); font-size: 11px; min-width: 44px; }
+  .wha-defkey { font-family: var(--mono); font-size: 10.5px; color: var(--muted); background: var(--bg); border-radius: 4px; padding: 0 5px; }
   .wha-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--muted); padding: 36px 16px; font-size: 12.5px; }
   /* content */
   .wha-ctabs { display: flex; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--line-soft); background: var(--panel); }

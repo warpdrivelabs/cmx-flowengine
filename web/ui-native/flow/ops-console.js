@@ -129,6 +129,16 @@ const STATE_LABEL = { ACTIVE: '运行中', SUSPENDED: '已挂起', COMPLETED: '�
 const STATE_CLS = { ACTIVE: 'run', SUSPENDED: 'susp', COMPLETED: 'done', TERMINATED: 'term' }
 
 function explorerHtml () {
+  const dl = state.deadLetters || []
+  const dlRows = dl.length
+    ? dl.map((d) => `<tr>
+        <td>${esc((d.instanceId || '').slice(0, 8))}</td>
+        <td>${esc(d.delegateKey || d.nodeBpmnId || '')}</td>
+        <td title="${esc(d.error || '')}">${esc((d.error || '').slice(0, 40))}</td>
+        <td><button class="ops-btn" data-dl-retry="${esc(d.id)}" title="重投回抢占池"><ui5-icon name="refresh"></ui5-icon></button>
+            <button class="ops-btn" data-dl-drop="${esc(d.id)}" title="放弃（删除死信）"><ui5-icon name="delete"></ui5-icon></button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" style="color:var(--muted)">无死信作业</td></tr>'
   const rows = state.list.length
     ? state.list.map((it) => {
         const active = state.selectedId === it.id
@@ -144,6 +154,11 @@ function explorerHtml () {
       }).join('')
     : `<div class="ops-empty"><ui5-icon name="process"></ui5-icon><span>无实例</span></div>`
   return `<section class="ops ops-explorer">
+    <details class="ops-dl" data-dl-panel>
+      <summary>☠️ 死信 / 定时器作业 <span class="ops-badge ${dl.length ? 'inc' : ''}" data-dl-count>${dl.length || ''}</span></summary>
+      <table class="ops-vtab"><thead><tr><th>实例</th><th>作业</th><th>错误</th><th>操作</th></tr></thead><tbody>${dlRows}</tbody></table>
+      <div style="margin:6px 0" data-jobs-summary>定时器作业：<button class="ops-btn" data-jobs-load>加载</button></div>
+    </details>
     <div class="ops-search">
       <input data-search value="${esc(state.filter.keyword)}" placeholder="搜索业务键/定义/实例 id…">
       <select data-fstate>
@@ -157,6 +172,29 @@ function explorerHtml () {
     <div class="ops-list-head"><b>实例</b><span>${state.list.length}</span></div>
     <div class="ops-list">${rows}</div>
   </section>`
+}
+
+// —— 012：死信 / 定时器作业面板 ——
+
+async function loadDeadLetters (root) {
+  try {
+    const r = await apiJson('/api/flow/v1/dead-letter-jobs')
+    state.deadLetters = (r && (r.data || r).jobs) || []
+    refreshView('explorer')
+  } catch (e) { console.warn('死信清单加载失败', e) }
+}
+
+async function loadJobs (root) {
+  const box = root.querySelector('[data-jobs-summary]')
+  if (!box) return
+  try {
+    const r = await apiJson('/api/flow/v1/jobs/query', { method: 'POST', body: JSON.stringify({ page: 1, pageSize: 20 }) })
+    const jobs = (r && (r.data || r).jobs) || []
+    const total = (r && (r.data || r).total) || 0
+    box.innerHTML = `定时器作业：共 ${total} 条（前 ${jobs.length} 条）` +
+      jobs.slice(0, 5).map((j) => `<div><small>${esc(j.definitionKey || '')} · ${esc((j.dueAt || '').slice(0, 19))} · ${esc(j.kind || '')}</small></div>`).join('') +
+      '<small style="color:var(--muted)">详见 POST /jobs/query</small>'
+  } catch (e) { box.innerHTML = '定时器作业：加载失败'; console.warn(e) }
 }
 
 // ————————————————————— content：详情 + 干预 —————————————————————
@@ -629,6 +667,18 @@ function bind (root, view, host) {
     root.querySelector('[data-fstate]')?.addEventListener('change', (e) => { state.filter.state = e.target.value; loadList() })
     root.querySelector('[data-refresh]')?.addEventListener('click', () => loadList())
     root.querySelectorAll('[data-id]').forEach((b) => b.addEventListener('click', () => selectInstance(b.dataset.id)))
+    // —— 012：死信/作业面板（惰性：details 首次展开加载）——
+    const panel = root.querySelector('[data-dl-panel]')
+    if (panel) {
+      panel.addEventListener('toggle', () => { if (panel.open && !state.deadLetters) loadDeadLetters(root) })
+    }
+    root.querySelectorAll('[data-dl-retry]').forEach((b) => b.addEventListener('click', async () => {
+      try { await apiJson('/api/flow/v1/dead-letter-jobs/' + enc(b.dataset.dlRetry) + '/retry', { method: 'POST' }); loadDeadLetters(root) } catch (e) { console.warn('死信重投失败', e) }
+    }))
+    root.querySelectorAll('[data-dl-drop]').forEach((b) => b.addEventListener('click', async () => {
+      try { await apiJson('/api/flow/v1/dead-letter-jobs/' + enc(b.dataset.dlDrop), { method: 'DELETE' }); loadDeadLetters(root) } catch (e) { console.warn('死信删除失败', e) }
+    }))
+    root.querySelector('[data-jobs-load]')?.addEventListener('click', () => loadJobs(root))
   }
   if (view === 'content') {
     root.querySelector('[data-act="retry"]')?.addEventListener('click', () => doRetry())

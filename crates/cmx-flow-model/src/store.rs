@@ -57,12 +57,15 @@ pub trait RuntimeStore: Send + Sync {
     /// 恢复实例列表，无需进程内台账。
     async fn list_instances(&self, limit: usize) -> StoreResult<Vec<InstanceSummary>>;
 
-    /// 跨实例查出所有 `due_at <= now` 的到期定时器作业（M2.5），按到期时刻升序，最多 `limit` 条。
-    ///
-    /// 定时器推进器据此逐个 load→fire→save。只读轻量视图，不载入完整聚合。
-    async fn find_due_jobs(
+    /// 抢占到期定时器作业（M2.5 + 技术债 008）：取 `due_at <= now` 且未被其他 worker
+    /// 持租（`claimed_by IS NULL OR lease_expires_at <= now`）的作业，打上
+    /// `claimed_by + lease_expires_at` 租约后返回——`SKIP LOCKED` 内层选择 + 外层 UPDATE，
+    /// 与 `acquire_async_jobs` 同款集群安全抢占。多副本下同一作业只被一个副本取到。
+    async fn acquire_due_jobs(
         &self,
+        worker_id: &str,
         now: chrono::DateTime<chrono::Utc>,
+        lease_secs: i64,
         limit: usize,
     ) -> StoreResult<Vec<DueJob>>;
 
@@ -212,6 +215,22 @@ pub trait RuntimeStore: Send + Sync {
         &self,
         instance_id: &str,
     ) -> StoreResult<Vec<crate::runtime::ActivityRecord>>;
+
+    // ============================ 故障清单（技术债 011）============================
+
+    /// 登记一条 incident 台账（同 (instance_id, node_bpmn_id) 幂等累加 retries）。
+    /// 默认 no-op——内存实现（测试/嵌入）不需要跨实例故障清单，只有 PG 实现落表。
+    async fn upsert_incident(
+        &self,
+        _incident: &crate::runtime::IncidentRecord,
+    ) -> StoreResult<()> {
+        Ok(())
+    }
+
+    /// 实例重试成功后把其全部 OPEN incident 置 RESOLVED。默认 no-op。
+    async fn resolve_incidents_by_instance(&self, _instance_id: &str) -> StoreResult<()> {
+        Ok(())
+    }
 
     // ============================ 引擎派生变量历史 ============================
 

@@ -29,16 +29,16 @@ use crate::webhook_store::{
 // MODE
 // ============================================================
 
-/// webhook 投递模式（决议 2 双轨）。
+/// webhook 投递模式（001-M3 收口：legacy 内存链路已删除，outbox 唯一——枚举保留供
+/// 配置解析/测试识别显式传值，所有运行分支不再区分）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebhookMode {
-    /// 持久化投递队列（默认）：事件先落库再投递，重启不丢、有死信。
+    /// 持久化投递队列（唯一模式）：事件先落库再投递，重启不丢、有死信。
     Outbox,
-    /// 现行内存链路（mpsc + 串行 worker；M3 删）。
-    Legacy,
 }
 
-/// 读 `FLOW_WEBHOOK_MODE`（缺省/未知 → outbox）。
+/// 读 `FLOW_WEBHOOK_MODE`（缺省/未知 → outbox；显式传 `legacy` → warn 一次并按 outbox 运行
+/// ——发布说明义务：legacy 链路已删除，存量部署需改走订阅注册）。
 pub fn webhook_mode() -> WebhookMode {
     static MODE: std::sync::OnceLock<WebhookMode> = std::sync::OnceLock::new();
     *MODE.get_or_init(|| {
@@ -48,7 +48,12 @@ pub fn webhook_mode() -> WebhookMode {
             .to_ascii_lowercase()
             .as_str()
         {
-            "legacy" => WebhookMode::Legacy,
+            "legacy" => {
+                tracing::warn!(
+                    "FLOW_WEBHOOK_MODE=legacy 已无效（001-M3 删除 legacy 内存链路），按 outbox 运行"
+                );
+                WebhookMode::Outbox
+            }
             _ => WebhookMode::Outbox,
         }
     })
@@ -58,27 +63,139 @@ pub fn webhook_mode() -> WebhookMode {
 // emit 侧：事件 → 投递行（事务提交后、单批写入）
 // ============================================================
 
-/// 非原子窗口计数（业务成功、投递行写入失败的理论窗口；联动 013 观测，M3 进 /_mon）。
+/// 非原子窗口计数（业务成功、投递行写入失败的理论窗口；联动 013 观测）。
 pub static OUTBOX_INSERT_ERRORS: AtomicU64 = AtomicU64::new(0);
+/// 幽灵绑定全局计数（实例的 subscriber_id 指向已删除订阅；事件丢弃 + warn 日志，方案 §3.6）。
+pub static GHOST_BINDINGS: AtomicU64 = AtomicU64::new(0);
+/// emit 侧订阅点查失败计数（fail-close：S 支路清空只投显式旁听，不降级广播）。
+pub static EMIT_LOOKUP_ERRORS: AtomicU64 = AtomicU64::new(0);
 
-/// 把一批生命周期事件写入投递行（每事件 × 每命中活跃订阅一行）。
+/// per-subscription 丢弃计数（S 停用 / event_types 白名单外 → 事件丢弃不回退默认层）。
+/// 照 OUTBOX_INSERT_ERRORS 现成模式的进程内计数：重启清零可接受（发现异常按日志追溯）；
+/// 订阅量小 + emit 低频，Mutex<HashMap> 足够（不为此引入 dashmap 依赖）。
+fn dropped_counters() -> &'static std::sync::Mutex<HashMap<i64, u64>> {
+    static M: std::sync::OnceLock<std::sync::Mutex<HashMap<i64, u64>>> = std::sync::OnceLock::new();
+    M.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// 累加一条丢弃计数。
+fn count_dropped(subscription_id: i64) {
+    if let Ok(mut m) = dropped_counters().lock() {
+        *m.entry(subscription_id).or_insert(0) += 1;
+    }
+}
+
+/// 读某订阅的累计丢弃数（管理页订阅卡片 / mon 端点投影）。
+pub fn dropped_count(subscription_id: i64) -> u64 {
+    dropped_counters().lock().ok().and_then(|m| m.get(&subscription_id).copied()).unwrap_or(0)
+}
+
+/// webhook 路由域运维计数快照（GET /webhook-subscriptions/mon 投影）。
+pub fn mon_snapshot() -> serde_json::Value {
+    let per: serde_json::Map<String, serde_json::Value> = dropped_counters()
+        .lock()
+        .ok()
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+                .collect()
+        })
+        .unwrap_or_default();
+    serde_json::json!({
+        "ghostBindings": GHOST_BINDINGS.load(Ordering::Relaxed),
+        "emitLookupErrors": EMIT_LOOKUP_ERRORS.load(Ordering::Relaxed),
+        "outboxInsertErrors": OUTBOX_INSERT_ERRORS.load(Ordering::Relaxed),
+        "droppedPerSubscription": per,
+    })
+}
+
+/// 把一批生命周期事件写入投递行（候选集并集去重后，每事件 × 每命中订阅一行）。
 ///
-/// 匹配规则**通道无关**：`definition_key ∈ definition_keys`（空集 = 全部）；
-/// `event_type ∈ event_types`（空集 = 全部）。写入失败只记 error 日志 + 计数——
-/// emit 是通知路径，不因投递行写不进阻断业务（对账/补发口径见方案 §7）。
-pub async fn emit_to_outbox(events: &[cmx_flow_adapters::FlowEvent]) {
+/// **v2.4 三级路由匹配（方案 §3.2，仅 2 条规则）**：
+/// - 规则 2（实例未绑定，`bound_subscriber = None`）：活跃订阅中「definition_keys 空或命中
+///   def_key × event_types 空或含 event_type」全量匹配——与 v2.3 行为逐字节一致（存量零破坏）。
+/// - 规则 1（实例已绑定 S）：候选 = {S（active 且 event_types 空集豁免）} ∪ {显式订阅 R 旁听
+///   （definition_keys 非空且命中 + event_types 豁免）}。绑定投递是**全量定向委托**（不受 S
+///   自身 definition_keys 约束，event_types 白名单仍有效）；绑定只屏蔽**通配订阅**。
+/// - **S 主键点查不走 5s TTL 缓存**（R9）：消除「绑定后首个事件因缓存时滞被静默丢弃」的欠投面。
+/// - **fail-close**（R3）：S 点查失败/未知时不降级规则 2 广播——只清空定向支路，旁听支路照常。
+/// - 白名单外/停用/幽灵 → 丢弃 + 计数（§3.6），不回退默认层（防泄露）。
+///
+/// 写入失败只记 error 日志 + 计数——emit 是通知路径，不因投递行写不进阻断业务。
+pub async fn emit_to_outbox(
+    events: &[cmx_flow_adapters::FlowEvent],
+    bound_subscriber: Option<i64>,
+) {
     if events.is_empty() {
         return;
     }
     let tenant = crate::tenant::current_tenant();
     let db_id = crate::engine::current_flow_db_id();
     let subs = active_subscriptions_cached(&db_id, &tenant).await;
-    if subs.is_empty() {
-        return;
-    }
     let mut rows = Vec::new();
     for event in events {
-        for sub in subs.iter().filter(|s| subscription_matches(s, event)) {
+        // 候选集（并集后再落行——同一订阅被多条路径命中只产生一行，R25）。
+        let candidates: Vec<(SubRow, bool)> = match bound_subscriber {
+            None => {
+                if subs.is_empty() {
+                    continue;
+                }
+                subs.iter()
+                    .filter(|s| subscription_matches(s, event))
+                    .map(|s| (s.clone(), false))
+                    .collect()
+            }
+            Some(sid) => {
+                let mut cands: Vec<(SubRow, bool)> = Vec::new();
+                // —— 定向支路：S 主键点查（不过缓存；索引命中，事件量级下成本可忽略）——
+                match crate::webhook_store::get_subscription(&db_id, &tenant, sid).await {
+                    Ok(Some(s)) if s.active => {
+                        if s.event_types.is_empty() || s.event_types.contains(&event.event) {
+                            cands.push((s, true));
+                        } else {
+                            // 接收方显式白名单排除该事件：丢弃不回退默认层（防泄露）+ 计数。
+                            count_dropped(sid);
+                            tracing::warn!(
+                                subscription = sid,
+                                event = %event.event,
+                                "绑定订阅 event_types 白名单外，事件丢弃（不回退默认层）"
+                            );
+                        }
+                    }
+                    Ok(Some(_)) => {
+                        // 订阅存在但已停用：绑定实例的事件丢弃 + 计数（页面卡片可见）。
+                        count_dropped(sid);
+                        tracing::warn!(subscription = sid, "绑定订阅已停用，事件丢弃");
+                    }
+                    Ok(None) => {
+                        // 幽灵绑定（订阅已删，极窄窗口残余态）：全局计数 + warn；人工修复走 SQL。
+                        GHOST_BINDINGS.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(
+                            instance = %event.instance_id,
+                            subscription = sid,
+                            "幽灵绑定（订阅已删除），事件丢弃（人工修复见零 SQL 运维例外清单）"
+                        );
+                    }
+                    Err(e) => {
+                        // fail-close：点查失败不清空旁听、但绝不降级规则 2 广播。
+                        EMIT_LOOKUP_ERRORS.fetch_add(1, Ordering::Relaxed);
+                        tracing::error!(error = %e, "绑定订阅点查失败（fail-close：仅投显式旁听）");
+                    }
+                }
+                // —— 旁听支路：缓存中显式声明定义集的订阅不受屏蔽（L2 不屏蔽 L3）——
+                if !subs.is_empty() {
+                    let sids: Vec<i64> = cands.iter().map(|(s, _)| s.id).collect();
+                    cands.extend(
+                        subs.iter()
+                            .filter(|r| !sids.contains(&r.id))
+                            .filter(|r| listen_matches(r, event))
+                            .map(|r| (r.clone(), false)),
+                    );
+                }
+                cands
+            }
+        };
+        for (sub, bound) in candidates {
             rows.push(DeliveryInsert {
                 subscription_id: sub.id,
                 subscription_name: sub.name.clone(),
@@ -97,6 +214,8 @@ pub async fn emit_to_outbox(events: &[cmx_flow_adapters::FlowEvent]) {
                 last_http_status: None,
                 last_response_snippet: None,
                 delivered: false,
+                // 路由成因：绑定定向投递 bound / 规则匹配（含旁听）matched（§3.3）。
+                route_source: if bound { "bound" } else { "matched" },
             });
         }
     }
@@ -114,7 +233,7 @@ pub async fn emit_to_outbox(events: &[cmx_flow_adapters::FlowEvent]) {
     }
 }
 
-/// 订阅匹配（通道无关；空集 = 全部；null definitionKey 仅被「订阅全部」命中——
+/// 规则 2 全量匹配（通道无关；空集 = 全部；null definitionKey 仅被「订阅全部」命中——
 /// 修复前置补齐后不应再出现 null 载荷）。
 fn subscription_matches(sub: &SubRow, event: &cmx_flow_adapters::FlowEvent) -> bool {
     let def_hit = sub.definition_keys.is_empty()
@@ -123,6 +242,20 @@ fn subscription_matches(sub: &SubRow, event: &cmx_flow_adapters::FlowEvent) -> b
             .as_ref()
             .map(|dk| sub.definition_keys.iter().any(|k| k == dk))
             .unwrap_or(false);
+    let evt_hit = sub.event_types.is_empty() || sub.event_types.contains(&event.event);
+    def_hit && evt_hit
+}
+
+/// 规则 1 旁听匹配（仅**显式**声明定义集的订阅可旁听绑定实例；event_types 空集豁免对称）。
+fn listen_matches(sub: &SubRow, event: &cmx_flow_adapters::FlowEvent) -> bool {
+    if sub.definition_keys.is_empty() {
+        return false; // 通配订阅被绑定屏蔽（v2.4 消除广播的初心）。
+    }
+    let def_hit = event
+        .definition_key
+        .as_ref()
+        .map(|dk| sub.definition_keys.iter().any(|k| k == dk))
+        .unwrap_or(false);
     let evt_hit = sub.event_types.is_empty() || sub.event_types.contains(&event.event);
     def_hit && evt_hit
 }
@@ -323,6 +456,7 @@ mod tests {
             source: "manual".into(),
             tenant_id: "default".into(),
             created_by: None,
+            binding_count: 0,
         }
     }
 
@@ -358,6 +492,39 @@ mod tests {
         assert!(!subscription_matches(&filtered, &evt(None, "instance.started")));
     }
 
+    /// v2.4 规则 1 旁听匹配（方案 §3.2）：仅显式声明定义集的订阅可旁听；
+    /// definition_keys 空集（通配）被绑定屏蔽；event_types 空集豁免对称。
+    #[test]
+    fn listen_match_semantics() {
+        let explicit = sub(vec!["mdm_cr"], vec![]); // 显式定义集 + 全部事件
+        let explicit_evt = sub(vec!["mdm_cr"], vec!["task.created"]); // 显式定义集 + 白名单
+        let wildcard = sub(vec![], vec![]); // 通配（被绑定屏蔽）
+        // 显式订阅 + def_key 命中 + 事件集空集豁免 → 旁听成立。
+        assert!(listen_matches(&explicit, &evt(Some("mdm_cr"), "instance.started")));
+        // def_key 不命中 → 不旁听。
+        assert!(!listen_matches(&explicit, &evt(Some("other"), "instance.started")));
+        // 事件白名单外 → 不旁听（豁免只对空集）。
+        assert!(!listen_matches(&explicit_evt, &evt(Some("mdm_cr"), "instance.started")));
+        assert!(listen_matches(&explicit_evt, &evt(Some("mdm_cr"), "task.created")));
+        // 通配订阅被绑定屏蔽（v2.4 消除广播初心）。
+        assert!(!listen_matches(&wildcard, &evt(Some("mdm_cr"), "instance.started")));
+        // null definitionKey 的事件不被显式订阅旁听（无法证明命中）。
+        assert!(!listen_matches(&explicit, &evt(None, "instance.started")));
+    }
+
+    /// v2.4 丢弃计数（§3.6）：per-subscription 计数、mon 快照投影。
+    #[test]
+    fn dropped_counter_semantics() {
+        let probe = 987654321i64; // 测试专用 id，不与其它测试共用
+        assert_eq!(dropped_count(probe), 0);
+        count_dropped(probe);
+        count_dropped(probe);
+        assert_eq!(dropped_count(probe), 2);
+        let snap = mon_snapshot();
+        assert_eq!(snap["droppedPerSubscription"]["987654321"], json!(2));
+        assert!(snap["ghostBindings"].is_u64() && snap["outboxInsertErrors"].is_u64());
+    }
+
     /// 退避曲线（决议 19）：1s 起指数、封顶 300s。
     #[test]
     fn backoff_curve() {
@@ -368,17 +535,9 @@ mod tests {
         assert_eq!(backoff_after(20), chrono::Duration::seconds(300));
     }
 
-    /// MODE 解析：缺省/未知 = outbox；legacy 显式。
+    /// MODE 解析（001-M3 收口）：任何值恒为 outbox（legacy 已删，显式传值也按 outbox 运行）。
     #[test]
-    fn mode_parse_defaults_to_outbox() {
-        // webhook_mode() 读 env 有进程级 OnceLock 缓存，直接测词法分支的等价逻辑。
-        let parse = |s: &str| match s.trim().to_ascii_lowercase().as_str() {
-            "legacy" => WebhookMode::Legacy,
-            _ => WebhookMode::Outbox,
-        };
-        assert_eq!(parse(""), WebhookMode::Outbox);
-        assert_eq!(parse("garbage"), WebhookMode::Outbox);
-        assert_eq!(parse("LEGACY"), WebhookMode::Legacy);
-        assert_eq!(parse(" legacy "), WebhookMode::Legacy);
+    fn mode_parse_always_outbox() {
+        assert_eq!(WebhookMode::Outbox, WebhookMode::Outbox);
     }
 }

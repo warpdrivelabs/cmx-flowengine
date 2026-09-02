@@ -220,6 +220,8 @@ pub fn instance_view(snap: &InstanceSnapshot) -> Value {
         "definitionKey": snap.instance.definition_key,
         "businessKey": snap.instance.business_key,
         "state": instance_state_str(snap.instance.state),
+        // v2.4 §3.6 实例可见性：发起绑定订阅 id（列表不带，控制载荷）。
+        "subscriberId": snap.instance.subscriber_id,
         "variables": snap.instance.variables.to_json(),
         "parentInstanceId": snap.instance.parent_instance_id,
         "waitingSubflow": snap.tokens.iter().any(|t| matches!(t.state, TokenState::WaitingSubflow)),
@@ -236,6 +238,9 @@ pub fn instance_view(snap: &InstanceSnapshot) -> Value {
 }
 
 /// 摘要视图（列表用）——直接映射 store 返回的 InstanceSummary。
+///
+/// 技术债 014：`riskLevel`（信贷 demo 专用字段，前端零消费）已删除；`applicant`/`amount`
+/// 因待办中心（todo-center.js 卡片）仍在消费而暂时保留——待前端改为通用变量投影后一并清理。
 pub fn summary_view(s: &InstanceSummary) -> Value {
     let vars = s.variables.to_json();
     json!({
@@ -244,7 +249,6 @@ pub fn summary_view(s: &InstanceSummary) -> Value {
         "businessKey": s.business_key,
         "applicant": vars.get("applicant").cloned().unwrap_or(Value::Null),
         "amount": vars.get("amount").cloned().unwrap_or(Value::Null),
-        "riskLevel": vars.get("riskLevel").cloned().unwrap_or(Value::Null),
         "state": instance_state_str(s.state),
         "openTaskCount": s.open_task_count,
     })

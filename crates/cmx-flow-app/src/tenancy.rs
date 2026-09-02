@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 
 use cmx_database_pg::{DbConfig, DbType, get_default_pg_db_manager};
 
-use crate::engine::{FLOW_DB_ID, IAM_DB_ID};
+use crate::engine::{IAM_DB_ID, default_flow_db_id};
 use crate::tenant::DEFAULT_TENANT;
 
 /// 多租户配置（进程级，一次从环境读定）。
@@ -50,10 +50,10 @@ impl TenancyConfig {
         }
     }
 
-    /// 租户 → 运行态库 db_id。默认租户 = 原 FLOW_DB_ID（零回归）；其它租户 = `flow_<tenant>`。
+    /// 租户 → 运行态库 db_id。默认租户 = `flow.db_id`（缺省 fico-db，零回归）；其它租户 = `flow_<tenant>`。
     pub fn flow_db_id(&self, tenant: &str) -> String {
         if !self.multi || tenant == DEFAULT_TENANT {
-            FLOW_DB_ID.to_string()
+            default_flow_db_id().to_string()
         } else {
             format!("flow_{}", sanitize(tenant))
         }

@@ -1,3 +1,21 @@
+# ⚠️ 本目录是**发布产物**——禁止直接修改！
+
+> 真源：`cmx-container/assets/flow/web/`（`ui-native/` + `ui-html/`，工作区唯一真源）。
+> 同步：改真源后执行工作区根 `./scripts/publish-assets.sh flow`，本目录 `ui-native/`、`ui-html/`
+> **整目录替换**为拷贝——在此手改的任何内容下次发布即被覆盖（可用工作区根
+> `python scripts/check-asset-ownership.py` 自检是否误改了产物）。
+>
+> 技术债 015（2026-09-02 批次 7）清理记录：`core/`（无消费方孤儿、与 ui-native 有意分叉）、
+> `demo/`、`elements/`、`index.js`（可嵌 Web Component 壳②实验）、`menu-manifest.json`、
+> `menu-source/`（死档案，菜单真源在 cmx-container 侧 menu-pages）已删除——历史上均为
+> 零运行时消费方（全仓 grep 实证），其 README 声明的真源路径
+> `cmx-container/data/native-pages/sources/portal/flow/` 已不存在。
+> 壳②可嵌组件如需恢复，从 git 历史取回 `elements/` + `index.js`（独立重立真源）。
+
+---
+
+# 原说明（历史存档，其中的真源/结构声明已过期）
+
 # cmx-flow 可嵌 Web Component（S5）
 
 把流程微服务的三类前端能力封成**框架无关 custom element**，第三方系统 `<script>` 引入 + 放标签即用，可嵌进 React / Vue / Angular / 原生任意框架。对标 `cmx-mega-sheet` 的 `<cmx-megasheet>`（零运行时框架依赖、shadow DOM 隔离）。

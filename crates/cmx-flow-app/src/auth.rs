@@ -9,7 +9,7 @@ use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
 
-pub use cmx_engine_kit::auth::jwt::auth_middleware_active;
+pub use cmx_engine_kit::auth::jwt::{auth_config_warmup, auth_middleware_active};
 
 use cmx_engine_kit::auth::jwt::{self, JwtSpec};
 

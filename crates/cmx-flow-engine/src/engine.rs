@@ -105,6 +105,35 @@ pub struct FiredTimer {
 }
 
 /// 流程引擎。泛型于 RuntimeStore：测试用 InMemoryStore，生产用 PG 实现。
+/// 发起实例的完整上下文（v2.4：原 start_process_inner 9 个位置参数收拢，方案 §3.3）。
+///
+/// `subscriber_id` = L2 发起绑定的订阅 id（发起方向 handler 解析 name → id 后传入；与实例
+/// 落库同一事务写入，方案 §3.4）；子流程经 launch_one_subflow 复制父实例值（§3.2 继承）。
+#[derive(Debug, Clone, Default)]
+pub struct StartContext {
+    /// 流程定义 key。
+    pub definition_key: String,
+    /// 初始变量。
+    pub variables: Variables,
+    /// 业务键（可空）。
+    pub business_key: Option<String>,
+    /// 所属组织（可空；`dimensions["org"]` 的兼容投影）。
+    pub org_id: Option<String>,
+    /// 路由维度上下文（RD3）。
+    pub dimensions: std::collections::BTreeMap<String, String>,
+    /// 发起绑定的 webhook 订阅 id（L2；None = 未绑定走规则 2 全量匹配）。
+    pub subscriber_id: Option<i64>,
+    /// 发起方业务系统归属（技术债 005；来自结构化 key 声明的 TenantCtx.system，003）。
+    /// None = legacy 调用，归属过滤放行。
+    pub system_id: Option<String>,
+    /// 父实例 id（子流程）。
+    pub parent_instance_id: Option<String>,
+    /// 父令牌 id（子流程）。
+    pub parent_token_id: Option<String>,
+    /// 父发起节点 bpmn id（子流程）。
+    pub parent_node_bpmn_id: Option<String>,
+}
+
 pub struct Engine<S: RuntimeStore> {
     store: S,
     /// 已部署定义。用 `RwLock` 内部可变：`deploy` 取 `&self`，故 `Arc<Engine>` 之后仍可**热装载**
@@ -341,16 +370,20 @@ impl<S: RuntimeStore> Engine<S> {
             Error::DefinitionNotFound(format!("消息启动订阅缺少 definition_key: {message_name}"))
         })?;
         let org_id = dimensions.get(cmx_flow_model::DIM_ORG).cloned();
-        let snap = self.start_process_inner(
-            &def_key,
-            variables,
-            business_key,
-            org_id,
-            dimensions,
-            None,
-            None,
-            None,
-        ).await?;
+        let snap = self
+            .start_process_inner(StartContext {
+                definition_key: def_key,
+                variables,
+                business_key,
+                org_id,
+                dimensions,
+                subscriber_id: None,
+                system_id: None,
+                parent_instance_id: None,
+                parent_token_id: None,
+                parent_node_bpmn_id: None,
+            })
+            .await?;
         let snap = self.launch_subflows_for(&snap.instance.id).await?;
         self.flush_pending(&snap).await;
         Ok(Self::result_of(&snap))
@@ -561,18 +594,25 @@ impl<S: RuntimeStore> Engine<S> {
         org_id: Option<String>,
         dimensions: std::collections::BTreeMap<String, String>,
     ) -> Result<ExecutionResult> {
-        let snap = self
-            .start_process_inner(
-                definition_key,
-                variables,
-                business_key,
-                org_id,
-                dimensions,
-                None,
-                None,
-                None,
-            )
-            .await?;
+        self.start_process_ctx(StartContext {
+            definition_key: definition_key.to_string(),
+            variables,
+            business_key,
+            org_id,
+            dimensions,
+            subscriber_id: None,
+            system_id: None,
+            parent_instance_id: None,
+            parent_token_id: None,
+            parent_node_bpmn_id: None,
+        })
+        .await
+    }
+
+    /// 启动一个流程实例（完整上下文形态，v2.4：支持发起绑定 subscriber_id；原 9 参
+    /// start_process_inner 收拢为 StartContext——止住位置参数膨胀，方案 §3.3）。
+    pub async fn start_process_ctx(&self, ctx: StartContext) -> Result<ExecutionResult> {
+        let snap = self.start_process_inner(ctx).await?;
         // 若起始段就走到 callActivity，挂起了 WaitingSubflow 令牌，启动其子实例。
         let snap = self.launch_subflows_for(&snap.instance.id).await?;
         self.flush_pending(&snap).await;
@@ -581,19 +621,20 @@ impl<S: RuntimeStore> Engine<S> {
 
     /// 启动实例（可指定组织与父实例链接）。顶层实例 parent 为 None；子流程由 callActivity
     /// 调用时传入 parent_instance/parent_token，建立父子关系。返回落库后的子实例快照。
-    #[allow(clippy::too_many_arguments)]
-    async fn start_process_inner(
-        &self,
-        definition_key: &str,
-        variables: Variables,
-        business_key: Option<String>,
-        org_id: Option<String>,
-        dimensions: std::collections::BTreeMap<String, String>,
-        parent_instance_id: Option<String>,
-        parent_token_id: Option<String>,
-        parent_node_bpmn_id: Option<String>,
-    ) -> Result<InstanceSnapshot> {
-        let def = self.get_definition(definition_key)?;
+    async fn start_process_inner(&self, ctx: StartContext) -> Result<InstanceSnapshot> {
+        let StartContext {
+            definition_key,
+            variables,
+            business_key,
+            org_id,
+            dimensions,
+            subscriber_id,
+            system_id,
+            parent_instance_id,
+            parent_token_id,
+            parent_node_bpmn_id,
+        } = ctx;
+        let def = self.get_definition(&definition_key)?;
 
         // ⑤：按 var_schema 物化默认值 + 软校验（仅当声明了 schema）。运行核不看 schema，
         // 校验只在此发起边界做——strict 拒绝、lenient 仅 warn、off 跳过。
@@ -632,7 +673,7 @@ impl<S: RuntimeStore> Engine<S> {
 
         let instance = ProcessInstance {
             id: instance_id.clone(),
-            definition_key: definition_key.to_string(),
+            definition_key,
             business_key,
             state: InstanceState::Active,
             variables,
@@ -644,6 +685,10 @@ impl<S: RuntimeStore> Engine<S> {
             parent_instance_id,
             parent_token_id,
             parent_node_bpmn_id,
+            // v2.4 L2 发起绑定：与实例落库同一事务写入；子流程继承见 launch_one_subflow。
+            subscriber_id,
+            // 005 系统归属：与实例落库同一事务写入（insert_instance 16 列）；子流程继承。
+            system_id,
         };
         let token = Token {
             id: Uuid::new_v4().to_string(),
@@ -664,6 +709,8 @@ impl<S: RuntimeStore> Engine<S> {
             candidates: Vec::new(),
             cc_records: Vec::new(),
             delegations: Vec::new(),
+            // 007：新实例版本从 0 起（INSERT 直接落 0，save 时 CAS 期望 1）。
+            version: 0,
             pending_subs: Vec::new(),
             pending_activities: Vec::new(),
             pending_var_changes: Vec::new(),
@@ -830,17 +877,21 @@ impl<S: RuntimeStore> Engine<S> {
         let child_vars = map_vars(&parent_snap.instance.variables, &ca.input_vars, true);
 
         let child_snap = self
-            .start_process_inner(
-                &sub_key,
-                child_vars,
-                parent_snap.instance.business_key.clone(),
-                org,
+            .start_process_inner(StartContext {
+                definition_key: sub_key,
+                variables: child_vars,
+                business_key: parent_snap.instance.business_key.clone(),
+                org_id: org,
                 // 子实例整体继承父的维度上下文（RD3）——各挂载点仍按自己的 dim_key 取对应维度值。
-                parent_snap.instance.dimensions.clone(),
-                Some(parent_snap.instance.id.clone()),
-                Some(parent_token_id.to_string()),
-                Some(node_bpmn.to_string()),
-            )
+                dimensions: parent_snap.instance.dimensions.clone(),
+                // v2.4：子实例复制父实例的发起绑定（同一业务流程的组成部分，回调同一家，方案 §3.2）。
+                subscriber_id: parent_snap.instance.subscriber_id,
+                // 005：子实例继承父实例的系统归属（同一业务流程的组成部分）。
+                system_id: parent_snap.instance.system_id.clone(),
+                parent_instance_id: Some(parent_snap.instance.id.clone()),
+                parent_token_id: Some(parent_token_id.to_string()),
+                parent_node_bpmn_id: Some(node_bpmn.to_string()),
+            })
             .await?;
 
         // 子实例若立即完成（无等待态）→ 唤醒父令牌。
@@ -873,6 +924,13 @@ impl<S: RuntimeStore> Engine<S> {
         }
         snap.instance.updated_at = now;
         self.store.save_snapshot(&snap).await?;
+        let token_id = snap
+            .tokens
+            .iter()
+            .find(|t| t.node_bpmn_id == node_bpmn && t.state == TokenState::Incident)
+            .map(|t| t.id.clone());
+        self.upsert_incident_aux(&snap, node_bpmn, token_id.as_deref(), reason, retries)
+            .await;
         tracing::warn!(
             instance = %instance_id, node = %node_bpmn, retries, reason,
             "子流程解析失败 → Incident（实例保留，修绑定后 retry_incident 恢复）"
@@ -1565,6 +1623,37 @@ impl<S: RuntimeStore> Engine<S> {
         Ok(Self::result_of(&snapshot))
     }
 
+    /// 011：把 incident 同步登记到跨实例故障清单表（`cmx_flow_incident`）。
+    /// 台账是运维辅助，失败仅 warn 不阻塞主流程；同 (instance, node) 幂等累加 retries。
+    async fn upsert_incident_aux(
+        &self,
+        snapshot: &InstanceSnapshot,
+        node_bpmn: &str,
+        token_id: Option<&str>,
+        reason: &str,
+        retries: i64,
+    ) {
+        let now = self.clock.now();
+        let rec = cmx_flow_model::IncidentRecord {
+            instance_id: snapshot.instance.id.clone(),
+            node_bpmn_id: node_bpmn.to_string(),
+            token_id: token_id.map(|s| s.to_string()),
+            definition_key: snapshot.instance.definition_key.clone(),
+            business_key: snapshot.instance.business_key.clone(),
+            reason: reason.to_string(),
+            retries,
+            state: "OPEN".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        if let Err(e) = self.store.upsert_incident(&rec).await {
+            tracing::warn!(
+                instance = %snapshot.instance.id, node = %node_bpmn, error = %e,
+                "incident 台账登记失败（不阻塞主流程）"
+            );
+        }
+    }
+
     /// 重试 incident（H2）——把实例内所有 `Incident` 态令牌重新激活，再跑一遍推进。
     ///
     /// 用于 serviceTask 失败挂起后：运维改了数据/修了外部依赖，手动触发重试。重试仍失败则
@@ -1602,6 +1691,10 @@ impl<S: RuntimeStore> Engine<S> {
         // 子流程解析类 incident：令牌重激活后经 run_to_wait 会重新停到 WaitingSubflow，
         // 需再跑一遍子流程启动（绑定已修好则这次能解析成功）。对 serviceTask incident 无副作用。
         let snapshot = self.launch_subflows_for(instance_id).await?;
+        // 011：重试成功 → 该实例全部 OPEN incident 置 RESOLVED（清单闭环）。
+        if let Err(e) = self.store.resolve_incidents_by_instance(instance_id).await {
+            tracing::warn!(instance = %instance_id, error = %e, "incident 清单关闭失败（不阻塞主流程）");
+        }
         Ok(Self::result_of(&snapshot))
     }
 
@@ -1915,14 +2008,47 @@ impl<S: RuntimeStore> Engine<S> {
         correlation_key: Option<&str>,
         variables: Variables,
     ) -> Result<ExecutionResult> {
-        // 定位候选实例：显式 id → 单实例；否则需 correlation_key 跨实例扫描（借 list_instances）。
+        // 定位候选实例：显式 id → 单实例；否则**先查订阅表**（技术债 010 接线：
+        // find_catch_subscription 索引点查 O(1)，基建已齐），未命中再退 500 实例扫描兜底——
+        // 活跃实例超 500 后纯扫描会永久失配，订阅表命中即不受该上限约束。
         let target_iid = match instance_id {
             Some(id) => id.to_string(),
             None => {
                 let key = correlation_key.ok_or_else(|| {
                     Error::TaskNotActionable("跨实例相关消息需提供 correlationKey".into())
                 })?;
-                self.find_message_instance(message_name, key).await?
+                // 订阅表 tenant_id 维度现状写死 'default'（005 记录的侧表口径），
+                // correlate 无租户上下文，按默认租户查（与写入侧一致）。
+                // find_catch_subscription 只按 message+tenant 粗筛（首个候选），相关键的
+                // 精确匹配历来由引擎做——这里对候选实例做变量级精确校验，不过则退
+                // 500 实例扫描兜底（与旧语义逐字节一致；粗筛只是加速路径）。
+                let mut candidate = self
+                    .store
+                    .find_catch_subscription(message_name, Some(key), "default")
+                    .await
+                    .ok()
+                    .flatten();
+                if let Some(sub) = &candidate
+                    && let (Some(iid), Some(var)) = (&sub.instance_id, &sub.correlation_var)
+                {
+                    let exact = self.store.load_snapshot(iid).await.ok().and_then(|s| {
+                        let cur = s
+                            .instance
+                            .variables
+                            .get(var)
+                            .and_then(|v| v.as_str().map(|x| x.to_string()))
+                            .or_else(|| s.instance.variables.get(var).map(|v| v.to_string()));
+                        Some(cur.as_deref() == Some(key))
+                    });
+                    if exact != Some(true) {
+                        candidate = None;
+                    }
+                }
+                match candidate.and_then(|s| s.instance_id) {
+                    Some(iid) => iid,
+                    // 订阅未命中（含库错误/粗筛候选不精确）→ 退 500 实例扫描兜底。
+                    None => self.find_message_instance(message_name, key).await?,
+                }
             }
         };
 
@@ -2254,7 +2380,12 @@ impl<S: RuntimeStore> Engine<S> {
     /// 返回本轮触发的作业列表（供日志/展示）。`limit` 限制单轮处理的作业数，防雪崩。
     pub async fn trigger_due_timers(&self, limit: usize) -> Result<Vec<FiredTimer>> {
         let now = self.clock.now();
-        let due = self.store.find_due_jobs(now, limit).await?;
+        // 008：抢占式领取（SKIP LOCKED 租约），多副本下同一作业只被一个副本 fire。
+        let due = self
+            .store
+            // worker id = 进程 PID 唯一标识本副本（租约到期前其它副本不会重复领取）。
+            .acquire_due_jobs(&format!("timer-{}", std::process::id()), now, 60, limit)
+            .await?;
         if due.is_empty() {
             return Ok(Vec::new());
         }
@@ -2299,7 +2430,17 @@ impl<S: RuntimeStore> Engine<S> {
                 for f in fired.iter_mut().filter(|f| f.instance_id == instance_id) {
                     f.instance_state = snapshot.instance.state;
                 }
-                self.store.save_snapshot(&snapshot).await?;
+                // 技术债 007+008：CAS 冲突 = 该实例已被另一副本推进（多副本抢占语义）——
+                // 放弃本批触发（warn 可观测），不向调用方报错；用户路径冲突由 handler 映射 409。
+                match self.store.save_snapshot(&snapshot).await {
+                    Ok(()) => {}
+                    Err(cmx_flow_model::StoreError::Conflict(msg)) => {
+                        tracing::warn!(instance = %instance_id, error = %msg,
+                            "定时器触发保存冲突：实例已被并发推进，放弃本批触发（多副本抢占语义）");
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
                 self.flush_pending(&snapshot).await;
                 // A10：若定时器赢得事件网关竞速，清理同令牌挂起的消息订阅（竞争对手）。
                 // fire_timer 已清同令牌的其它 TimerJob，这里补清消息订阅。
@@ -2484,9 +2625,12 @@ impl<S: RuntimeStore> Engine<S> {
                                 instance = %instance_id, node = %node_bpmn, retries,
                                 reason = %msg, "serviceTask 失败 → Incident（实例保留，待人工重试）"
                             );
+                            let token_id = snapshot.tokens[idx].id.clone();
                             let tok = &mut snapshot.tokens[idx];
                             tok.state = TokenState::Incident;
                             tok.updated_at = now;
+                            self.upsert_incident_aux(&snapshot, &node_bpmn, Some(&token_id), &msg, retries)
+                                .await;
                         }
                     }
                 }
@@ -2959,9 +3103,12 @@ impl<S: RuntimeStore> Engine<S> {
                             &e.to_string(),
                         );
                         tracing::warn!(node = %gw_bpmn, retries, error = %e, "事件网关竞争事件注册失败");
+                        let token_id = snapshot.tokens[idx].id.clone();
                         let tok = &mut snapshot.tokens[idx];
                         tok.state = TokenState::Incident;
                         tok.updated_at = now;
+                        self.upsert_incident_aux(&snapshot, &gw_bpmn, Some(&token_id), &e.to_string(), retries)
+                            .await;
                     } else {
                         // 所有竞争事件注册成功：令牌停在网关，等第一个事件触发。
                         let tok = &mut snapshot.tokens[idx];
@@ -3015,9 +3162,12 @@ impl<S: RuntimeStore> Engine<S> {
                         let retries =
                             record_incident(&mut snapshot.instance.variables, &node_bpmn, &e.to_string());
                         tracing::warn!(node = %node_bpmn, retries, error = %e, "中间定时器解析失败，令牌转 Incident");
+                        let token_id = snapshot.tokens[idx].id.clone();
                         let tok = &mut snapshot.tokens[idx];
                         tok.state = TokenState::Incident;
                         tok.updated_at = now;
+                        self.upsert_incident_aux(&snapshot, &node_bpmn, Some(&token_id), &e.to_string(), retries)
+                            .await;
                     } else {
                         let tok = &mut snapshot.tokens[idx];
                         tok.state = TokenState::WaitingTimer;
@@ -3227,9 +3377,11 @@ impl<S: RuntimeStore> Engine<S> {
                 })
                 .is_some();
             if hit {
-                record_incident(&mut snap.instance.variables, &job.node_bpmn_id, error);
+                let retries = record_incident(&mut snap.instance.variables, &job.node_bpmn_id, error);
                 snap.instance.updated_at = self.clock.now();
                 self.store.save_snapshot(&snap).await?;
+                self.upsert_incident_aux(&snap, &job.node_bpmn_id, Some(&job.token_id), error, retries)
+                    .await;
             }
         }
         Ok(false)

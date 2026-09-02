@@ -105,7 +105,8 @@ fn parse_candidate_kind(s: &str) -> StoreResult<CandidateKind> {
 // ============================ 可空值助手 ============================
 
 /// Option<String> → DataValue（可空文本列，None 用裸 Null 即可）。
-fn opt_text(v: &Option<String>) -> DataValue {
+/// pub：incident 台账等旁路写入复用（store.rs 直调）。
+pub fn opt_text(v: &Option<String>) -> DataValue {
     match v {
         Some(s) => DataValue::String(s.clone()),
         // 可空文本列的 None 必须带类型标记：某些 tokio-postgres 版本对裸 Null 绑 VARCHAR 会
@@ -122,6 +123,14 @@ fn opt_ts(v: &Option<DateTime<Utc>>) -> DataValue {
     }
 }
 
+/// Option<i64> → DataValue（可空 BIGINT 列，None 带 Int 类型标记；如 subscriber_id）。
+fn opt_int(v: &Option<i64>) -> DataValue {
+    match v {
+        Some(i) => DataValue::Int(*i),
+        None => DataValue::NullTyped(SqlTypeMarker::Int),
+    }
+}
+
 /// Option<serde_json::Value> → DataValue（可空 jsonb 列，None 带 Json 类型标记）。
 fn opt_json(v: &Option<JsonValue>) -> DataValue {
     match v {
@@ -133,11 +142,12 @@ fn opt_json(v: &Option<JsonValue>) -> DataValue {
 // ============================ 写：INSERT/UPDATE ============================
 
 /// 实例 INSERT。variables 落 jsonb（DataValue::Json 承载 JSON 字符串）。
+/// version 起始 0（技术债 007 乐观锁）；system_id 为 005 归属列（legacy 调用 NULL）。
 pub fn insert_instance(inst: &ProcessInstance) -> (String, SqlParams) {
     let sql = "INSERT INTO cmx_flow_instance \
         (id, definition_key, business_key, state, variables, created_at, updated_at, ended_at, \
-         org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id) \
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"
+         org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id, subscriber_id, version, system_id) \
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 0, $15)"
         .to_string();
     let params = vec![
         DataValue::String(inst.id.clone()),
@@ -153,6 +163,8 @@ pub fn insert_instance(inst: &ProcessInstance) -> (String, SqlParams) {
         opt_text(&inst.parent_instance_id),
         opt_text(&inst.parent_token_id),
         opt_text(&inst.parent_node_bpmn_id),
+        opt_int(&inst.subscriber_id),
+        opt_text(&inst.system_id),
     ];
     (sql, SqlParams::DataValues(params))
 }
@@ -168,11 +180,17 @@ fn dimensions_param(dims: &std::collections::BTreeMap<String, String>) -> DataVa
     }
 }
 
-/// 实例 UPDATE（按 id）。父子/组织列在创建后不变，此处不重复更新，仅更新易变列。
-pub fn update_instance(inst: &ProcessInstance) -> (String, SqlParams) {
+/// 实例 UPDATE——**乐观锁 CAS 形态**（技术债 007）。
+///
+/// `WHERE id = $1 AND version = $8`，命中即 `version = version + 1`。影响 0 行 = 该实例
+/// 已被并发推进段覆盖保存（last-write-wins 的后写者），调用方（store.save_snapshot）须
+/// 回滚整个事务并返回 [`StoreError::Conflict`]，不得继续执行子表重写。
+/// 父子/组织/发起绑定/归属列在创建后不变，此处不重复更新，仅更新易变列。
+pub fn update_instance_cas(inst: &ProcessInstance, expected_version: i64) -> (String, SqlParams) {
     let sql = "UPDATE cmx_flow_instance SET \
         definition_key = $2, business_key = $3, state = $4, variables = $5, \
-        updated_at = $6, ended_at = $7 WHERE id = $1"
+        updated_at = $6, ended_at = $7, version = version + 1 \
+        WHERE id = $1 AND version = $8"
         .to_string();
     let params = vec![
         DataValue::String(inst.id.clone()),
@@ -182,6 +200,7 @@ pub fn update_instance(inst: &ProcessInstance) -> (String, SqlParams) {
         DataValue::Json(inst.variables.to_json().to_string()),
         DataValue::DateTime(inst.updated_at),
         opt_ts(&inst.ended_at),
+        DataValue::Int(expected_version),
     ];
     (sql, SqlParams::DataValues(params))
 }
@@ -311,11 +330,19 @@ pub fn insert_candidate(c: &TaskCandidate) -> (String, SqlParams) {
     (sql, SqlParams::DataValues(params))
 }
 
-/// 抄送记录 INSERT（M4.2）。node_bpmn_id/from_user/reason 可空用裸 Null；read_at 可空 TIMESTAMPTZ。
+/// 抄送记录 upsert（M4.2 + 技术债 007 旁路剥离）。
+///
+/// 快照 save **不再 DELETE 重插**本表（cc 只增不减，见 append_cc_records 唯一写路径），
+/// 改为 `ON CONFLICT (id) DO UPDATE`——**更新列清单刻意不含 read_at**：并发「标记已读」
+/// 走 `mark_cc_read` 独立 UPDATE（旁路小写），旧快照重存不得把它抹回未读（007 剥离前
+/// 的恶性回滚场景）。node_bpmn_id/from_user/reason 可空用裸 Null；read_at 仅插入时生效。
 pub fn insert_cc(cc: &CcRecord) -> (String, SqlParams) {
     let sql = "INSERT INTO cmx_flow_cc \
         (id, instance_id, node_bpmn_id, to_user_id, from_user_id, reason, read_at, created_at) \
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+        ON CONFLICT (id) DO UPDATE SET \
+          node_bpmn_id = EXCLUDED.node_bpmn_id, from_user_id = EXCLUDED.from_user_id, \
+          reason = EXCLUDED.reason"
         .to_string();
     let params = vec![
         DataValue::String(cc.id.clone()),
@@ -330,11 +357,16 @@ pub fn insert_cc(cc: &CcRecord) -> (String, SqlParams) {
     (sql, SqlParams::DataValues(params))
 }
 
-/// 转签台账 INSERT（M4.3）。
+/// 转签台账 INSERT（M4.3 + 技术债 007 旁路剥离）。
+///
+/// 台账是**append-only** 审计实体：快照 save 不再 DELETE 重插本表（并发推进段新记的台账
+/// 不再被旧快照全量覆盖丢失），改为 `ON CONFLICT (id) DO NOTHING`——同 id 重复保存幂等，
+/// 台账行一旦落库永不改写。
 pub fn insert_delegation(d: &TaskDelegation) -> (String, SqlParams) {
     let sql = "INSERT INTO cmx_flow_task_delegation \
         (id, task_id, instance_id, kind, from_user_id, to_user_id, temp_task_id, reason, created_at) \
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+        ON CONFLICT (id) DO NOTHING"
         .to_string();
     let params = vec![
         DataValue::String(d.id.clone()),
@@ -353,21 +385,24 @@ pub fn insert_delegation(d: &TaskDelegation) -> (String, SqlParams) {
 // ============================ 写：历史归档（RU → HI） ============================
 
 /// 历史实例 upsert（幂等：同 id 再归档则更新）。archived_at 由调用方传入统一时刻。
+/// version 由调用方传（007：归档时把实例行的乐观锁版本一并留档）。
 pub fn upsert_hi_instance(
     inst: &ProcessInstance,
     archived_at: DateTime<Utc>,
+    version: i64,
 ) -> (String, SqlParams) {
     let duration_ms: DataValue = match inst.ended_at {
         Some(end) => DataValue::Int((end - inst.created_at).num_milliseconds()),
         None => DataValue::NullTyped(SqlTypeMarker::Int),
     };
     let sql = "INSERT INTO cmx_flow_hi_instance \
-        (id, definition_key, business_key, state, variables, created_at, ended_at, duration_ms, archived_at) \
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+        (id, definition_key, business_key, state, variables, created_at, ended_at, duration_ms, archived_at, subscriber_id, version, system_id) \
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
         ON CONFLICT (id) DO UPDATE SET \
           state = EXCLUDED.state, variables = EXCLUDED.variables, \
           ended_at = EXCLUDED.ended_at, duration_ms = EXCLUDED.duration_ms, \
-          archived_at = EXCLUDED.archived_at"
+          archived_at = EXCLUDED.archived_at, subscriber_id = EXCLUDED.subscriber_id, \
+          version = EXCLUDED.version, system_id = EXCLUDED.system_id"
         .to_string();
     let params = vec![
         DataValue::String(inst.id.clone()),
@@ -379,6 +414,9 @@ pub fn upsert_hi_instance(
         opt_ts(&inst.ended_at),
         duration_ms,
         DataValue::DateTime(archived_at),
+        opt_int(&inst.subscriber_id),
+        DataValue::Int(version),
+        opt_text(&inst.system_id),
     ];
     (sql, SqlParams::DataValues(params))
 }
@@ -443,6 +481,8 @@ pub fn row_to_instance(ds: &DataSet) -> StoreResult<Option<ProcessInstance>> {
         parent_instance_id: get_opt_string(row, schema, "parent_instance_id"),
         parent_token_id: get_opt_string(row, schema, "parent_token_id"),
         parent_node_bpmn_id: get_opt_string(row, schema, "parent_node_bpmn_id"),
+        subscriber_id: get_opt_i64(row, schema, "subscriber_id"),
+        system_id: get_opt_string(row, schema, "system_id"),
     }))
 }
 
@@ -465,6 +505,8 @@ pub fn rows_to_instances(ds: &DataSet) -> StoreResult<Vec<ProcessInstance>> {
             parent_instance_id: get_opt_string(row, schema, "parent_instance_id"),
             parent_token_id: get_opt_string(row, schema, "parent_token_id"),
             parent_node_bpmn_id: get_opt_string(row, schema, "parent_node_bpmn_id"),
+            subscriber_id: get_opt_i64(row, schema, "subscriber_id"),
+            system_id: get_opt_string(row, schema, "system_id"),
         });
     }
     Ok(out)
@@ -700,7 +742,8 @@ fn get_bool(row: &Row, schema: &Schema, col: &str) -> bool {
 }
 
 /// 取整数列（count(*) 回 int8 → DataValue::Int）。缺失/非整数回退 0。
-fn get_i64(row: &Row, schema: &Schema, col: &str) -> i64 {
+/// store 层读快照乐观锁 version 也用（列 NOT NULL DEFAULT 0，不会缺失）。
+pub fn get_i64(row: &Row, schema: &Schema, col: &str) -> i64 {
     match row.get_by_name(schema, col) {
         Some(DataValue::Int(v)) => *v,
         _ => 0,

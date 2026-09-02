@@ -42,7 +42,8 @@ pub use migration::{
 };
 pub use runtime::{
     AsyncJob, ActivityRecord, CcRecord, CcSummary, DeadLetterJob, DueJob, InstanceSnapshot,
-    InstanceState, InstanceSummary, MessageSubscription, MessageSubscriptionKind, MiScope,
+    IncidentRecord, InstanceState, InstanceSummary, MessageSubscription, MessageSubscriptionKind,
+    MiScope,
     ProcessInstance, Task, TaskCandidate, TaskDelegation, TimerJob, TimerJobKind, Token, TokenState,
     VarChangeRecord,
 };

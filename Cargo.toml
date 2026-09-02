@@ -20,7 +20,23 @@ members = [
     "crates/cmx-flow-identity",
     "crates/cmx-flow-app",
     "crates/cmx-flow-server",
-    "crates/cmx-flow-demo",
+    "crates/cmx-flow-tests",
+    "crates/cmx-flow-worker-sdk",
+]
+
+# 技术债 014：demo crate 退出默认构建面（seed_if_absent 会向生产定义库种入 7 条 demo BPMN，
+# 生产库被 demo 二进制连过即永久入库）。members 保留可寻址；`default-members` 限定了
+# `cargo build` / `cargo test`（不带 -p 时）的默认范围——demo 需显式 `cargo run -p cmx-flow-demo`。
+default-members = [
+    "crates/cmx-flow-model",
+    "crates/cmx-flow-bpmn",
+    "crates/cmx-flow-engine",
+    "crates/cmx-flow-def",
+    "crates/cmx-flow-store-pg",
+    "crates/cmx-flow-adapters",
+    "crates/cmx-flow-identity",
+    "crates/cmx-flow-app",
+    "crates/cmx-flow-server",
     "crates/cmx-flow-tests",
     "crates/cmx-flow-worker-sdk",
 ]

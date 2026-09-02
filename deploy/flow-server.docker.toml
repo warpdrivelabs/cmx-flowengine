@@ -41,3 +41,18 @@ api_keys = "cmx_sk_platform_to_flow:default"
 [assets]
 ui_native_dir = "web/ui-native"
 ui_html_dir   = "web/ui-html"
+
+# —— 流程引擎运行态库（005 短期：db_id 配置化，解「默认库绑死财务库」假耦合）——
+# 未配置时缺省 "fico-db"（零回归）；新环境建议配中性名（如 "flow-default"），
+# 须与 [[databases]] 中 cmx_flow_* 表所在库的 db_id 一致。
+[flow]
+db_id = "fico-db"
+
+# —— 服务间调用目录（webhook 订阅的 service_key 依赖：缺段时 L1 默认层投不出去）——
+[service_rpc]
+default_transport = "http"
+timeout_ms = 30000
+retry_max = 1
+
+[service_rpc.services]
+mdm = { url = "http://mdm:8095" }

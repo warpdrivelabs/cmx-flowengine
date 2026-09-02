@@ -53,19 +53,41 @@ impl PgRuntimeStore {
         Ok(())
     }
 
-    /// 批量执行一组 (sql, params)，全部在同一事务内。
+    /// save_snapshot 的事务骨架（技术债 007 乐观锁版）。
     ///
-    /// 这是 save_snapshot 的事务骨架：begin → 逐条执行 → commit；任一失败即 rollback。
-    async fn exec_in_txn(&self, ops: Vec<(String, SqlParams)>) -> StoreResult<()> {
+    /// begin → **先执行实例 CAS UPDATE 并检查影响行数**（0 行 = 该实例已被并发推进段保存，
+    /// 整体回滚返回 [`StoreError::Conflict`]，子表重写不发生）→ 命中则逐条执行子表重写 +
+    /// hi 归档 → commit。保证「版本比对 → 全量覆盖」的原子性：冲突者连子表也碰不到。
+    async fn exec_save_ops(
+        &self,
+        instance_id: &str,
+        expected_version: i64,
+        cas_ops: Vec<(String, SqlParams)>,
+        ops: Vec<(String, SqlParams)>,
+    ) -> StoreResult<()> {
         let manager = get_default_pg_db_manager();
-        // begin / commit / rollback 走 TransactionContext（manager 的事务门面）。
         let txn_ctx = manager.get_transaction_context();
         let txn_id = txn_ctx
             .begin(&self.db_id)
             .await
             .map_err(|e| StoreError::Backend(format!("开启事务失败: {e}")))?;
 
-        // 逐条执行；出错则回滚并返回。
+        for (sql, params) in cas_ops {
+            let affected = execute_sql_with_params(&self.db_id, Some(&txn_id), &sql, params)
+                .await
+                .map_err(|e| {
+                    let _ = txn_ctx.rollback(&txn_id);
+                    StoreError::Backend(format!("事务内执行失败: {e}"))
+                })?;
+            if affected == 0 {
+                let _ = txn_ctx.rollback(&txn_id).await;
+                return Err(StoreError::Conflict(format!(
+                    "实例 {instance_id} 已被并发修改（保存期望 version={expected_version}）；\
+                     该实例已被另一操作推进，请刷新后重试"
+                )));
+            }
+        }
+
         for (sql, params) in ops {
             if let Err(e) = execute_sql_with_params(&self.db_id, Some(&txn_id), &sql, params).await
             {
@@ -81,16 +103,32 @@ impl PgRuntimeStore {
         Ok(())
     }
 
-    /// 组装「重写某实例全部子实体 + 更新实例」的事务操作序列。
-    fn build_save_ops(snapshot: &InstanceSnapshot, is_create: bool) -> Vec<(String, SqlParams)> {
+    /// 组装「重写某实例全部子实体 + 更新实例」的事务操作序列（技术债 007 改造后）。
+    ///
+    /// 返回 (cas_ops, rest_ops)：`cas_ops` 是实例乐观锁 UPDATE（必须最先执行并检查影响行数），
+    /// `rest_ops` 是子表重写 + hi 归档（仅 CAS 命中后执行）。
+    ///
+    /// 旁路剥离（007 先行子项）：
+    /// - **cc 已读**：本表不再 DELETE——cc 只增不减，改 `ON CONFLICT DO UPDATE` 且更新列
+    ///   刻意不含 read_at，并发 `mark_cc_read`（旁路小写）不被旧快照重存抹回未读；
+    /// - **转签台账**：本表不再 DELETE——append-only 审计实体，`ON CONFLICT DO NOTHING`
+    ///   幂等重放，并发推进段新记的台账不被旧快照全量覆盖丢失。
+    fn build_save_ops(
+        snapshot: &InstanceSnapshot,
+        is_create: bool,
+    ) -> (Vec<(String, SqlParams)>, Vec<(String, SqlParams)>) {
+        let mut cas_ops: Vec<(String, SqlParams)> = Vec::new();
         let mut ops: Vec<(String, SqlParams)> = Vec::new();
         let iid = snapshot.instance.id.clone();
 
         if is_create {
             ops.push(mapping::insert_instance(&snapshot.instance));
         } else {
-            ops.push(mapping::update_instance(&snapshot.instance));
-            // 重写子实体：先删旧。
+            cas_ops.push(mapping::update_instance_cas(
+                &snapshot.instance,
+                snapshot.version,
+            ));
+            // 重写子实体：先删旧（cc/task_delegation 已剥离，见函数头注释）。
             ops.push((
                 "DELETE FROM cmx_flow_token WHERE instance_id = $1".to_string(),
                 SqlParams::DataValues(vec![DataValue::String(iid.clone())]),
@@ -109,14 +147,6 @@ impl PgRuntimeStore {
             ));
             ops.push((
                 "DELETE FROM cmx_flow_task_candidate WHERE instance_id = $1".to_string(),
-                SqlParams::DataValues(vec![DataValue::String(iid.clone())]),
-            ));
-            ops.push((
-                "DELETE FROM cmx_flow_cc WHERE instance_id = $1".to_string(),
-                SqlParams::DataValues(vec![DataValue::String(iid.clone())]),
-            ));
-            ops.push((
-                "DELETE FROM cmx_flow_task_delegation WHERE instance_id = $1".to_string(),
                 SqlParams::DataValues(vec![DataValue::String(iid.clone())]),
             ));
         }
@@ -146,28 +176,38 @@ impl PgRuntimeStore {
         // 实例进入终态时，同事务归档到历史表（RU/HI 分离）。幂等 upsert，重复保存无害。
         if snapshot.instance.state.is_terminal() {
             let archived_at = chrono::Utc::now();
-            ops.push(mapping::upsert_hi_instance(&snapshot.instance, archived_at));
+            let archived_version = if is_create {
+                0
+            } else {
+                snapshot.version + 1 // CAS 命中后 version 已 +1，归档行与运行态行一致
+            };
+            ops.push(mapping::upsert_hi_instance(
+                &snapshot.instance,
+                archived_at,
+                archived_version,
+            ));
             for task in snapshot.tasks.iter().filter(|t| t.completed) {
                 ops.push(mapping::upsert_hi_task(task, archived_at));
             }
         }
-        ops
+        (cas_ops, ops)
     }
 }
 
 #[async_trait]
 impl RuntimeStore for PgRuntimeStore {
     async fn create_snapshot(&self, snapshot: &InstanceSnapshot) -> StoreResult<()> {
-        // 新实例首存也走事务：实例 + 令牌 + 任务一起原子落地。
-        let ops = Self::build_save_ops(snapshot, true);
-        self.exec_in_txn(ops).await
+        // 新实例首存也走事务：实例 + 令牌 + 任务一起原子落地。新行无并发覆盖面，无 CAS。
+        let (_, ops) = Self::build_save_ops(snapshot, true);
+        self.exec_save_ops(&snapshot.instance.id, 0, Vec::new(), ops)
+            .await
     }
 
     async fn load_snapshot(&self, instance_id: &str) -> StoreResult<InstanceSnapshot> {
-        // 实例。
+        // 实例（含乐观锁 version，save 时 CAS 比对；system_id 为 005 归属列）。
         let inst_sql = format!(
             "SELECT id, definition_key, business_key, state, variables, created_at, updated_at, ended_at, \
-                    org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id \
+                    org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id, subscriber_id, version, system_id \
              FROM cmx_flow_instance WHERE id = '{}'",
             escape(instance_id)
         );
@@ -176,6 +216,12 @@ impl RuntimeStore for PgRuntimeStore {
             .map_err(|e| StoreError::Backend(format!("查询实例失败: {e}")))?;
         let instance = mapping::row_to_instance(&inst_ds)?
             .ok_or_else(|| StoreError::InstanceNotFound(instance_id.to_string()))?;
+        // version 与快照同行读出：CAS 期望值（列 NOT NULL DEFAULT 0，缺失回退 0）。
+        let version = inst_ds
+            .iter()
+            .next()
+            .map(|row| mapping::get_i64(row, inst_ds.schema.as_ref(), "version"))
+            .unwrap_or(0);
 
         // 令牌。
         let tok_sql = format!(
@@ -282,6 +328,8 @@ impl RuntimeStore for PgRuntimeStore {
             candidates,
             cc_records,
             delegations,
+            // 乐观锁期望版本（007）：save_snapshot 以此 CAS 提交。
+            version,
             pending_subs: Vec::new(),
             pending_activities: Vec::new(),
             pending_var_changes: Vec::new(),
@@ -289,8 +337,14 @@ impl RuntimeStore for PgRuntimeStore {
     }
 
     async fn save_snapshot(&self, snapshot: &InstanceSnapshot) -> StoreResult<()> {
-        let ops = Self::build_save_ops(snapshot, false);
-        self.exec_in_txn(ops).await
+        let (cas_ops, ops) = Self::build_save_ops(snapshot, false);
+        self.exec_save_ops(
+            &snapshot.instance.id,
+            snapshot.version,
+            cas_ops,
+            ops,
+        )
+        .await
     }
 
     async fn list_instances(&self, limit: usize) -> StoreResult<Vec<InstanceSummary>> {
@@ -311,25 +365,39 @@ impl RuntimeStore for PgRuntimeStore {
         mapping::rows_to_summaries(&ds)
     }
 
-    async fn find_due_jobs(
+    async fn acquire_due_jobs(
         &self,
+        worker_id: &str,
         now: chrono::DateTime<chrono::Utc>,
+        lease_secs: i64,
         limit: usize,
     ) -> StoreResult<Vec<DueJob>> {
-        // 跨实例查到期作业，按到期时刻升序（先到期先处理）。参数化绑定 now。
+        // 技术债 008：SKIP LOCKED 集群安全抢占（对齐 acquire_async_jobs）。内层 SELECT
+        // 只锁本 worker 能拿到的行，外层 UPDATE 打租约并 RETURNING——多副本下同一
+        // 定时器作业不会被两个副本同时取到 fire（单副本行为不变：无竞争，照常领取）。
+        let lease_expires = now + chrono::Duration::seconds(lease_secs);
         let sql = format!(
-            "SELECT j.id, j.instance_id, j.due_at \
-             FROM cmx_flow_job j \
-             JOIN cmx_flow_instance i ON i.id = j.instance_id \
-             WHERE j.due_at <= $1 AND i.state = 'ACTIVE' \
-             ORDER BY j.due_at ASC \
-             LIMIT {}",
+            "UPDATE cmx_flow_job SET claimed_by = $1, lease_expires_at = $2 \
+             WHERE id IN ( \
+                SELECT j.id FROM cmx_flow_job j \
+                JOIN cmx_flow_instance i ON i.id = j.instance_id \
+                WHERE j.due_at <= $3 AND i.state = 'ACTIVE' \
+                  AND (j.claimed_by IS NULL OR j.lease_expires_at <= $3) \
+                ORDER BY j.due_at ASC \
+                LIMIT {} \
+                FOR UPDATE OF j SKIP LOCKED \
+             ) \
+             RETURNING id, instance_id, due_at",
             limit.min(1000)
         );
-        let params = SqlParams::DataValues(vec![DataValue::DateTime(now)]);
-        let ds = query_sql_with_params(&self.db_id, None, &sql, params, "flow_due_jobs")
+        let params = SqlParams::DataValues(vec![
+            DataValue::String(worker_id.to_string()),
+            DataValue::DateTime(lease_expires),
+            DataValue::DateTime(now),
+        ]);
+        let ds = query_sql_with_params(&self.db_id, None, &sql, params, "flow_acquire_due")
             .await
-            .map_err(|e| StoreError::Backend(format!("查询到期作业失败: {e}")))?;
+            .map_err(|e| StoreError::Backend(format!("抢占到期作业失败: {e}")))?;
         mapping::rows_to_due_jobs(&ds)
     }
 
@@ -386,7 +454,7 @@ impl RuntimeStore for PgRuntimeStore {
     ) -> StoreResult<Vec<cmx_flow_model::ProcessInstance>> {
         let sql = format!(
             "SELECT id, definition_key, business_key, state, variables, created_at, updated_at, ended_at, \
-                    org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id \
+                    org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id, subscriber_id, system_id \
              FROM cmx_flow_instance WHERE parent_instance_id = '{}'",
             escape(parent_instance_id)
         );
@@ -694,6 +762,49 @@ impl RuntimeStore for PgRuntimeStore {
             .await
             .map_err(|e| StoreError::Backend(format!("查询活动历史失败: {e}")))?;
         mapping::rows_to_activities(&ds)
+    }
+
+    // ==================== 故障清单（技术债 011）====================
+
+    async fn upsert_incident(
+        &self,
+        inc: &cmx_flow_model::IncidentRecord,
+    ) -> StoreResult<()> {
+        let sql = "INSERT INTO cmx_flow_incident \
+            (id, instance_id, token_id, node_bpmn_id, definition_key, business_key, reason, retries, state, created_at, updated_at) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'OPEN', $9, $10) \
+            ON CONFLICT (instance_id, node_bpmn_id) DO UPDATE SET \
+              token_id = EXCLUDED.token_id, reason = EXCLUDED.reason, retries = EXCLUDED.retries, \
+              state = 'OPEN', updated_at = EXCLUDED.updated_at";
+        let params = SqlParams::DataValues(vec![
+            DataValue::String(format!("inc-{}-{}", inc.instance_id, inc.node_bpmn_id)),
+            DataValue::String(inc.instance_id.clone()),
+            mapping::opt_text(&inc.token_id),
+            DataValue::String(inc.node_bpmn_id.clone()),
+            DataValue::String(inc.definition_key.clone()),
+            mapping::opt_text(&inc.business_key),
+            DataValue::String(inc.reason.clone()),
+            DataValue::Int(inc.retries),
+            DataValue::DateTime(inc.created_at),
+            DataValue::DateTime(inc.updated_at),
+        ]);
+        execute_sql_with_params(&self.db_id, None, sql, params)
+            .await
+            .map_err(|e| StoreError::Backend(format!("登记 incident 失败: {e}")))?;
+        Ok(())
+    }
+
+    async fn resolve_incidents_by_instance(&self, instance_id: &str) -> StoreResult<()> {
+        let sql = "UPDATE cmx_flow_incident SET state = 'RESOLVED', updated_at = $2 \
+                   WHERE instance_id = $1 AND state = 'OPEN'";
+        let params = SqlParams::DataValues(vec![
+            DataValue::String(instance_id.to_string()),
+            DataValue::DateTime(chrono::Utc::now()),
+        ]);
+        execute_sql_with_params(&self.db_id, None, sql, params)
+            .await
+            .map_err(|e| StoreError::Backend(format!("关闭 incident 失败: {e}")))?;
+        Ok(())
     }
 
     // ==================== 引擎派生变量历史（决策/子流程回填）====================

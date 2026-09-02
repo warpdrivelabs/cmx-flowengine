@@ -53,12 +53,14 @@ impl RuntimeStore for CapturingStore {
     async fn list_instances(&self, limit: usize) -> StoreResult<Vec<InstanceSummary>> {
         self.inner.list_instances(limit).await
     }
-    async fn find_due_jobs(
+    async fn acquire_due_jobs(
         &self,
+        worker_id: &str,
         now: chrono::DateTime<chrono::Utc>,
+        lease_secs: i64,
         limit: usize,
     ) -> StoreResult<Vec<DueJob>> {
-        self.inner.find_due_jobs(now, limit).await
+        self.inner.acquire_due_jobs(worker_id, now, lease_secs, limit).await
     }
     async fn find_cc_for_user(
         &self,

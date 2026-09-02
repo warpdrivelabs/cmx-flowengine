@@ -19,7 +19,7 @@
 
 use cmx_flow_app::openapi::flow_openapi;
 use cmx_flow_app::{
-    FLOW_DB_ID, IAM_DB_ID, flow_routes, flow_routes_v1, spawn_async_job_poller, spawn_timer_poller,
+    IAM_DB_ID, flow_routes, flow_routes_v1, spawn_async_job_poller, spawn_timer_poller,
 };
 use cmx_web_chassis::{BannerSpec, ChassisConfig, ServiceSpec, run};
 use utoipa_swagger_ui::SwaggerUi;
@@ -120,22 +120,35 @@ async fn main() -> cmx_web_chassis::Result<()> {
         // 注册建池即首连验证——库不可达同样终止启动（fail-fast）。
         .init("datasources", |_meta| {
             Box::pin(async {
+                // 004 小项 fail-fast：auth.mode 缺失/非法在启动期即失败（无鉴权必须是显式 off）。
+                cmx_flow_app::auth_config_warmup();
                 let base = cmx_service_base::BaseConfig::from_config_manager()
                     .map_err(|e| anyhow::anyhow!("读取 [[databases]] 配置失败: {e}"))?;
+                // 005 短期：运行态库 db_id 配置化（flow.db_id，缺省 fico-db）——校验随配置值走。
+                // DatasourceRules 要求 &'static——启动期一次性值 Box::leak（进程生命周期等价）。
+                let flow_db_id: &'static str = Box::leak(
+                    cmx_flow_app::default_flow_db_id().to_string().into_boxed_str(),
+                );
+                let required_db_ids: &'static [&'static str] =
+                    Box::leak(vec![flow_db_id, IAM_DB_ID].into_boxed_slice());
                 cmx_service_base::validate_databases(
                     &base.databases,
                     &cmx_service_base::DatasourceRules {
-                        required_db_ids: &[FLOW_DB_ID, IAM_DB_ID],
+                        required_db_ids: &required_db_ids,
                         require_default: true,
                         require_biz: false,
                     },
                 )
-                .map_err(|e| anyhow::anyhow!("数据源校验失败（需 db_id=\"{FLOW_DB_ID}\"(default) + \"{IAM_DB_ID}\" 两库）: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("数据源校验失败（需 db_id=\"{flow_db_id}\"(default) + \"{IAM_DB_ID}\" 两库）: {e}"))?;
                 let ids: Vec<&str> = base.databases.iter().map(|d| d.db_id.as_str()).collect();
                 cmx_service_base::register_pg_datasources(&base.databases)
                     .await
                     .map_err(|e| anyhow::anyhow!("注册数据源失败: {e}"))?;
-                tracing::info!(databases = ?ids, "✅ 流程引擎 tokio-pg 数据源已注册（[[databases]] 配置驱动）");
+                tracing::info!(
+                    databases = ?ids,
+                    flow_db_id = cmx_flow_app::default_flow_db_id(),
+                    "✅ 流程引擎 tokio-pg 数据源已注册（[[databases]] 配置驱动）"
+                );
                 Ok(())
             })
         })
@@ -153,6 +166,12 @@ async fn main() -> cmx_web_chassis::Result<()> {
                 cmx_flow_app::spawn_webhook_delivery_poller()
                     .await
                     .map_err(|e| anyhow::anyhow!("出站 webhook 投递 poller 启动失败: {e}"))?;
+                cmx_flow_app::spawn_delivery_retention()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("运行态 retention 清理启动失败: {e}"))?;
+                cmx_flow_app::spawn_incident_retry()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("incident 自动重试启动失败: {e}"))?;
                 Ok(())
             })
         });

@@ -35,27 +35,19 @@ function configure (o) { Object.assign(CFG, o || {}); return CFG }
 // 当前用户（走 CFG，门户默认从 localStorage 兜底）。
 function currentUser () { return CFG.getUser() }
 
-// formKey → 表单页坐标。F4：优先查后端注册表 /api/flow/forms/{key}（接新表单只需配一行，
-// 不改前端）；查不到再退回内置 FORM_MAP 兜底（离线/未种子时仍可用）。缓存解析结果。
-const FORM_MAP = {
-  'pay.review': { kind: 'native', nativePage: 'portal.flow.task-form', domain: 'fi', application: 'cmxfico', module: 'gl', bizTable: 'cf_pay_request' },
-  'pay.review.html': { kind: 'html', htmlPage: 'flow-pay-review-form', domain: 'fi', application: 'cmxfico', module: 'gl', bizTable: 'cf_pay_request' },
-}
+// formKey → 表单页坐标。F4：唯一真源 = 后端注册表 /api/flow/forms/{key}（接新表单只需配一行，
+// 不改前端）。技术债 014：前端内置 FORM_MAP 兜底已删除——注册表外的硬编码路由会让「删除的
+// 绑定离线复活」，掩盖配置错误；注册表不可用时明确报错而非静默兜底。缓存解析结果（会话级，
+// 绑定热更新后刷新页面生效）。
 const formCache = {}
 async function resolveForm (formKey) {
   if (!formKey) return {}
   if (formCache[formKey]) return formCache[formKey]
-  try {
-    const b = await apiJson('/api/flow/forms/' + enc(formKey))
-    if (b && b.formKey) {
-      const f = { kind: b.kind || 'native', nativePage: b.nativePage || '', nativeView: b.nativeView || b.view || 'content', htmlPage: b.htmlPage || '', workspaceNode: b.workspaceNode || '', bizTable: b.bizTable || '', domain: b.domain || '', application: b.application || '', module: b.module || '', file: b.file || '', apiPath: b.apiPath || '', title: b.title || '', console: b.console || 'platform' }
-      formCache[formKey] = f
-      return f
-    }
-  } catch { /* 注册表不可用则兜底 */ }
-  const fb = FORM_MAP[formKey] || {}
-  formCache[formKey] = fb
-  return fb
+  const b = await apiJson('/api/flow/forms/' + enc(formKey))
+  if (!b || !b.formKey) throw new Error('表单绑定不存在: ' + formKey + '（请在表单绑定管理页注册）')
+  const f = { kind: b.kind || 'native', nativePage: b.nativePage || '', nativeView: b.nativeView || b.view || 'content', htmlPage: b.htmlPage || '', workspaceNode: b.workspaceNode || '', bizTable: b.bizTable || '', domain: b.domain || '', application: b.application || '', module: b.module || '', file: b.file || '', apiPath: b.apiPath || '', title: b.title || '', console: b.console || 'platform' }
+  formCache[formKey] = f
+  return f
 }
 
 const CATEGORIES = [

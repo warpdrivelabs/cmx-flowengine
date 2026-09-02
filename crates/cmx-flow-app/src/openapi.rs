@@ -138,4 +138,32 @@ const ENDPOINTS: &[Ep] = &[
     (HttpMethod::Post, "/webhook-deliveries/retry", "Webhook订阅", "死信重发（DEAD/租约过期 IN_FLIGHT → PENDING）", &[]),
     (HttpMethod::Post, "/webhook-deliveries/skip", "Webhook订阅", "死信处置（DEAD → SKIPPED 留痕）", &[]),
     (HttpMethod::Post, "/webhook-deliveries/purge", "Webhook订阅", "清理 DONE/SKIPPED 行（beforeDays 默认 7）", &[]),
+    // v2.4 三级路由（L2 发起绑定经 POST /instances 请求体 subscriber 参数；L3 定义订阅两端点）
+    (HttpMethod::Post, "/webhook-subscriptions/definitions/subscribe", "Webhook订阅", "定义订阅：definitionKeys 增量并入指定订阅（L3；通配行/env 行/停用订阅 400，空化防线）", &[]),
+    (HttpMethod::Post, "/webhook-subscriptions/definitions/unsubscribe", "Webhook订阅", "定义退订：definitionKeys 增量删除（L3；将空化定义集 400，幂等回显剩余集）", &[]),
+    (HttpMethod::Get, "/webhook-subscriptions/mon", "Webhook订阅", "路由域运维计数（丢弃/幽灵绑定/点查失败/落库失败/旁路写失败）", &[]),
+    // 001-M3：缺行补发（12 端点收口）
+    (HttpMethod::Post, "/webhook-subscriptions/rebuild", "Webhook订阅", "缺行补发：时间窗内终态实例的完成/终止事件按订阅过滤重放进投递管线", &[]),
+    // 运维面（技术债 012/013 批次 6）+ 实例分页（016）
+    (HttpMethod::Post, "/instances/query", "实例", "实例清单分页查询（合规 POST+body；存量 GET /instances 保留）", &[]),
+    (HttpMethod::Post, "/jobs/query", "运维", "定时器作业清单（跨实例，含租约占用方）", &[]),
+    (HttpMethod::Post, "/incidents/query", "运维", "跨实例故障清单（OPEN/RESOLVED 过滤）", &[]),
+    (HttpMethod::Get, "/metrics", "运维", "Prometheus text 业务指标（投递/故障/死信/运行实例/业务失败计数）", &[]),
 ];
+
+// **存量 OpenAPI 缺口清单**（技术债 016 止损口径：新增端点强制收录如上；存量 v1 的缺口
+// 罗列如下备查，整体补录属「从路由表派生生成」专项，不混入批次 7）：
+// - 实例干预类：`POST /instances/{id}/suspend|resume|jump|withdraw|set-variables`、
+//   `POST /instances/{id}/migrate`、`POST /instances/{id}/migrate/validate`、
+//   `POST /instances/{id}/retry-incident`、`POST /instances/{id}/correlate`、
+//   `GET /instances/{id}/variables|comments|biz|variables/history|activities`、`GET /instances/{id}/children`
+// - 任务类：`GET /tasks/my`、`GET /tasks/{id}/reject-targets`、`POST /tasks/{id}/reject`、`POST /tasks/{id}/urge`
+// - 死信/异步作业：`GET /dead-letter-jobs`、`POST /dead-letter-jobs/{id}/retry`、
+//   `DELETE /dead-letter-jobs/{id}`、`POST /async-jobs/acquire`、`POST /async-jobs/{id}/complete`、
+//   `POST /async-jobs/{id}/fail`、`POST /external-worker/acquire`
+// - 消息/定义管理：`POST /messages/{...}`、`POST /definitions/draft|publish|activate|validate|simulate`、
+//   `GET|DELETE /decisions/{key}`、`POST /decisions/evaluate`
+// - 子流程路由：`GET /subflow-bindings/{key}`、`POST /subflow-bindings/save`、`POST /subflow-bindings/delete`
+// - 运维/身份：`GET /stats`、`GET /_mon*`、`POST /identity/resolve`、`GET /users`、`GET /orgs`、
+//   `GET /dimensions/*`、协同 `POST /design/collab/*`、SSE presence 系
+// - 删除/缺陷类（v2 整改对象）：5 个 DELETE 端点、45 个 Path Variable 模式

@@ -90,7 +90,7 @@ fn collect_nodes(
             "startEvent" => Some(match event_sp {
                 // A3：事件子流程内的 startEvent 须带 errorEventDefinition → ErrorStartEvent。
                 Some(sp_bpmn) => parse_error_start_event(&child, sp_bpmn)?,
-                None => parse_start_event(&child),
+                None => parse_start_event(&child)?,
             }),
             "endEvent" => Some(if has_terminate_definition(&child) {
                 NodeKind::TerminateEndEvent
@@ -524,14 +524,39 @@ fn parse_error_start_event(node: &Node, event_sp_bpmn: &str) -> Result<NodeKind>
 ///
 /// 消息名取 `messageEventDefinition.messageRef` 或事件 `cmx:message`/`name`/`id`。
 /// 相关键变量取 `cmx:correlationVar`（可空，消息启动场景一般不需要相关键）。
-/// 其它 start 类型（timer/signal/error 等）目前不支持，显式报 Unsupported 而非静默忽略。
-fn parse_start_event(node: &Node) -> NodeKind {
+/// 其它 start 类型（timer/signal/error/escalation/compensate/conditional）显式报 Unsupported
+/// ——技术债 020：此前带这些定义的 startEvent 被**静默编成普通 StartEvent**（定时/信号触发
+/// 语义丢失，导入成功但流程跑错），020 批次改为 fail-fast。
+fn parse_start_event(node: &Node) -> Result<NodeKind> {
+    // 事件子元素名 → 是否已知不支持的触发类型。
+    let unsupported: Option<String> = node
+        .children()
+        .filter(Node::is_element)
+        .map(|n| n.tag_name().name().to_string())
+        .find(|name| {
+            matches!(
+                name.as_str(),
+                "timerEventDefinition"
+                    | "signalEventDefinition"
+                    | "errorEventDefinition"
+                    | "escalationEventDefinition"
+                    | "compensateEventDefinition"
+                    | "conditionalEventDefinition"
+            )
+        });
+    if let Some(def) = unsupported {
+        return Err(Error::Unsupported(format!(
+            "startEvent (id={:?}) 带 <{def}>：普通流程仅支持无类型（自动触发）或 messageEventDefinition（A2 消息启动）；\
+             定时/信号/错误等启动触发待补——如需事件子流程请用 EventSubProcess + errorEventDefinition（A3）",
+            node.attribute("id")
+        )));
+    }
     let has_message = node
         .children()
         .filter(Node::is_element)
         .any(|n| n.tag_name().name() == "messageEventDefinition");
     if !has_message {
-        return NodeKind::StartEvent;
+        return Ok(NodeKind::StartEvent);
     }
     // 消息名：优先 messageEventDefinition.messageRef，退回事件属性/id。
     let msg_ref = node
@@ -544,10 +569,10 @@ fn parse_start_event(node: &Node) -> NodeKind {
         .or_else(|| node.attribute("name").map(|s| s.to_string()))
         .unwrap_or_else(|| node.attribute("id").unwrap_or("message_start").to_string());
     let correlation_var = local_attr(node, "correlationVar").filter(|s| !s.is_empty());
-    NodeKind::MessageStartEvent(MessageStart {
+    Ok(NodeKind::MessageStartEvent(MessageStart {
         message_name,
         correlation_var,
-    })
+    }))
 }
 /// timerEventDefinition（A1 中间定时捕获）。
 ///
@@ -885,6 +910,10 @@ fn is_flow_node_like(local: &str) -> bool {
             | "complexGateway"
             | "intermediateThrowEvent"
             | "boundaryEvent"
+            // 技术债 020：以下两者此前不在清单——adHocSubProcess/transaction 被静默跳过
+            // （内部节点全部丢弃、语义丢失），改显式 Unsupported。
+            | "adHocSubProcess"
+            | "transaction"
     )
 }
 

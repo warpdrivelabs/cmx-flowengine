@@ -17,7 +17,7 @@
  */
 
 use cmx_core::model::cell::DataValue;
-use cmx_database_pg::{SqlParams, execute_sql, execute_sql_with_params, query_sql};
+use cmx_database_pg::{SqlParams, execute_sql, execute_sql_with_params, query_sql, query_sql_with_params};
 use chrono::Utc;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -129,12 +129,14 @@ pub async fn link_biz_to_instance(
 
 /// 正向：实例 → 绑的单据列表。
 pub async fn biz_of_instance(instance_id: &str) -> Result<Vec<Value>, String> {
-    let sql = format!(
+    let ds = query_sql_with_params(
+        &db(),
+        None,
         "SELECT biz_table, biz_id, biz_key, role FROM cmx_flow_biz_link \
-         WHERE instance_id = '{}' ORDER BY created_at",
-        esc(instance_id)
-    );
-    let ds = query_sql(&db(), None, &sql, "flow_biz_of_inst")
+         WHERE instance_id = $1 ORDER BY created_at",
+        SqlParams::DataValues(vec![DataValue::String(instance_id.to_string())]),
+        "flow_biz_of_inst",
+    )
         .await
         .map_err(|e| format!("查关联失败: {e}"))?;
     let schema = ds.schema.as_ref();
@@ -152,17 +154,21 @@ pub async fn biz_of_instance(instance_id: &str) -> Result<Vec<Value>, String> {
 
 /// 反向：单据 → 关联的实例列表（含实例状态，供业务列表页显示「审批中」）。
 pub async fn instances_of_biz(biz_table: &str, biz_id: &str) -> Result<Vec<Value>, String> {
-    let sql = format!(
+    let ds = query_sql_with_params(
+        &db(),
+        None,
         "SELECT l.instance_id AS instance_id, i.definition_key AS definition_key, \
                 i.state AS state, i.business_key AS business_key, l.role AS role \
          FROM cmx_flow_biz_link l \
          JOIN cmx_flow_instance i ON i.id = l.instance_id \
-         WHERE l.biz_table = '{}' AND l.biz_id = '{}' \
+         WHERE l.biz_table = $1 AND l.biz_id = $2 \
          ORDER BY l.created_at DESC",
-        esc(biz_table),
-        esc(biz_id)
-    );
-    let ds = query_sql(&db(), None, &sql, "flow_inst_of_biz")
+        SqlParams::DataValues(vec![
+            DataValue::String(biz_table.to_string()),
+            DataValue::String(biz_id.to_string()),
+        ]),
+        "flow_inst_of_biz",
+    )
         .await
         .map_err(|e| format!("反查关联失败: {e}"))?;
     let schema = ds.schema.as_ref();
@@ -187,12 +193,18 @@ pub async fn task_node_bpmn_id(
     instance_id: &str,
     task_id: &str,
 ) -> Option<String> {
-    let sql = format!(
-        "SELECT node_bpmn_id FROM cmx_flow_task WHERE id = '{}' AND instance_id = '{}'",
-        esc(task_id),
-        esc(instance_id)
-    );
-    let ds = query_sql(&db(), None, &sql, "flow_task_node").await.ok()?;
+    let ds = query_sql_with_params(
+        &db(),
+        None,
+        "SELECT node_bpmn_id FROM cmx_flow_task WHERE id = $1 AND instance_id = $2",
+        SqlParams::DataValues(vec![
+            DataValue::String(task_id.to_string()),
+            DataValue::String(instance_id.to_string()),
+        ]),
+        "flow_task_node",
+    )
+    .await
+    .ok()?;
     let schema = ds.schema.as_ref();
     ds.iter()
         .next()
@@ -206,12 +218,18 @@ pub async fn task_assignee(
     instance_id: &str,
     task_id: &str,
 ) -> Option<String> {
-    let sql = format!(
-        "SELECT assignee FROM cmx_flow_task WHERE id = '{}' AND instance_id = '{}'",
-        esc(task_id),
-        esc(instance_id)
-    );
-    let ds = query_sql(&db(), None, &sql, "flow_task_assignee").await.ok()?;
+    let ds = query_sql_with_params(
+        &db(),
+        None,
+        "SELECT assignee FROM cmx_flow_task WHERE id = $1 AND instance_id = $2",
+        SqlParams::DataValues(vec![
+            DataValue::String(task_id.to_string()),
+            DataValue::String(instance_id.to_string()),
+        ]),
+        "flow_task_assignee",
+    )
+    .await
+    .ok()?;
     let schema = ds.schema.as_ref();
     ds.iter().next().and_then(|row| get_opt(row, schema, "assignee"))
 }
@@ -222,16 +240,20 @@ pub async fn task_has_candidate(
     task_id: &str,
     user: &str,
 ) -> bool {
-    let sql = format!(
+    query_sql_with_params(
+        &db(),
+        None,
         "SELECT 1 AS hit FROM cmx_flow_task_candidate \
-         WHERE task_id = '{}' AND resolved_user_id = '{}' LIMIT 1",
-        esc(task_id),
-        esc(user)
-    );
-    query_sql(&db(), None, &sql, "flow_task_cand_hit")
-        .await
-        .map(|ds| ds.row_count() > 0)
-        .unwrap_or(false)
+         WHERE task_id = $1 AND resolved_user_id = $2 LIMIT 1",
+        SqlParams::DataValues(vec![
+            DataValue::String(task_id.to_string()),
+            DataValue::String(user.to_string()),
+        ]),
+        "flow_task_cand_hit",
+    )
+    .await
+    .map(|ds| ds.row_count() > 0)
+    .unwrap_or(false)
 }
 
 /// 办结时插一行意见留痕。
@@ -276,12 +298,14 @@ pub async fn insert_task_comment(
 
 /// 列某实例的全部审批意见（按时间正序，供表单审批区展示历史）。
 pub async fn comments_of_instance(instance_id: &str) -> Result<Vec<Value>, String> {
-    let sql = format!(
+    let ds = query_sql_with_params(
+        &db(),
+        None,
         "SELECT task_id, node_bpmn_id, user_id, user_name, nick_name, decision, comment, created_at \
-         FROM cmx_flow_task_comment WHERE instance_id = '{}' ORDER BY created_at",
-        esc(instance_id)
-    );
-    let ds = query_sql(&db(), None, &sql, "flow_comments")
+         FROM cmx_flow_task_comment WHERE instance_id = $1 ORDER BY created_at",
+        SqlParams::DataValues(vec![DataValue::String(instance_id.to_string())]),
+        "flow_comments",
+    )
         .await
         .map_err(|e| format!("查意见失败: {e}"))?;
     let schema = ds.schema.as_ref();
@@ -316,6 +340,8 @@ pub struct TodoFilter {
     pub state: Option<String>,
     /// 按发起人过滤（仅「我发起的」实例列表用；匹配实例变量 `initiator`）。空 = 不过滤。
     pub initiator: Option<String>,
+    /// 005：调用方系统归属过滤（结构化 key 声明；None = legacy 调用不过滤，两阶段兼容）。
+    pub system_id: Option<String>,
     /// 页码（1 起）。
     pub page: i64,
     /// 每页条数。
@@ -335,7 +361,9 @@ impl TodoFilter {
             if k.is_empty() {
                 None
             } else {
-                Some(format!("%{}%", esc(&k.to_lowercase())))
+                // 017 小项：把用户关键字里的 LIKE 通配符（% _ \）转义为字面量（ESCAPE '\'），
+                // 堵「`%` 全表模糊 / `_` 单字符探测」的读侧注入面；主体参数化仍留批次 3。
+                Some(format!("%{}%", like_escape(&k.to_lowercase())))
             }
         })
     }
@@ -368,22 +396,23 @@ pub struct RawTodo {
 
 /// 直派待办：走 idx_cmx_flow_task_open (assignee, completed)，只活跃实例。
 pub async fn open_tasks_by_assignee(user_id: &str, f: &TodoFilter) -> Result<TodoPage, String> {
-    let mut cond = format!(
-        "t.assignee = '{}' AND t.completed = false AND i.state = 'ACTIVE'",
-        esc(user_id)
-    );
+    let mut cond = SqlCond::new();
+    cond.push("t.assignee = $?", user_id);
+    cond.clauses.push("t.completed = false".to_string());
+    cond.clauses.push("i.state = 'ACTIVE'".to_string());
     append_task_conds(&mut cond, f);
+    filter_system(&mut cond, f, "i.");
     let from = "FROM cmx_flow_task t JOIN cmx_flow_instance i ON i.id = t.instance_id";
     paged_todos(from, &cond, "t.created_at DESC", f, "flow_my_open", false).await
 }
 
 /// 候选未认领：走 idx…_candidate_user (resolved_user_id)，任务未被 claim（assignee IS NULL）。
 pub async fn claimable_tasks_by_user(user_id: &str, f: &TodoFilter) -> Result<TodoPage, String> {
-    let mut cond = format!(
-        "c.resolved_user_id = '{}' AND t.assignee IS NULL",
-        esc(user_id)
-    );
+    let mut cond = SqlCond::new();
+    cond.push("c.resolved_user_id = $?", user_id);
+    cond.clauses.push("t.assignee IS NULL".to_string());
     append_task_conds(&mut cond, f);
+    filter_system(&mut cond, f, "i.");
     let from = "FROM cmx_flow_task_candidate c \
          JOIN cmx_flow_task t ON t.id = c.task_id AND t.completed = false \
          JOIN cmx_flow_instance i ON i.id = t.instance_id AND i.state = 'ACTIVE'";
@@ -391,27 +420,34 @@ pub async fn claimable_tasks_by_user(user_id: &str, f: &TodoFilter) -> Result<To
 }
 
 /// 追加任务类列表的过滤条件（关键字/流程/节点；状态对任务类固定 ACTIVE 不再叠加）。
-fn append_task_conds(cond: &mut String, f: &TodoFilter) {
+fn append_task_conds(cond: &mut SqlCond, f: &TodoFilter) {
     if let Some(dk) = f.definition_key.as_ref().filter(|s| !s.trim().is_empty()) {
-        cond.push_str(&format!(" AND i.definition_key = '{}'", esc(dk)));
+        cond.push("i.definition_key = $?", dk);
     }
     if let Some(nb) = f.node_bpmn_id.as_ref().filter(|s| !s.trim().is_empty()) {
-        cond.push_str(&format!(" AND t.node_bpmn_id = '{}'", esc(nb)));
+        cond.push("t.node_bpmn_id = $?", nb);
     }
     if let Some(like) = f.like() {
         // 关键字：单号 / 流程名(key) / 节点名 模糊匹配（大小写不敏感）。
-        cond.push_str(&format!(
-            " AND (LOWER(COALESCE(i.business_key,'')) LIKE '{like}' \
-                OR LOWER(i.definition_key) LIKE '{like}' \
-                OR LOWER(COALESCE(t.name,'')) LIKE '{like}')"
+        // f.like() 已返回「% 包裹 + 通配符转义」的完整 pattern；同一 pattern 占三个
+        // 占位符（参数重复三次），占位号按参数序手动展开。
+        let n = cond.params.len();
+        cond.clauses.push(format!(
+            "(LOWER(COALESCE(i.business_key,'')) LIKE ${a} ESCAPE '\\' OR LOWER(i.definition_key) LIKE ${b} ESCAPE '\\' OR LOWER(COALESCE(t.name,'')) LIKE ${c} ESCAPE '\\')",
+            a = n + 1,
+            b = n + 2,
+            c = n + 3
         ));
+        for _ in 0..3 {
+            cond.params.push(DataValue::String(like.clone()));
+        }
     }
 }
 
 /// 任务类分页查询：先 COUNT 再取一页（共用 SELECT 列）。
 async fn paged_todos(
     from: &str,
-    cond: &str,
+    cond: &SqlCond,
     order: &str,
     f: &TodoFilter,
     tag: &str,
@@ -419,21 +455,38 @@ async fn paged_todos(
 ) -> Result<TodoPage, String> {
     let (page, size) = f.norm();
     let offset = (page - 1) * size;
-    let count_sql = format!("SELECT COUNT(*) AS n {from} WHERE {cond}");
-    let total = query_one_i64(&count_sql, tag).await?;
+    // 017：COUNT 与 SELECT 共用同一参数向量；LIMIT/OFFSET 顺延占位号一并参数化。
+    let total = query_one_i64_with(
+        &format!("SELECT COUNT(*) AS n {from} WHERE {}", cond.sql()),
+        &cond.params,
+        tag,
+    )
+    .await?;
+    let mut params = cond.params.clone();
+    params.push(DataValue::Int(size));
+    params.push(DataValue::Int(offset));
     let sql = format!(
         "SELECT t.id AS task_id, t.instance_id AS instance_id, t.node_bpmn_id AS node_bpmn_id, \
                 t.name AS name, t.created_at AS created_at, t.element_value AS element_value, \
                 i.definition_key AS definition_key, i.business_key AS business_key, \
                 i.variables AS variables \
-         {from} WHERE {cond} ORDER BY {order} LIMIT {size} OFFSET {offset}"
+         {from} WHERE {} ORDER BY {order} LIMIT ${} OFFSET ${}",
+        cond.sql(),
+        cond.params.len() + 1,
+        cond.params.len() + 2
     );
-    let rows = rows_to_todos(&sql, tag, claimable).await?;
+    let rows = rows_to_todos_with(&sql, SqlParams::DataValues(params), tag, claimable).await?;
     Ok(TodoPage { rows, total })
 }
 
+#[allow(dead_code)]
 async fn query_one_i64(sql: &str, tag: &str) -> Result<i64, String> {
-    let ds = query_sql(&db(), None, sql, tag)
+    query_one_i64_with(sql, &[], tag).await
+}
+
+/// 017：参数化版计数。
+async fn query_one_i64_with(sql: &str, params: &[DataValue], tag: &str) -> Result<i64, String> {
+    let ds = query_sql_with_params(&db(), None, sql, SqlParams::DataValues(params.to_vec()), tag)
         .await
         .map_err(|e| format!("计数失败: {e}"))?;
     let schema = ds.schema.as_ref();
@@ -447,8 +500,19 @@ async fn query_one_i64(sql: &str, tag: &str) -> Result<i64, String> {
         .unwrap_or(0))
 }
 
+#[allow(dead_code)]
 async fn rows_to_todos(sql: &str, tag: &str, claimable: bool) -> Result<Vec<RawTodo>, String> {
-    let ds = query_sql(&db(), None, sql, tag)
+    rows_to_todos_with(sql, SqlParams::DataValues(Vec::new()), tag, claimable).await
+}
+
+/// 017：参数化版行投影。
+async fn rows_to_todos_with(
+    sql: &str,
+    params: SqlParams,
+    tag: &str,
+    claimable: bool,
+) -> Result<Vec<RawTodo>, String> {
+    let ds = query_sql_with_params(&db(), None, sql, params, tag)
         .await
         .map_err(|e| format!("查我的待办失败: {e}"))?;
     let schema = ds.schema.as_ref();
@@ -478,40 +542,60 @@ async fn rows_to_todos(sql: &str, tag: &str, claimable: bool) -> Result<Vec<RawT
 pub async fn list_instances_paged(f: &TodoFilter) -> Result<TodoPage, String> {
     let (page, size) = f.norm();
     let offset = (page - 1) * size;
-    let mut cond = "1=1".to_string();
+    // 017：条件全参数化（SqlCond），LIMIT/OFFSET 顺延占位号。
+    let mut cond = SqlCond::new();
     if let Some(dk) = f.definition_key.as_ref().filter(|s| !s.trim().is_empty()) {
-        cond.push_str(&format!(" AND definition_key = '{}'", esc(dk)));
+        cond.push("definition_key = $?", dk);
     }
     if let Some(st) = f.state.as_ref().filter(|s| !s.trim().is_empty()) {
-        cond.push_str(&format!(" AND state = '{}'", esc(st)));
+        cond.push("state = $?", st);
     }
     // 「我发起的」按发起人过滤：发起人按约定存实例变量 `initiator`（与 withdraw 护栏同源）。
     if let Some(init) = f.initiator.as_ref().filter(|s| !s.trim().is_empty()) {
-        cond.push_str(&format!(
-            " AND (variables ->> 'initiator') = '{}'",
-            esc(init)
-        ));
+        cond.push("(variables ->> 'initiator') = $?", init);
     }
+    filter_system(&mut cond, f, "");
     if let Some(like) = f.like() {
-        cond.push_str(&format!(
-            " AND (LOWER(COALESCE(business_key,'')) LIKE '{like}' OR LOWER(definition_key) LIKE '{like}')"
+        let n = cond.params.len();
+        cond.clauses.push(format!(
+            "(LOWER(COALESCE(business_key,'')) LIKE ${a} ESCAPE '\\' OR LOWER(definition_key) LIKE ${b} ESCAPE '\\')",
+            a = n + 1,
+            b = n + 2
         ));
+        cond.params.push(DataValue::String(like.clone()));
+        cond.params.push(DataValue::String(like));
     }
-    let total = query_one_i64(
-        &format!("SELECT COUNT(*) AS n FROM cmx_flow_instance WHERE {cond}"),
+    let total = query_one_i64_with(
+        &format!(
+            "SELECT COUNT(*) AS n FROM cmx_flow_instance WHERE {}",
+            cond.sql()
+        ),
+        &cond.params,
         "flow_inst_count",
     )
     .await?;
+    let mut params = cond.params.clone();
+    params.push(DataValue::Int(size));
+    params.push(DataValue::Int(offset));
     let sql = format!(
         "SELECT i.id AS instance_id, i.definition_key, i.business_key, i.state, i.variables, i.created_at, \
          (SELECT tk.node_bpmn_id FROM cmx_flow_token tk \
             WHERE tk.instance_id = i.id AND tk.state <> 'ENDED' \
             ORDER BY tk.created_at DESC LIMIT 1) AS current_node \
-         FROM cmx_flow_instance i WHERE {cond} ORDER BY i.created_at DESC LIMIT {size} OFFSET {offset}"
+         FROM cmx_flow_instance i WHERE {} ORDER BY i.created_at DESC LIMIT ${} OFFSET ${}",
+        cond.sql(),
+        cond.params.len() + 1,
+        cond.params.len() + 2
     );
-    let ds = query_sql(&db(), None, &sql, "flow_inst_paged")
-        .await
-        .map_err(|e| format!("查实例失败: {e}"))?;
+    let ds = query_sql_with_params(
+        &db(),
+        None,
+        &sql,
+        SqlParams::DataValues(params),
+        "flow_inst_paged",
+    )
+    .await
+    .map_err(|e| format!("查实例失败: {e}"))?;
     let schema = ds.schema.as_ref();
     let rows = ds
         .iter()
@@ -536,32 +620,49 @@ pub async fn list_instances_paged(f: &TodoFilter) -> Result<TodoPage, String> {
 pub async fn list_done_paged(user_id: &str, f: &TodoFilter) -> Result<TodoPage, String> {
     let (page, size) = f.norm();
     let offset = (page - 1) * size;
-    let mut cond = format!("h.assignee = '{}'", esc(user_id));
+    // 017：条件全参数化（SqlCond），LIMIT/OFFSET 顺延占位号。
+    let mut cond = SqlCond::new();
+    cond.push("h.assignee = $?", user_id);
     if let Some(dk) = f.definition_key.as_ref().filter(|s| !s.trim().is_empty()) {
-        cond.push_str(&format!(" AND i.definition_key = '{}'", esc(dk)));
+        cond.push("i.definition_key = $?", dk);
     }
     if let Some(nb) = f.node_bpmn_id.as_ref().filter(|s| !s.trim().is_empty()) {
-        cond.push_str(&format!(" AND h.node_bpmn_id = '{}'", esc(nb)));
+        cond.push("h.node_bpmn_id = $?", nb);
     }
+    filter_system(&mut cond, f, "i.");
     if let Some(like) = f.like() {
-        cond.push_str(&format!(
-            " AND (LOWER(COALESCE(i.business_key,'')) LIKE '{like}' \
-                OR LOWER(i.definition_key) LIKE '{like}' OR LOWER(COALESCE(h.name,'')) LIKE '{like}')"
+        let n = cond.params.len();
+        cond.clauses.push(format!(
+            "(LOWER(COALESCE(i.business_key,'')) LIKE ${a} ESCAPE '\\' OR LOWER(i.definition_key) LIKE ${b} ESCAPE '\\' OR LOWER(COALESCE(h.name,'')) LIKE ${c} ESCAPE '\\')",
+            a = n + 1,
+            b = n + 2,
+            c = n + 3
         ));
+        for _ in 0..3 {
+            cond.params.push(DataValue::String(like.clone()));
+        }
     }
     let from = "FROM cmx_flow_hi_task h JOIN cmx_flow_instance i ON i.id = h.instance_id";
-    let total = query_one_i64(
-        &format!("SELECT COUNT(*) AS n {from} WHERE {cond}"),
+    let total = query_one_i64_with(
+        &format!("SELECT COUNT(*) AS n {from} WHERE {}", cond.sql()),
+        &cond.params,
         "flow_done_count",
     )
     .await?;
+    let mut params = cond.params.clone();
+    params.push(DataValue::Int(size));
+    params.push(DataValue::Int(offset));
     let sql = format!(
         "SELECT h.id AS task_id, h.instance_id AS instance_id, h.node_bpmn_id AS node_bpmn_id, \
                 h.name AS name, h.completed_at AS created_at, \
                 i.definition_key AS definition_key, i.business_key AS business_key, i.variables AS variables \
-         {from} WHERE {cond} ORDER BY h.completed_at DESC LIMIT {size} OFFSET {offset}"
+         {from} WHERE {} ORDER BY h.completed_at DESC LIMIT ${} OFFSET ${}",
+        cond.sql(),
+        cond.params.len() + 1,
+        cond.params.len() + 2
     );
-    let rows = rows_to_todos(&sql, "flow_done_paged", false).await?;
+    let rows =
+        rows_to_todos_with(&sql, SqlParams::DataValues(params), "flow_done_paged", false).await?;
     Ok(TodoPage { rows, total })
 }
 
@@ -569,28 +670,49 @@ pub async fn list_done_paged(user_id: &str, f: &TodoFilter) -> Result<TodoPage, 
 pub async fn list_cc_paged(user_id: &str, f: &TodoFilter) -> Result<TodoPage, String> {
     let (page, size) = f.norm();
     let offset = (page - 1) * size;
-    let mut cond = format!("cc.to_user_id = '{}'", esc(user_id));
+    // 017：条件全参数化（SqlCond），LIMIT/OFFSET 顺延占位号。
+    let mut cond = SqlCond::new();
+    cond.push("cc.to_user_id = $?", user_id);
     if let Some(dk) = f.definition_key.as_ref().filter(|s| !s.trim().is_empty()) {
-        cond.push_str(&format!(" AND i.definition_key = '{}'", esc(dk)));
+        cond.push("i.definition_key = $?", dk);
     }
+    filter_system(&mut cond, f, "i.");
     if let Some(like) = f.like() {
-        cond.push_str(&format!(
-            " AND (LOWER(COALESCE(i.business_key,'')) LIKE '{like}' OR LOWER(i.definition_key) LIKE '{like}')"
+        let n = cond.params.len();
+        cond.clauses.push(format!(
+            "(LOWER(COALESCE(i.business_key,'')) LIKE ${a} ESCAPE '\\' OR LOWER(i.definition_key) LIKE ${b} ESCAPE '\\')",
+            a = n + 1,
+            b = n + 2
         ));
+        cond.params.push(DataValue::String(like.clone()));
+        cond.params.push(DataValue::String(like));
     }
     let from = "FROM cmx_flow_cc cc JOIN cmx_flow_instance i ON i.id = cc.instance_id";
-    let total = query_one_i64(
-        &format!("SELECT COUNT(*) AS n {from} WHERE {cond}"),
+    let total = query_one_i64_with(
+        &format!("SELECT COUNT(*) AS n {from} WHERE {}", cond.sql()),
+        &cond.params,
         "flow_cc_count",
     )
     .await?;
+    let mut params = cond.params.clone();
+    params.push(DataValue::Int(size));
+    params.push(DataValue::Int(offset));
     let sql = format!(
         "SELECT cc.id AS cc_id, cc.instance_id AS instance_id, cc.node_bpmn_id AS node_bpmn_id, \
                 cc.read_at AS read_at, cc.created_at AS created_at, \
                 i.definition_key AS definition_key, i.business_key AS business_key, i.variables AS variables \
-         {from} WHERE {cond} ORDER BY cc.created_at DESC LIMIT {size} OFFSET {offset}"
+         {from} WHERE {} ORDER BY cc.created_at DESC LIMIT ${} OFFSET ${}",
+        cond.sql(),
+        cond.params.len() + 1,
+        cond.params.len() + 2
     );
-    let ds = query_sql(&db(), None, &sql, "flow_cc_paged")
+    let ds = query_sql_with_params(
+        &db(),
+        None,
+        &sql,
+        SqlParams::DataValues(params),
+        "flow_cc_paged",
+    )
         .await
         .map_err(|e| format!("查抄送失败: {e}"))?;
     let schema = ds.schema.as_ref();
@@ -716,10 +838,15 @@ const FORM_BINDING_COLS: &str = "form_key, kind, native_page, native_view, html_
 /// 取一条表单绑定；不存在返回 None。
 pub async fn get_form_binding(form_key: &str) -> Result<Option<Value>, String> {
     let sql = format!(
-        "SELECT {FORM_BINDING_COLS} FROM cmx_flow_form_binding WHERE form_key = '{}'",
-        esc(form_key)
+        "SELECT {FORM_BINDING_COLS} FROM cmx_flow_form_binding WHERE form_key = $1"
     );
-    let ds = query_sql(&db(), None, &sql, "flow_form_get")
+    let ds = query_sql_with_params(
+        &db(),
+        None,
+        &sql,
+        SqlParams::DataValues(vec![DataValue::String(form_key.to_string())]),
+        "flow_form_get",
+    )
         .await
         .map_err(|e| format!("查表单绑定失败: {e}"))?;
     let schema = ds.schema.as_ref();
@@ -751,12 +878,33 @@ pub async fn delete_form_binding(form_key: &str) -> Result<u64, String> {
         .map_err(|e| format!("删表单绑定失败: {e}"))
 }
 
-/// 种入内置示例绑定（幂等 upsert）。engine build 时调一次。
+/// 种入内置示例绑定（技术债 014：改「**空表才种**」——表内已有任何绑定即跳过）。
 ///
-/// pay.review = 真实 html 单据表单示例（复用 F3 的 flow-pay-review-form html 页）；
-/// pay.review.doc = doc-loader 真单据示例（会计凭证坐标，供 F5 验证）。task-form 壳只作兜底，
-/// 不再作为默认绑定——节点应绑真实表单页。
+/// 此前每次引擎构建幂等 upsert 3 条示例，`ON CONFLICT` 整行覆盖会把运维手工改成生产值的
+/// 绑定**重启即复位**；对齐 001 订阅首启导入的「空表才种」口径：只要运维动过（哪怕只改了
+/// 一条），引擎就不再插手。SEEDED_FORM_KEYS 仍供管理页「内置」角标判定。
 pub async fn seed_form_bindings() -> Result<(), String> {
+    // 空表判定：表内已有任意一行即跳过（整批跳过，不做逐行 diff——运维改动视为接管）。
+    let ds = query_sql(
+        &db(),
+        None,
+        "SELECT COUNT(*) AS n FROM cmx_flow_form_binding",
+        "flow_form_seed_count",
+    )
+    .await
+    .map_err(|e| format!("统计表单绑定失败: {e}"))?;
+    let existing = ds
+        .iter()
+        .next()
+        .map(|row| match row.get_by_name(ds.schema.as_ref(), "n") {
+            Some(DataValue::Int(v)) => *v,
+            _ => 0,
+        })
+        .unwrap_or(0);
+    if existing > 0 {
+        tracing::debug!(existing, "表单绑定表非空，跳过内置示例 seed（014 空表才种口径）");
+        return Ok(());
+    }
     upsert_form_binding(FormBinding {
         form_key: "pay.review".into(),
         kind: "html".into(),
@@ -808,8 +956,76 @@ fn opt_str(v: Option<String>) -> DataValue {
     }
 }
 
-fn esc(s: &str) -> String {
-    s.replace('\'', "''")
+/// 动态查询条件构建器（技术债 017：读侧 SQL 全参数化）。
+///
+/// 条件片段与参数向量同步累积，`$?` 占位在生成时替换为 `$n`（按加入顺序自动编号），
+/// 彻底替代 `esc()` 单引号转义拼接——写侧早已参数化，读侧自此对齐，两种风格归一。
+struct SqlCond {
+    clauses: Vec<String>,
+    params: Vec<DataValue>,
+}
+
+impl SqlCond {
+    fn new() -> Self {
+        Self { clauses: Vec::new(), params: Vec::new() }
+    }
+
+    /// 追加一个带 `$?` 占位的等值/比较条件 + 对应参数。
+    fn push(&mut self, clause: &str, value: &str) {
+        let n = self.params.len() + 1;
+        self.clauses.push(clause.replace("$?", &format!("${n}")));
+        self.params.push(DataValue::String(value.to_string()));
+    }
+
+    /// 当前条件 SQL（无条件 = 恒真，调用方直接拼 WHERE）。
+    fn sql(&self) -> String {
+        if self.clauses.is_empty() { "1=1".to_string() } else { self.clauses.join(" AND ") }
+    }
+}
+
+/// 005 系统归属过滤：结构化 key 的 system 声明落到实例列过滤。
+/// `col_prefix` = join 里实例表的别名（"i." 或 ""）。
+fn filter_system(cond: &mut SqlCond, f: &TodoFilter, col_prefix: &str) {
+    if let Some(sys) = f.system_id.as_ref().filter(|s| !s.trim().is_empty()) {
+        let n = cond.params.len() + 1;
+        cond.clauses.push(format!("{col_prefix}system_id = ${n}"));
+        cond.params.push(DataValue::String(sys.clone()));
+    }
+}
+
+/// 实例参与方判定（技术债 004，OWASP BOLA 收口）：用户是否为该实例的
+/// 发起人（variables.initiator）/ 办理人 / 候选人 / 被抄送人。
+/// 四条 EXISTS 一条 SQL，全参数化（017 纪律）。供实例读取端点的参与方过滤。
+pub async fn user_participates(instance_id: &str, user_id: &str) -> Result<bool, String> {
+    let sql = "SELECT ( \
+        EXISTS (SELECT 1 FROM cmx_flow_instance i WHERE i.id = $1 AND i.variables->>'initiator' = $2) \
+        OR EXISTS (SELECT 1 FROM cmx_flow_task t WHERE t.instance_id = $1 AND t.assignee = $2) \
+        OR EXISTS (SELECT 1 FROM cmx_flow_task_candidate c WHERE c.instance_id = $1 AND c.resolved_user_id = $2) \
+        OR EXISTS (SELECT 1 FROM cmx_flow_cc cc WHERE cc.instance_id = $1 AND cc.to_user_id = $2) \
+        ) AS participant";
+    let params = SqlParams::DataValues(vec![
+        DataValue::String(instance_id.to_string()),
+        DataValue::String(user_id.to_string()),
+    ]);
+    let ds = query_sql_with_params(&db(), None, sql, params, "flow_user_participates")
+        .await
+        .map_err(|e| format!("查询实例参与方失败: {e}"))?;
+    Ok(ds
+        .iter()
+        .next()
+        .map(|row| {
+            matches!(
+                row.get_by_name(ds.schema.as_ref(), "participant"),
+                Some(DataValue::Bool(true))
+            )
+        })
+        .unwrap_or(false))
+}
+
+/// LIKE 通配符转义（配对 SQL 子句 `ESCAPE '\'`）：先转义转义符本身，再转义 % 与 _。
+/// 017 主体改造后仅余 LIKE 模式内转义职责（读侧查询本体已全参数化）。
+fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
 fn get_str(

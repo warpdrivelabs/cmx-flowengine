@@ -107,6 +107,10 @@ pub const DDL_STATEMENTS: &[&str] = &[
     "ALTER TABLE cmx_flow_job ADD COLUMN IF NOT EXISTS cycle_remaining INTEGER",
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_job_instance ON cmx_flow_job (instance_id)",
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_job_due ON cmx_flow_job (due_at)",
+    // 技术债 008 定时器抢占：租约列（对齐 async_job 的 locked_by/lock_expires_at 模式）。
+    "ALTER TABLE cmx_flow_job ADD COLUMN IF NOT EXISTS claimed_by VARCHAR(128)",
+    "ALTER TABLE cmx_flow_job ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ",
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_job_acquire ON cmx_flow_job (due_at, claimed_by, lease_expires_at)",
     // —— 任务候选人池表（M4.1：多人候选待认领；随快照全删重插，与任务同生命周期） —— //
     r#"CREATE TABLE IF NOT EXISTS cmx_flow_task_candidate (
         id               VARCHAR(64)  PRIMARY KEY,
@@ -196,6 +200,20 @@ pub const DDL_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_subflow_binding_dim ON cmx_flow_subflow_binding (called_key, dim_key, dim_value)",
     // —— RD0/RD3 实例维度上下文：dim_key → dim_value 多维取值（org 维度仍可用 org_id 标量列兼容）——
     "ALTER TABLE cmx_flow_instance ADD COLUMN IF NOT EXISTS dimensions JSONB",
+    // v2.4 三级路由 L2：发起绑定订阅 id（NULL = 未绑定走规则 2）；部分索引服务删除守卫与绑定查询。
+    "ALTER TABLE cmx_flow_instance ADD COLUMN IF NOT EXISTS subscriber_id BIGINT",
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_instance_subscriber ON cmx_flow_instance (subscriber_id) WHERE subscriber_id IS NOT NULL",
+    // v2.4：历史实例同步登记发起绑定（终态清理后「曾绑给谁」审计不断链）。
+    "ALTER TABLE cmx_flow_hi_instance ADD COLUMN IF NOT EXISTS subscriber_id BIGINT",
+    // —— 技术债 007：实例乐观锁版本列（JPA @Version / Flowable OPTLOCK 同款）——
+    // save 以 WHERE id=$1 AND version=$2 CAS 提交并 +1；0 行 = 并发覆盖冲突。
+    "ALTER TABLE cmx_flow_instance ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0",
+    "ALTER TABLE cmx_flow_hi_instance ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0",
+    // —— 技术债 005：发起方业务系统归属列（结构化 key 声明 TenantCtx.system 落库）——
+    // NULL = legacy 调用未声明系统；结构化 key 的实例带 system_id，供归属过滤与命名空间审计。
+    "ALTER TABLE cmx_flow_instance ADD COLUMN IF NOT EXISTS system_id VARCHAR(64)",
+    "ALTER TABLE cmx_flow_hi_instance ADD COLUMN IF NOT EXISTS system_id VARCHAR(64)",
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_instance_system ON cmx_flow_instance (system_id)",
     // —— 消息订阅表（P3 消息等待持久化 + A2 消息启动索引；重启后订阅不丢） —— //
     r#"CREATE TABLE IF NOT EXISTS cmx_flow_message_subscription (
         id              VARCHAR(64)  PRIMARY KEY,
@@ -268,4 +286,21 @@ pub const DDL_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_hi_activity_instance ON cmx_flow_hi_activity (instance_id, entered_at)",
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_hi_activity_type ON cmx_flow_hi_activity (activity_type)",
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_hi_activity_assignee ON cmx_flow_hi_activity (assignee)",
+    // —— 故障清单表（技术债 011：跨实例 incident 台账，/incidents 清单端点 + 自动重试数据源） ——
+    r#"CREATE TABLE IF NOT EXISTS cmx_flow_incident (
+        id              VARCHAR(64)  PRIMARY KEY,
+        instance_id     VARCHAR(64)  NOT NULL,
+        token_id        VARCHAR(64),
+        node_bpmn_id    VARCHAR(128) NOT NULL,
+        definition_key  VARCHAR(128) NOT NULL,
+        business_key    VARCHAR(128),
+        reason          TEXT         NOT NULL DEFAULT '',
+        retries         INTEGER      NOT NULL DEFAULT 0,
+        state           VARCHAR(16)  NOT NULL DEFAULT 'OPEN',
+        created_at      TIMESTAMPTZ  NOT NULL,
+        updated_at      TIMESTAMPTZ  NOT NULL
+    )"#,
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_cmx_flow_incident_inst_node ON cmx_flow_incident (instance_id, node_bpmn_id)",
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_incident_state ON cmx_flow_incident (state, updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_incident_def ON cmx_flow_incident (definition_key)",
 ];

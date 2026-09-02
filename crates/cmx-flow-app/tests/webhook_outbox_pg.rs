@@ -102,6 +102,7 @@ fn delivery(sub_id: i64, sub_name: &str, event_id: &str, instance: &str) -> Deli
         last_http_status: None,
         last_response_snippet: None,
         delivered: false,
+        route_source: "matched",
     }
 }
 

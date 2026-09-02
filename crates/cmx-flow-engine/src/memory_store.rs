@@ -106,11 +106,15 @@ impl RuntimeStore for InMemoryStore {
         Ok(summaries)
     }
 
-    async fn find_due_jobs(
+    async fn acquire_due_jobs(
         &self,
+        _worker_id: &str,
         now: chrono::DateTime<chrono::Utc>,
+        _lease_secs: i64,
         limit: usize,
     ) -> StoreResult<Vec<DueJob>> {
+        // 内存实现（测试/嵌入）：Mutex 内 load-modify-save 原子，无跨进程竞争，
+        // 租约打标省略——抢占语义由互斥锁天然保证。
         let guard = self.inner.lock().await;
         let mut due: Vec<DueJob> = guard
             .values()

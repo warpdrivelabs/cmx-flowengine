@@ -12,6 +12,7 @@
 //! 两壳复用同一 handler + 同一路由表，**零业务漂移**。
 
 pub mod auth;
+pub mod ops;
 pub mod biz_link;
 pub mod collab;
 pub mod conditions;
@@ -36,10 +37,13 @@ pub mod webhook_outbox;
 pub mod webhook_store;
 
 pub use auth::auth as auth_middleware;
+/// 004 小项 fail-fast：启动期预热认证配置（auth.mode 缺失/非法即在启动阶段 panic）。
+pub use auth::auth_config_warmup;
 pub use observe::observe as observe_middleware;
 pub use engine::{
-    FLOW_DB_ID, FlowRuntime, IAM_DB_ID, current_flow_db_id, flow, flow_for_tenant,
-    spawn_async_job_poller, spawn_timer_poller, spawn_webhook_delivery_poller,
+    FLOW_DB_ID, default_flow_db_id, FlowRuntime, IAM_DB_ID, current_flow_db_id, flow, flow_for_tenant,
+    spawn_async_job_poller, spawn_delivery_retention, spawn_incident_retry, spawn_timer_poller,
+    spawn_webhook_delivery_poller,
 };
 pub use resp::{ApiResp, FlowError, Result};
 pub use tenant::{TenantCtx, current_tenant, current_user, identity_snapshot};
@@ -294,6 +298,20 @@ where
             "/webhook-subscriptions/channels",
             get(webhook_admin::list_channels),
         )
+        // —— v2.4 三级路由：L3 定义订阅（自助 subscribe/unsubscribe，占位角色 + fail-close）
+        //    + 运维计数（丢弃/幽灵/点查失败） ——
+        .route(
+            "/webhook-subscriptions/definitions/subscribe",
+            post(webhook_admin::subscribe_definitions),
+        )
+        .route(
+            "/webhook-subscriptions/definitions/unsubscribe",
+            post(webhook_admin::unsubscribe_definitions),
+        )
+        .route(
+            "/webhook-subscriptions/mon",
+            get(webhook_admin::webhook_mon),
+        )
         .route(
             "/webhook-deliveries/query",
             post(webhook_admin::query_deliveries),
@@ -310,5 +328,15 @@ where
             "/webhook-deliveries/purge",
             post(webhook_admin::purge_deliveries),
         )
+        // —— 运维面（技术债 012/013，批次 6）：jobs/incidents 清单 + Prometheus 指标 ——
+        .route("/instances/query", post(ops::query_instances))
+        .route("/jobs/query", post(ops::query_jobs))
+        // —— 001-M3：缺行补发（12 端点收口） ——
+        .route(
+            "/webhook-subscriptions/rebuild",
+            post(webhook_admin::rebuild_subscription),
+        )
+        .route("/incidents/query", post(ops::query_incidents))
+        .route("/metrics", get(ops::prometheus_metrics))
 }
 

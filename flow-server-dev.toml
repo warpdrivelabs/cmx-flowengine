@@ -70,3 +70,9 @@ retry_max = 1
 
 [service_rpc.services]
 mdm = { url = "http://127.0.0.1:8095", discovery = "cmx-mdm-server" }
+
+# —— 流程引擎运行态库（005 短期：db_id 配置化，解「默认库绑死财务库」假耦合）——
+# 未配置时缺省 "fico-db"（零回归）；新环境建议配中性名（如 "flow-default"），
+# 须与 [[databases]] 中 cmx_flow_* 表所在库的 db_id 一致。
+[flow]
+db_id = "fico-db"

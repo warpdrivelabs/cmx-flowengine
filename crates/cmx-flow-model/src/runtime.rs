@@ -139,6 +139,16 @@ pub struct ProcessInstance {
     /// 故补记节点。去重键 = (parent_token_id, parent_node_bpmn_id)。M5.1/5.2 单挂载恒可为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_node_bpmn_id: Option<String>,
+    /// 发起绑定的 webhook 订阅 id（v2.4 三级路由 L2；逻辑外键 → cmx_flow_webhook_subscription，
+    /// NULL = 未绑定走规则 2 全量匹配）。子实例创建时复制父实例值；实例创建后不变
+    /// （update_instance 不更新此列，守卫口径见 webhook 方案 §3.5）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscriber_id: Option<i64>,
+    /// 发起方业务系统标识（技术债 005：`<system>_` 命名空间归属；来自结构化 API Key 声明
+    /// 的 `TenantCtx.system`，003）。None = legacy 调用未声明系统——归属过滤放行，两阶段
+    /// 迁移零破坏。子实例创建时继承父实例取值；实例创建后不变。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_id: Option<String>,
 }
 
 /// 用户任务（等待态节点的外化产物）。
@@ -344,6 +354,37 @@ impl MiScope {
     }
 }
 
+/// 故障清单记录（技术债 011）：独立于实例变量的 incident 台账行。
+///
+/// 与 `variables.__incident`（实例内派生视图）并存：本表是**跨实例聚合**的运维入口
+/// （`/incidents` 清单端点数据源），支持 OPEN/RESOLVED 生命周期与自动重试闭环。
+/// 同一 (instance_id, node_bpmn_id) 唯一，重复发生累加 retries。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IncidentRecord {
+    /// 实例 id。
+    pub instance_id: String,
+    /// 故障节点 bpmn id。
+    pub node_bpmn_id: String,
+    /// 令牌 id（可空——子流程解析失败等场景可能无令牌）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_id: Option<String>,
+    /// 流程定义 key（清单页展示）。
+    pub definition_key: String,
+    /// 业务键（清单页展示）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub business_key: Option<String>,
+    /// 故障原因。
+    pub reason: String,
+    /// 累计发生/重试次数。
+    pub retries: i64,
+    /// OPEN / RESOLVED。
+    pub state: String,
+    /// 发生时刻。
+    pub created_at: DateTime<Utc>,
+    /// 最近更新时刻。
+    pub updated_at: DateTime<Utc>,
+}
+
 /// 实例聚合快照 —— 持久化与恢复的**原子单元**。
 ///
 /// 设计核心：把「实例 + 其全部令牌 + 其未办结任务」当成一个聚合根一起 load/save。
@@ -376,6 +417,11 @@ pub struct InstanceSnapshot {
     /// 该实例的转签台账（转办/加签/委派流转链）。M4.3 新增，默认空，向后兼容。
     #[serde(default)]
     pub delegations: Vec<TaskDelegation>,
+    /// 实例行乐观锁版本（技术债 007）。`load_snapshot` 读库取值，`save_snapshot` 以
+    /// `WHERE id=$1 AND version=$2` CAS 提交并 +1——并发覆盖后写者收到 [`StoreError::Conflict`]。
+    /// **不参与序列化**（serde skip）：纯持久化层并发控制元数据，wire 载荷零变更。
+    #[serde(skip)]
+    pub version: i64,
     /// 本次推进段待写入的消息订阅（P3 + A2）。**不持久化**（serde skip）：
     /// `run_to_wait` 把新增的 Catch 订阅追加到此，调用方在 `save_snapshot` 后批量 `upsert_message_subscription`。
     /// 重启后由订阅表重建，此字段仅为推进段内暂存，不参与快照序列化。
