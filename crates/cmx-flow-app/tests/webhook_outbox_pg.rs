@@ -14,7 +14,7 @@ use cmx_database_pg::{
 };
 use serde_json::json;
 
-use cmx_flow_app::webhook_store::{self, DeliveryInsert, DlvFilter, SubFilter, SubUpsert};
+use cmx_flow_app::webhook_store::{self, DeliveryInsert, DlvFilter, SubUpsert};
 
 const TEST_TENANT: &str = "wh-it";
 
@@ -329,46 +329,6 @@ async fn dead_retry_skip_purge_lifecycle() {
     .await;
     let purged = webhook_store::purge_deliveries(&db, TEST_TENANT, 7, None).await.unwrap();
     assert_eq!(purged, 1, "超保留期的 SKIPPED 行应被清理");
-}
-
-/// 首启 env 导入（决议 17）：空表才种、name 确定性、secret 沿用全局密钥、幂等。
-#[tokio::test]
-#[ignore]
-async fn import_env_subscriptions_idempotent() {
-    let _guard = TEST_LOCK.lock().await;
-    let Some(db) = setup_db().await else { return };
-    fresh(&db).await;
-    let targets = vec![
-        cmx_flow_adapters::WebhookTarget {
-            key: "mdm".into(),
-            path: "/api/mdm/flow/callback".into(),
-        },
-        cmx_flow_adapters::WebhookTarget {
-            key: "erp".into(),
-            path: "/api/erp/hook".into(),
-        },
-    ];
-    let n1 = webhook_store::import_env_subscriptions(&db, TEST_TENANT, &targets, Some("global-key"))
-        .await
-        .unwrap();
-    assert_eq!(n1, 2, "空表首次导入应种 2 条");
-    // 幂等：再跑返回 0；并发/重启不重复。
-    let n2 = webhook_store::import_env_subscriptions(&db, TEST_TENANT, &targets, Some("global-key"))
-        .await
-        .unwrap();
-    assert_eq!(n2, 0, "非空表绝不复位用户改动");
-
-    let (rows, total) =
-        webhook_store::list_subscriptions(&db, TEST_TENANT, &SubFilter::default()).await.unwrap();
-    assert_eq!(total, 2);
-    let by_name: std::collections::HashMap<String, serde_json::Value> = rows
-        .into_iter()
-        .map(|r| (r["name"].as_str().unwrap_or_default().to_string(), r))
-        .collect();
-    let mdm = &by_name["env-mdm"];
-    assert_eq!(mdm["source"], json!("env"));
-    assert_eq!(mdm["channelConfig"]["secret"], json!("global-key"), "导入行沿用全局密钥");
-    assert_eq!(mdm["channelConfig"]["service_key"], json!("mdm"));
 }
 
 /// X3-T（W-03）：rebuild 确定性 event_id——同参数重复 rebuild 不再产生重复投递行

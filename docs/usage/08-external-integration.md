@@ -194,14 +194,32 @@ curl -X POST http://flow:8091/api/flow/v1/messages/correlate \
 > HTTP 2xx**（响应体不解析，接收方协议自由）；传输地址经 `[service_rpc.services]` 服务
 > 目录定位（键即目录键，见 §8.1 与配置手册 11）。
 
-### 配置
+### 配置（订阅管理）
 
-| 环境变量 | 说明 |
-|----------|------|
-| `FLOW_WEBHOOK_MODE` | 投递链路：`outbox`（默认，持久化队列 + 死信，推荐）/ `legacy`（内存链路）。见 [09 §9.14](09-operations-and-admin.md) |
-| `FLOW_WEBHOOK_TARGETS` | 逗号分隔的目标条目，每条 `服务目录键:回调路径`（如 `mdm:/api/mdm/flow/callback`）——键经 `[service_rpc.services]` 定位地址，路径归接收方定义；格式不合法的条目启动时 warn 跳过。**outbox 模式：仅作首启导入源**（运行时以订阅表为准，管理页/REST 维护）；legacy 模式：运行时目标；空 = 禁用 |
-| `FLOW_WEBHOOK_SIGNING_KEY` | HMAC-SHA256 签名密钥（可选；须与每个接收端的共享密钥一致，如 mdm 的 `[mdm.flow].webhook_secret`）。outbox 模式 = 首启导入行的初始 secret（建议随后改配每订阅独立密钥并同步接收端） |
-| `FLOW_WEBHOOK_MAX_RETRIES` | 重试次数（默认 3；仅 legacy——outbox 的重试上限在订阅行 retry_max，默认 10 含首发） |
+**无环境变量**（2026-09-02 终态）：历史上的 `FLOW_WEBHOOK_MODE` / `FLOW_WEBHOOK_MAX_RETRIES`
+（legacy 链路）与 `FLOW_WEBHOOK_TARGETS` / `FLOW_WEBHOOK_SIGNING_KEY`（首启种子导入）均已
+删除，配置残留无害。订阅以库中订阅表为唯一真源，**管理页面 / REST 维护**；新环境接入 =
+显式创建订阅（`definitionKeys` / `eventTypes` 留空 = 订阅全部定义、全部事件）：
+
+```bash
+curl -X POST http://<flow-host>:8091/api/flow/v1/webhook-subscriptions/save \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "name": "mdm-approval",
+    "channel": "webhook",
+    "channelConfig": {
+      "service_key": "mdm",
+      "callback_path": "/api/mdm/flow/callback",
+      "secret": "<与接收端一致的共享密钥，如 mdm 的 [mdm.flow].webhook_secret>"
+    },
+    "definitionKeys": [],
+    "eventTypes": []
+  }'
+```
+
+`service_key` 经 `[service_rpc.services]` 目录定位地址；`secret` 为该订阅的 HMAC-SHA256
+签名密钥（逐订阅独立，改配后须同步接收端）；重试上限 `retryMax`（默认 10 含首发）。
 
 ### 事件类型
 

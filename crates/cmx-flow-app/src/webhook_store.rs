@@ -17,8 +17,6 @@ use cmx_core::model::cell::{DataValue, SqlTypeMarker};
 use cmx_database_pg::{SqlParams, execute_sql, execute_sql_with_params, query_sql_with_params};
 use serde_json::{Value, json};
 
-use cmx_flow_adapters::WebhookTarget;
-
 /// 订阅缓存 TTL（版本对账周期；跨副本收敛上界 ≈ 此值）。
 pub const CACHE_TTL: Duration = Duration::from_secs(5);
 
@@ -617,67 +615,6 @@ async fn query_sub_rows_p(
         .map_err(|e| format!("查订阅失败: {e}"))?;
     let schema = ds.schema.as_ref();
     Ok(ds.iter().filter_map(|row| sub_row(row, schema)).collect())
-}
-
-// ============================================================
-// 首启 env 导入（方案 §7：空表才种、确定性 name、secret 沿用全局密钥、绝不复位用户改动）
-// ============================================================
-
-/// 首启导入：订阅表（本租户）为空且 `FLOW_WEBHOOK_TARGETS` 非空 → 按环境变量生成订阅行。
-///
-/// - name 确定性 `env-{service_key}`：并发首启两副本对同键生成同 name → 撞 uk →
-///   `ON CONFLICT DO NOTHING`，幂等成立；
-/// - secret 沿用全局 `FLOW_WEBHOOK_SIGNING_KEY`（导入即兼容存量接收端验签、不断签）；
-/// - `source='env'` 标记（运维辨识共享密钥的存量导入行，建议尽快改独立 secret）。
-///
-/// 返回导入条数（幂等重跑返回 0）。
-pub async fn import_env_subscriptions(
-    db_id: &str,
-    tenant: &str,
-    targets: &[WebhookTarget],
-    signing_key: Option<&str>,
-) -> Result<usize, String> {
-    if targets.is_empty() {
-        return Ok(0);
-    }
-    let existing = query_one_i64_p(
-        db_id,
-        "SELECT COUNT(*) AS n FROM cmx_flow_webhook_subscription WHERE tenant_id = $1",
-        SqlParams::DataValues(vec![DataValue::String(tenant.to_string())]),
-        "wh_sub_import_count",
-    )
-    .await?;
-    if existing > 0 {
-        return Ok(0); // 只在空表时导入一次，绝不复位用户改动（014 教训）。
-    }
-    let secret = signing_key.unwrap_or("");
-    let mut imported = 0usize;
-    for t in targets {
-        let cfg = json!({
-            "service_key": t.key,
-            "callback_path": t.path,
-            "secret": secret,
-        });
-        let sql = "INSERT INTO cmx_flow_webhook_subscription \
-            (id, name, channel, channel_config, definition_keys, event_types, active, retry_max, source, tenant_id) \
-            VALUES ($1, $2, 'webhook', $3::jsonb, '[]'::jsonb, '[]'::jsonb, TRUE, 10, 'env', $4) \
-            ON CONFLICT (tenant_id, name) DO NOTHING";
-        let params = SqlParams::DataValues(vec![
-            DataValue::Int(cmx_utils::next_pk_id()),
-            DataValue::String(format!("env-{}", t.key)),
-            DataValue::Json(serde_json::to_string(&cfg).unwrap_or_default()),
-            DataValue::String(tenant.to_string()),
-        ]);
-        let n = execute_sql_with_params(db_id, None, sql, params)
-            .await
-            .map_err(|e| format!("首启导入订阅失败: {e}"))?;
-        imported += n as usize;
-    }
-    if imported > 0 {
-        invalidate_cache(tenant);
-        tracing::info!(tenant, imported, "已按 FLOW_WEBHOOK_TARGETS 首启导入订阅（source=env，secret=全局密钥）");
-    }
-    Ok(imported)
 }
 
 // ============================================================

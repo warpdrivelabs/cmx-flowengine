@@ -389,20 +389,8 @@ async fn build_for(
         if let Err(e) = crate::webhook_store::ensure_schema(&flow_db).await {
             tracing::warn!(error = %e, "webhook 订阅/投递表建表失败（出站事件投递将不可用）");
         }
-        // 2f) 首启 env 导入（001 方案 §7）：空表才种、name 确定性、secret 沿用全局密钥。
-        let webhook_cfg = AdapterConfig::from_env().webhook;
-        match crate::webhook_store::import_env_subscriptions(
-            &flow_db,
-            tenant,
-            &webhook_cfg.targets,
-            webhook_cfg.signing_key.as_deref(),
-        )
-        .await
-        {
-            Ok(0) => {}
-            Ok(n) => tracing::info!(tenant, imported = n, "webhook 订阅首启导入完成"),
-            Err(e) => tracing::warn!(error = %e, "webhook 订阅首启导入失败（可重启重试，幂等）"),
-        }
+        // 注：订阅以库中订阅表为唯一真源（管理页/REST 维护）；首启 env 种子导入已按
+        // 2026-09-02 用户拍板移除，新环境须在管理端显式创建订阅。
     })
     .await;
 

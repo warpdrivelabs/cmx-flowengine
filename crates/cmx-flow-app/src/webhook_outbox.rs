@@ -1,8 +1,8 @@
 //! 出站 webhook 的 outbox 半边：emit 侧事件落库（§4.1）+ 租约式投递 poller（§4.2）。
 //!
-//! **双轨 MODE**（决议 2）：`FLOW_WEBHOOK_MODE = outbox（默认）| legacy`——legacy 走
-//! 内存链路（adapters `WebhookSender`，保留至 M3），outbox 走「事件落投递行 → poller
-//! 租约式投递」。MODE 只分流 webhook 半边；SSE 半边不受影响，两种模式照常广播。
+//! **投递链路 = outbox 唯一**（001-M3 起）：事件先落投递行，poller 租约式投递；legacy
+//! 内存链路（adapters `WebhookSender`）、`FLOW_WEBHOOK_MODE` 与首启 env 种子导入均已删除
+//! （2026-09-02 拍板），订阅以库中订阅表为唯一真源（管理页/REST 维护）。
 //!
 //! **投递语义 = at-least-once**：常态（逐行续租正常）下各 worker 行集互不相交；租约真
 //! 过期（进程长停顿/网络分区）的异常窗口同一行可能双投——接收方须按 delivery_id 或

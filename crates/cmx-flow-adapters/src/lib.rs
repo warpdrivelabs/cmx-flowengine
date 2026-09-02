@@ -26,7 +26,7 @@ pub use channel::{
     ChannelRegistry, DeliveryChannel, DeliveryOutcome, DeliveryTask, global_registry,
 };
 pub use channel_webhook::WebhookChannel;
-pub use config::{AdapterConfig, AdapterMode, WebhookConfig, WebhookTarget};
+pub use config::{AdapterConfig, AdapterMode};
 pub use delegate::HttpDelegate;
 pub use identity::HttpAssigneeResolver;
 pub use mock::{MockAssigneeResolver, MockDelegate, MockSubflowRouter};

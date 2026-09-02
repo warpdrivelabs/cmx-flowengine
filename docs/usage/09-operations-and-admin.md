@@ -285,7 +285,8 @@ curl -s -X POST "$BASE/webhook-deliveries/skip"  -H "$H" -H "$AUTH" -d '{"ids": 
   终态（DONE/DEAD/SKIPPED）不阻塞。
 - **结果分类**：HTTP 408/429/5xx、超时、传输错误 → 退避重试（1s 起指数封顶 5min，
   retry_max 含首发默认 10，首发到死信约 9~14 分钟）；其余 4xx（含 401/403）→ 直达死信。
-- **迁移**：`FLOW_WEBHOOK_TARGETS` 配置的存量目标在订阅表为空时**首启自动导入**
-  （名 `env-<服务键>`，secret 沿用全局 `FLOW_WEBHOOK_SIGNING_KEY` 不断签）；建议随后在
-  管理页改配每订阅独立密钥并同步接收端。`FLOW_WEBHOOK_MODE=legacy` 可临时回退内存链路
-  （集群级配置，全量同配或停写）。
+- **迁移/接入**：订阅以库中订阅表为唯一真源，新环境在管理页面 / REST 显式创建（curl 样例
+  见 [08 §8.6](08-external-integration.md)）。legacy 内存链路、`FLOW_WEBHOOK_MODE` 与首启
+  env 种子导入（`FLOW_WEBHOOK_TARGETS` / `FLOW_WEBHOOK_SIGNING_KEY`）均已删除（2026-09-02），
+  outbox 为唯一投递链路、无回退开关。存量 `source='env'` 种子行照常工作，建议在管理页改配
+  每订阅独立密钥并同步接收端。
