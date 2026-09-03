@@ -139,11 +139,6 @@ pub struct ProcessInstance {
     /// 故补记节点。去重键 = (parent_token_id, parent_node_bpmn_id)。M5.1/5.2 单挂载恒可为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_node_bpmn_id: Option<String>,
-    /// 发起绑定的 webhook 订阅 id（v2.4 三级路由 L2；逻辑外键 → cmx_flow_webhook_subscription，
-    /// NULL = 未绑定走规则 2 全量匹配）。子实例创建时复制父实例值；实例创建后不变
-    /// （update_instance 不更新此列，守卫口径见 webhook 方案 §3.5）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subscriber_id: Option<i64>,
     /// 发起方业务系统标识（技术债 005：`<system>_` 命名空间归属；来自结构化 API Key 声明
     /// 的 `TenantCtx.system`，003）。None = legacy 调用未声明系统——归属过滤放行，两阶段
     /// 迁移零破坏。子实例创建时继承父实例取值；实例创建后不变。

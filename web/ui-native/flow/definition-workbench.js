@@ -1,7 +1,11 @@
 /**
- * 流程设计工作台 —— native_pages 四区工作台（对标报表设计工作台 portal.rpt.design-workbench）。
+ * 流程定义工作台 —— 流程设计工作台的副本变体（portal.flow.definition-workbench），
+ * 由"流程定义管理"页的工作台/新建入口打开（initialContext: definitionKey / groupId 预填）。
  *
- * explorer：流程定义列表（GET /api/flow/definitions）。点选加载到画布。
+ * 与原版（portal.flow.design-workbench）的唯一差异：explorer 不渲染定义列表
+ * （DAM 过滤/列表/分页/新建按钮整体移除，列表职责在流程定义管理页），保留画布结构大纲。
+ *
+ * explorer：画布结构大纲（节点/网关/边，双向选中联动）。
  * content ：bpmn-js 画布 + 工具条（工具条在 content 内、画布上方）。存草稿/发布/校验/撤销/适应。
  * property：选中节点的属性（办理人/候选角色/子流程/条件），modeling.updateProperties 写回。
  *
@@ -366,18 +370,13 @@ function explorerHtml () {
         : (state.definitions.length
             ? `<cmx-empty-state icon="tree" title="当前 DAM 过滤下无匹配定义" size="sm"></cmx-empty-state>`
             : `<cmx-empty-state icon="tree" title="暂无流程定义" description="点下方新建" size="sm"></cmx-empty-state>`))
+  // 定义工作台变体：不渲染定义列表（上方 body/分页仅 kept for 子流程导航变体），只留结构大纲。
+  void body; void pages; void pageDefs
   return `<section class="flow flow-explorer">
     <div class="flow-head compact">
-      <div><b>流程定义</b><span>cmx-flow / 主流程</span></div>
+      <div><b>流程大纲</b><span>cmx-flow / 画布结构</span></div>
       <button class="flow-icon-btn" data-act="refresh" title="刷新"><ui5-icon name="refresh"></ui5-icon></button>
     </div>
-    ${damFilterHtml()}
-    <div class="flow-def-list">${body}</div>
-    ${all.length ? defPagerHtml(all.length, state.defPage, pages) : ''}
-    ${subflowCount() ? `<label class="flow-subfl-toggle" title="子流程从属于主流程节点，通常在主流程里编辑；打开可临时在此列出直接维护">
-      <input type="checkbox" data-show-subflows ${state.showSubflows ? 'checked' : ''}/>
-      <span>显示子流程（${subflowCount()}）</span></label>` : ''}
-    <button class="flow-btn block" data-act="new">＋ 新建主流程</button>
     ${outlineHtml()}
   </section>`
 }

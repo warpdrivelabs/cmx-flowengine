@@ -105,10 +105,7 @@ pub struct FiredTimer {
 }
 
 /// 流程引擎。泛型于 RuntimeStore：测试用 InMemoryStore，生产用 PG 实现。
-/// 发起实例的完整上下文（v2.4：原 start_process_inner 9 个位置参数收拢，方案 §3.3）。
-///
-/// `subscriber_id` = L2 发起绑定的订阅 id（发起方向 handler 解析 name → id 后传入；与实例
-/// 落库同一事务写入，方案 §3.4）；子流程经 launch_one_subflow 复制父实例值（§3.2 继承）。
+/// 发起实例的完整上下文（原 start_process_inner 9 个位置参数收拢）。
 #[derive(Debug, Clone, Default)]
 pub struct StartContext {
     /// 流程定义 key。
@@ -121,8 +118,6 @@ pub struct StartContext {
     pub org_id: Option<String>,
     /// 路由维度上下文（RD3）。
     pub dimensions: std::collections::BTreeMap<String, String>,
-    /// 发起绑定的 webhook 订阅 id（L2；None = 未绑定走规则 2 全量匹配）。
-    pub subscriber_id: Option<i64>,
     /// 发起方业务系统归属（技术债 005；来自结构化 key 声明的 TenantCtx.system，003）。
     /// None = legacy 调用，归属过滤放行。
     pub system_id: Option<String>,
@@ -380,7 +375,6 @@ pub async fn start_by_message(
                 business_key,
                 org_id,
                 dimensions,
-                subscriber_id: None,
                 system_id: None,
                 parent_instance_id: None,
                 parent_token_id: None,
@@ -603,7 +597,6 @@ pub async fn start_by_message(
             business_key,
             org_id,
             dimensions,
-            subscriber_id: None,
             system_id: None,
             parent_instance_id: None,
             parent_token_id: None,
@@ -612,8 +605,7 @@ pub async fn start_by_message(
         .await
     }
 
-    /// 启动一个流程实例（完整上下文形态，v2.4：支持发起绑定 subscriber_id；原 9 参
-    /// start_process_inner 收拢为 StartContext——止住位置参数膨胀，方案 §3.3）。
+    /// 启动一个流程实例（完整上下文形态；原 9 参 start_process_inner 收拢为 StartContext）。
     pub async fn start_process_ctx(&self, ctx: StartContext) -> Result<ExecutionResult> {
         let snap = self.start_process_inner(ctx).await?;
         // 若起始段就走到 callActivity，挂起了 WaitingSubflow 令牌，启动其子实例。
@@ -631,7 +623,6 @@ pub async fn start_by_message(
             business_key,
             org_id,
             dimensions,
-            subscriber_id,
             system_id,
             parent_instance_id,
             parent_token_id,
@@ -688,9 +679,7 @@ pub async fn start_by_message(
             parent_instance_id,
             parent_token_id,
             parent_node_bpmn_id,
-            // v2.4 L2 发起绑定：与实例落库同一事务写入；子流程继承见 launch_one_subflow。
-            subscriber_id,
-            // 005 系统归属：与实例落库同一事务写入（insert_instance 16 列）；子流程继承。
+            // 005 系统归属：与实例落库同一事务写入；子流程继承。
             system_id,
         };
         let token = Token {
@@ -887,8 +876,6 @@ pub async fn start_by_message(
                 org_id: org,
                 // 子实例整体继承父的维度上下文（RD3）——各挂载点仍按自己的 dim_key 取对应维度值。
                 dimensions: parent_snap.instance.dimensions.clone(),
-                // v2.4：子实例复制父实例的发起绑定（同一业务流程的组成部分，回调同一家，方案 §3.2）。
-                subscriber_id: parent_snap.instance.subscriber_id,
                 // 005：子实例继承父实例的系统归属（同一业务流程的组成部分）。
                 system_id: parent_snap.instance.system_id.clone(),
                 parent_instance_id: Some(parent_snap.instance.id.clone()),

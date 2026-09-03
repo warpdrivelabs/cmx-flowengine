@@ -57,11 +57,32 @@
       "relPath": "flow/form-binding-admin.js"
     },
     {
-      "id": "portal.flow.webhook-admin",
-      "name": "Webhook 订阅管理",
-      "details": "native_pages 三区出站 webhook 订阅管理（001 方案 M2）：explorer 订阅列表(启停/通道/服务键/env 导入角标)、content 双 tab(订阅编辑：通道下拉/secret 只写掩码随机生成/definitionKeys 多选/eventTypes 推荐集/retry_max + 测试投递 + 启停；投递流水：状态过滤 + 死信勾选重发/处置)、property 投递口径说明(保序/退避/at-least-once/首启导入迁移)。数据源 /api/flow/v1/webhook-subscriptions/* 与 /webhook-deliveries/*。",
+      "id": "portal.flow.definition-manager",
+      "name": "流程定义管理",
+      "details": "native_pages 流程定义管理（20260902 重构）：左侧流程分组面板（编辑分组弹框：上移下移/启停/增删）+ 右侧定义列表（key/名称搜索 + 状态过滤 + 分组过滤）+ 详情视图（元数据 + 版本表 + 工作台入口）；新建按当前分组跳设计工作台（initialContext.groupId 预填）。数据源 /api/flow/definitions/query|set-group、/api/flow/definition-groups。",
       "sourceType": "js",
-      "relPath": "flow/webhook-admin.js"
+      "relPath": "flow/definition-manager.js"
+    },
+    {
+      "id": "portal.flow.event-subscription-manager",
+      "name": "事件订阅管理",
+      "details": "native_pages 事件订阅管理（20260902 重构）：订阅者列表（通道/启停过滤 + 待投/24h死信/最近投递健康度投影）+ 编辑大弹框（基本信息/通道配置 secret 掩码随机/规则卡片区[事件多选×分组多选×key glob chips，可增删排序] + 预览命中定义）+ 测试投递（不校验规则）+ 补发。数据源 /api/flow/event-subscribers/*、/api/flow/definition-groups。",
+      "sourceType": "js",
+      "relPath": "flow/event-subscription-manager.js"
+    },
+    {
+      "id": "portal.flow.event-delivery-monitor",
+      "name": "事件投递记录",
+      "details": "native_pages 事件投递记录（20260902 重构）：KPI 4 卡（投递量/成功率/死信/待投）+ 双 tab——投递流水（订阅者/状态/定义key/命中规则过滤 + 载荷/诊断查看）、死信队列（重发/处置/全部重发）+ 终态行清理；流水 30s 轮询。数据源 /api/flow/event-deliveries/*（query/stats/retry/skip/purge）。",
+      "sourceType": "js",
+      "relPath": "flow/event-delivery-monitor.js"
+    },
+    {
+      "id": "portal.flow.definition-workbench",
+      "name": "流程定义工作台",
+      "details": "native_pages 流程定义工作台（流程设计工作台副本，20260902）：由流程定义管理页的工作台/新建入口打开，initialContext 带 definitionKey/groupId 预填；与原版唯一差异是 explorer 不渲染定义列表，仅保留画布结构大纲 + 属性区。",
+      "sourceType": "js",
+      "relPath": "flow/definition-workbench.js"
     }
   ]
 }

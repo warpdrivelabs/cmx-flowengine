@@ -33,7 +33,7 @@ const state = {
   viewerEl: null,    // 查看器当前挂载的容器
   viewerKey: null,   // 查看器当前载入的定义 key（换实例/定义才重导入）
   bpmnCache: {},     // definitionKey → bpmnXml（避免重复拉取）
-  es: null,          // P4+：生命周期事件 SSE（EventSource），令牌位置实时刷新替轮询
+  es: null,          // P4+：生命周期事件 SSE（fetch 流式句柄），令牌位置实时刷新替轮询
   liveOn: false,     // SSE 是否已连接（图例上显示「实时/手动」）
   liveTimer: null,   // 事件到达后的去抖 reload 定时器（合并突发事件）
   varHistory: null,  // 变量历史（含引擎派生 decision/subflow）；随选中实例载入
@@ -45,46 +45,8 @@ const state = {
 const { escHtml: esc } = globalThis.__cmxDataComp // 共享转义（cmx-data-comp/lib/cmx-page-helpers.js；最严格五字符集合，文本/属性上下文皆安全）
 const enc = encodeURIComponent
 
-const { apiJson: _sharedApiJson } = globalThis.__cmxDataComp // 共享 fetch 封装（cmx-data-comp/lib/cmx-page-helpers.js）；经 CFG 转发保留组件壳 configure() 契约
+const { apiJson: _sharedApiJson, openSseStream } = globalThis.__cmxDataComp // 共享 fetch 封装 + fetch 流式 SSE（cmx-data-comp/lib；SSE 走 fetch 可带 Authorization 头，门户全局拦截器自动注入，无需换票）；经 CFG 转发保留组件壳 configure() 契约
 async function apiJson (url, options = {}) { return _sharedApiJson(url, options, CFG) }
-
-// SSE 连接（带 jwt 一次性票据）。原生 EventSource 不能带 header，故 jwt 模式下先用带 header 的 POST
-// 换一张短期一次性票据再拼进 URL（?ticket=）；off 模式后端忽略票据。断线重连会用旧票 401 → onerror
-// 关闭后重新铸票重连（节流+次数守卫）。listeners={name:fn(data)}；onopen/onclose 通知连接态（驱动实时 pill）。
-function openSse (path, listeners, hooks = {}) {
-  const wc = !(CFG.fetchInit && CFG.fetchInit.credentials === 'omit')
-  const handle = { es: null, closed: false, retries: 0, timer: null }
-  const MAX_RETRIES = 6
-  const connect = async () => {
-    if (handle.closed) return
-    let ticket = ''
-    try { const t = await apiJson('/api/flow/v1/sse/ticket', { method: 'POST' }); ticket = (t && t.ticket) || '' } catch { /* 无票裸连（off 仍可用） */ }
-    if (handle.closed) return
-    try {
-      const sep = path.includes('?') ? '&' : '?'
-      const es = new EventSource((CFG.apiBase || '') + path + (ticket ? sep + 'ticket=' + enc(ticket) : ''), { withCredentials: wc })
-      handle.es = es
-      for (const [name, fn] of Object.entries(listeners || {})) es.addEventListener(name, (m) => { try { fn(m) } catch { /* ignore */ } })
-      es.onopen = () => { handle.retries = 0; if (!handle.closed && hooks.onopen) hooks.onopen() }
-      es.onerror = () => {
-        try { es.close() } catch { /* ignore */ }
-        handle.es = null
-        if (hooks.onclose) hooks.onclose()
-        if (handle.closed || handle.retries >= MAX_RETRIES) return
-        handle.retries++
-        handle.timer = setTimeout(connect, Math.min(1000 * handle.retries, 5000))
-      }
-    } catch { /* EventSource 不可用则降级 */ }
-  }
-  connect()
-  return {
-    close () {
-      handle.closed = true
-      if (handle.timer) { clearTimeout(handle.timer); handle.timer = null }
-      if (handle.es) { try { handle.es.close() } catch { /* ignore */ } handle.es = null }
-    },
-  }
-}
 
 function hostRoot (host) {
   return host?.renderRoot || host?.shadowRoot?.querySelector('.native-page-root') || null
@@ -608,28 +570,27 @@ function replayPlayPause () {
 
 
 //
-// 订阅 GET /api/flow/v1/events（EventSource，按当前租户过滤）。任一生命周期事件到达时，
+// 订阅 GET /api/flow/v1/events（fetch 流式 SSE，按当前租户过滤）。任一生命周期事件到达时，
 // 若它属于**当前查看的实例**，去抖后 reload 详情并重绘令牌高亮——无需手动刷新即见令牌流动。
-// 经 openSse 走一次性票据：jwt 模式亦可用（EventSource 不能带 header）；off 模式后端忽略票据。
+// 走共享 openSseStream：带 Authorization 头（门户全局 fetch 拦截器自动注入），无需换票。
 function startLiveEvents () {
-  if (state.es || typeof window === 'undefined' || !window.EventSource) return
-  const onAny = (m) => {
-    let ev = null
-    try { ev = JSON.parse(m.data) } catch { /* keep-alive/非 JSON，忽略 */ }
-    if (!ev || !state.selectedId) return
+  if (state.es) return
+  const onAny = (data) => {
+    // data 已由共享层 JSON.parse；保持字符串（keep-alive/非 JSON 载荷）的忽略。
+    if (!data || typeof data === 'string' || !state.selectedId) return
     // 只对当前查看实例的事件反应（其它实例的事件仅刷新列表计数）。
-    if (ev.instanceId === state.selectedId) scheduleLiveReload()
+    if (data.instanceId === state.selectedId) scheduleLiveReload()
     else scheduleListRefresh()
   }
-  // 事件名与 FlowEventKind.as_str 对齐；逐一监听（EventSource 无通配，onmessage 只收无 event 名的）。
+  // 事件名与 FlowEventKind.as_str 对齐；逐一监听（无通配，message 兜底无 event 名的帧）。
   const listeners = { message: onAny }
   for (const name of ['instance.started', 'instance.completed', 'instance.terminated', 'task.created', 'task.completed', 'task.reassigned']) {
     listeners[name] = onAny
   }
-  state.es = openSse('/api/flow/v1/events', listeners, {
+  state.es = openSseStream('/api/flow/v1/events', listeners, {
     onopen: () => { state.liveOn = true; updateLivePill() },
     onclose: () => { if (state.liveOn) { state.liveOn = false; updateLivePill() } },
-  })
+  }, CFG)
 }
 // 只更新「实时/手动」指示点，不重渲染整个 content（避免为翻个状态点而重建 bpmn-js 查看器）。
 function updateLivePill () {

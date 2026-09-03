@@ -211,7 +211,7 @@ impl RuntimeStore for PgRuntimeStore {
         // 实例（含乐观锁 version，save 时 CAS 比对；system_id 为 005 归属列）。
         let inst_sql = format!(
             "SELECT id, definition_key, business_key, state, variables, created_at, updated_at, ended_at, \
-                    org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id, subscriber_id, version, system_id \
+                    org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id, version, system_id \
              FROM cmx_flow_instance WHERE id = '{}'",
             escape(instance_id)
         );
@@ -458,7 +458,7 @@ impl RuntimeStore for PgRuntimeStore {
     ) -> StoreResult<Vec<cmx_flow_model::ProcessInstance>> {
         let sql = format!(
             "SELECT id, definition_key, business_key, state, variables, created_at, updated_at, ended_at, \
-                    org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id, subscriber_id, system_id \
+                    org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id, system_id \
              FROM cmx_flow_instance WHERE parent_instance_id = '{}'",
             escape(parent_instance_id)
         );

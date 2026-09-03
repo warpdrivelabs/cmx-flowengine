@@ -20,6 +20,9 @@ pub mod dashboard;
 pub mod decisions;
 pub mod engine;
 pub mod events;
+pub mod event_admin;
+pub mod event_outbox;
+pub mod event_store;
 pub mod handlers;
 pub mod identity;
 pub mod observe;
@@ -32,9 +35,6 @@ pub mod stats;
 pub mod tenancy;
 pub mod tenant;
 pub mod views;
-pub mod webhook_admin;
-pub mod webhook_outbox;
-pub mod webhook_store;
 
 pub use auth::auth as auth_middleware;
 /// 004 小项 fail-fast：启动期预热认证配置（auth.mode 缺失/非法即在启动阶段 panic）。
@@ -42,8 +42,8 @@ pub use auth::auth_config_warmup;
 pub use observe::observe as observe_middleware;
 pub use engine::{
     FLOW_DB_ID, default_flow_db_id, FlowRuntime, IAM_DB_ID, current_flow_db_id, flow, flow_for_tenant,
-    spawn_async_job_poller, spawn_delivery_retention, spawn_incident_retry, spawn_timer_poller,
-    spawn_webhook_delivery_poller,
+    spawn_async_job_poller, spawn_delivery_retention, spawn_event_delivery_poller,
+    spawn_incident_retry, spawn_timer_poller,
 };
 pub use resp::{ApiResp, FlowError, Result};
 pub use tenant::{TenantCtx, current_tenant, current_user, identity_snapshot};
@@ -269,73 +269,84 @@ where
         .route("/stats/detail", get(stats::stats_detail))
         // —— 客户端连接监控（连接数/协议/身份/方法/参数/返回值等全维度） ——
         .route("/clients", get(observe::client_stats))
-        // —— 出站 webhook 订阅管理（001 方案 §五：11 端点随 M1；rebuild 随 M3） ——
+        // —— 事件订阅管理（20260902 重构方案 §五：19 端点） ——
+        //    订阅者 9（含 rules/preview 与 rebuild）+ 投递 5（含 stats）+ 分组 3 + 定义分组 2。
         .route(
-            "/webhook-subscriptions/query",
-            post(webhook_admin::query_subscriptions),
+            "/event-subscribers/query",
+            post(event_admin::query_subscribers),
         )
         .route(
-            "/webhook-subscriptions/detail",
-            get(webhook_admin::get_subscription_detail),
+            "/event-subscribers/detail",
+            get(event_admin::get_subscriber_detail),
         )
         .route(
-            "/webhook-subscriptions/save",
-            post(webhook_admin::save_subscription),
+            "/event-subscribers/save",
+            post(event_admin::save_subscriber),
         )
         .route(
-            "/webhook-subscriptions/delete",
-            post(webhook_admin::delete_subscription),
+            "/event-subscribers/delete",
+            post(event_admin::delete_subscriber),
         )
         .route(
-            "/webhook-subscriptions/set-active",
-            post(webhook_admin::set_subscription_active),
+            "/event-subscribers/set-active",
+            post(event_admin::set_subscriber_active),
         )
         .route(
-            "/webhook-subscriptions/test",
-            post(webhook_admin::test_subscription),
+            "/event-subscribers/test",
+            post(event_admin::test_subscriber),
         )
         .route(
-            "/webhook-subscriptions/channels",
-            get(webhook_admin::list_channels),
-        )
-        // —— v2.4 三级路由：L3 定义订阅（自助 subscribe/unsubscribe，占位角色 + fail-close）
-        //    + 运维计数（丢弃/幽灵/点查失败） ——
-        .route(
-            "/webhook-subscriptions/definitions/subscribe",
-            post(webhook_admin::subscribe_definitions),
+            "/event-subscribers/channels",
+            get(event_admin::list_channels),
         )
         .route(
-            "/webhook-subscriptions/definitions/unsubscribe",
-            post(webhook_admin::unsubscribe_definitions),
+            "/event-subscribers/rules/preview",
+            post(event_admin::preview_rules),
         )
         .route(
-            "/webhook-subscriptions/mon",
-            get(webhook_admin::webhook_mon),
+            "/event-subscribers/rebuild",
+            post(event_admin::rebuild_subscriber),
         )
         .route(
-            "/webhook-deliveries/query",
-            post(webhook_admin::query_deliveries),
+            "/event-deliveries/query",
+            post(event_admin::query_deliveries),
         )
         .route(
-            "/webhook-deliveries/retry",
-            post(webhook_admin::retry_deliveries),
+            "/event-deliveries/stats",
+            post(event_admin::delivery_stats),
         )
         .route(
-            "/webhook-deliveries/skip",
-            post(webhook_admin::skip_deliveries),
+            "/event-deliveries/retry",
+            post(event_admin::retry_deliveries),
         )
         .route(
-            "/webhook-deliveries/purge",
-            post(webhook_admin::purge_deliveries),
+            "/event-deliveries/skip",
+            post(event_admin::skip_deliveries),
+        )
+        .route(
+            "/event-deliveries/purge",
+            post(event_admin::purge_deliveries),
+        )
+        .route("/definition-groups", get(event_admin::list_groups))
+        .route(
+            "/definition-groups/save",
+            post(event_admin::save_group),
+        )
+        .route(
+            "/definition-groups/delete",
+            post(event_admin::delete_group),
+        )
+        .route(
+            "/definitions/query",
+            post(event_admin::query_definitions),
+        )
+        .route(
+            "/definitions/set-group",
+            post(event_admin::set_definition_group),
         )
         // —— 运维面（技术债 012/013，批次 6）：jobs/incidents 清单 + Prometheus 指标 ——
         .route("/instances/query", post(ops::query_instances))
         .route("/jobs/query", post(ops::query_jobs))
-        // —— 001-M3：缺行补发（12 端点收口） ——
-        .route(
-            "/webhook-subscriptions/rebuild",
-            post(webhook_admin::rebuild_subscription),
-        )
         .route("/incidents/query", post(ops::query_incidents))
         .route("/metrics", get(ops::metrics_endpoint))
 }

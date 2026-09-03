@@ -66,7 +66,6 @@ fn snap(id: &str) -> InstanceSnapshot {
             parent_instance_id: None,
             parent_token_id: None,
             parent_node_bpmn_id: None,
-            subscriber_id: None,
             system_id: Some("casit".into()),
         },
         tokens: vec![],

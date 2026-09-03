@@ -163,9 +163,9 @@ async fn main() -> cmx_web_chassis::Result<()> {
                 spawn_async_job_poller()
                     .await
                     .map_err(|e| anyhow::anyhow!("异步 Job 执行器启动失败: {e}"))?;
-                cmx_flow_app::spawn_webhook_delivery_poller()
+                cmx_flow_app::spawn_event_delivery_poller()
                     .await
-                    .map_err(|e| anyhow::anyhow!("出站 webhook 投递 poller 启动失败: {e}"))?;
+                    .map_err(|e| anyhow::anyhow!("事件投递 poller 启动失败: {e}"))?;
                 cmx_flow_app::spawn_delivery_retention()
                     .await
                     .map_err(|e| anyhow::anyhow!("运行态 retention 清理启动失败: {e}"))?;

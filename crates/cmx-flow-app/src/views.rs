@@ -220,8 +220,6 @@ pub fn instance_view(snap: &InstanceSnapshot) -> Value {
         "definitionKey": snap.instance.definition_key,
         "businessKey": snap.instance.business_key,
         "state": instance_state_str(snap.instance.state),
-        // v2.4 §3.6 实例可见性：发起绑定订阅 id（列表不带，控制载荷）。
-        "subscriberId": snap.instance.subscriber_id,
         "variables": snap.instance.variables.to_json(),
         "parentInstanceId": snap.instance.parent_instance_id,
         "waitingSubflow": snap.tokens.iter().any(|t| matches!(t.state, TokenState::WaitingSubflow)),

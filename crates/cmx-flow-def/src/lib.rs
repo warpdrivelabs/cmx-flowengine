@@ -78,6 +78,10 @@ pub struct DefinitionRecord {
     /// 分类（可空）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// 所属流程分组 id（20260902 重构；NULL = 未分组）。仅新建时写入；已存在定义保存
+    /// 草稿不改分组，改挂走 /definitions/set-group。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<i64>,
     /// 状态。
     pub state: DefinitionState,
     /// 当前已发布的版本号（未发布为 None）。

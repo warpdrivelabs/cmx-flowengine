@@ -53,13 +53,11 @@ fn now_rfc3339() -> String {
 /// 发一批生命周期事件：**双发**——出站 webhook（按 MODE 分流）+ 进程内 SSE 广播（S3，始终）。
 /// 自动补上当前租户（SSE 按租户过滤）。同请求的事件在 emit 点收齐后单批写入（001 方案 §4.1）。
 ///
-/// **SSE 半边不受 MODE 影响**：两种模式照常广播。webhook 半边：
-/// - outbox（默认）→ 事件落投递行（订阅匹配 + uk 幂等），投递 poller 租约式异步投递；
-/// - legacy → 现行内存链路（WebhookSender，保留至 M3）。
+/// **SSE 半边照常广播**；事件订阅半边：事件落投递行（订阅者规则匹配），投递 poller
+/// 租约式异步投递（at-least-once）。
 ///
-/// `bound_subscriber` = 实例的发起绑定订阅 id（v2.4 三级路由 L2；None = 未绑定走规则 2）。
-/// **wire 载荷零变更**：绑定关系只在 emit 侧参与路由匹配，不进事件体（方案 §3.3）。
-async fn publish_events(_rt: &FlowRuntime, events: Vec<FlowEvent>, route: crate::webhook_outbox::SubscriberRoute) {
+/// `system_id` 随实例快照带上（wire payload additive；legacy 调用不上线）。
+async fn publish_events(_rt: &FlowRuntime, events: Vec<FlowEvent>) {
     if events.is_empty() {
         return;
     }
@@ -70,56 +68,40 @@ async fn publish_events(_rt: &FlowRuntime, events: Vec<FlowEvent>, route: crate:
     for e in &events {
         crate::events::publish(e.clone());
     }
-    // 001-M3：legacy 内存链路已删除（FLOW_WEBHOOK_MODE=legacy 不再有独立分支），outbox 唯一。
-    crate::webhook_outbox::emit_to_outbox(&events, route).await;
+    crate::event_outbox::emit_to_outbox(&events).await;
 }
 
 /// 发一条生命周期事件（[`publish_events`] 的单事件便捷形态）。
-async fn publish_event(
-    rt: &FlowRuntime,
-    event: FlowEvent,
-    route: crate::webhook_outbox::SubscriberRoute,
-) {
-    publish_events(rt, vec![event], route).await;
-}
-
-/// 快照读取结果 → 订阅路由三态（X2-1：读失败 ≠ 未绑定，折叠会让绑定实例事件被广播）。
-fn route_of(loaded: Option<cmx_flow_model::runtime::InstanceSnapshot>)
--> crate::webhook_outbox::SubscriberRoute {
-    match loaded {
-        None => crate::webhook_outbox::SubscriberRoute::Unknown,
-        Some(snap) => match snap.instance.subscriber_id {
-            Some(sid) => crate::webhook_outbox::SubscriberRoute::Bound(sid),
-            None => crate::webhook_outbox::SubscriberRoute::Unbound,
-        },
-    }
+async fn publish_event(rt: &FlowRuntime, event: FlowEvent) {
+    publish_events(rt, vec![event]).await;
 }
 
 /// 从实例快照投影出 state/definitionKey/businessKey（webhook 事件公共字段）。
 async fn emit_instance_event(rt: &FlowRuntime, kind: FlowEventKind, instance_id: &str) {
-    // 借快照补齐展示字段 + 发起绑定（零新增读放大：复用本次重读）；取不到就只带 instance_id
-    // （事件是通知，不因取数失败阻断；绑定未知时路由侧 fail-close 只投显式旁听）。
+    // 借快照补齐展示字段 + system_id（零新增读放大：复用本次重读）；取不到就只带 instance_id
+    // （事件是通知，不因取数失败阻断）。
     let loaded = rt.engine.store().load_snapshot(instance_id).await.ok();
-    let (state, def_key, biz_key) = loaded.as_ref().map(|snap| {
+    let (state, def_key, biz_key, system_id) = loaded.as_ref().map(|snap| {
         (
             Some(instance_state_str(snap.instance.state).to_string()),
             Some(snap.instance.definition_key.clone()),
             snap.instance.business_key.clone(),
+            snap.instance.system_id.clone(),
         )
-    }).unwrap_or((None, None, None));
+    }).unwrap_or((None, None, None, None));
     publish_event(
         rt,
         FlowEvent::new(kind, instance_id, now_rfc3339())
             .state(state)
             .definition_key(def_key)
-            .business_key(biz_key),
-        route_of(loaded),
+            .business_key(biz_key)
+            .system_id(system_id),
     )
     .await;
 }
 
 /// 为 ExecutionResult 的每个当前未办结任务 emit 一条 task 事件（task.created / task.reassigned）。
-/// 同一次推进的多条事件收齐后**单批写入**（001 方案 §4.1）。
+/// 同一次推进的多条事件收齐后**单批写入**。
 async fn emit_task_events(
     rt: &FlowRuntime,
     kind: FlowEventKind,
@@ -128,18 +110,18 @@ async fn emit_task_events(
     if result.open_tasks.is_empty() {
         return;
     }
-    // 补齐 definitionKey/businessKey + 发起绑定（借快照一次，零新增读放大）。
+    // 补齐 definitionKey/businessKey + system_id（借快照一次，零新增读放大）。
     let loaded = rt.engine.store().load_snapshot(&result.instance_id).await.ok();
-    let (def_key, biz_key) = loaded
+    let (def_key, biz_key, system_id) = loaded
         .as_ref()
         .map(|snap| {
             (
                 Some(snap.instance.definition_key.clone()),
                 snap.instance.business_key.clone(),
+                snap.instance.system_id.clone(),
             )
         })
-        .unwrap_or((None, None));
-    let subscriber = route_of(loaded);
+        .unwrap_or((None, None, None));
     let ts = now_rfc3339();
     let events = result
         .open_tasks
@@ -148,11 +130,12 @@ async fn emit_task_events(
             FlowEvent::new(kind, &result.instance_id, ts.clone())
                 .definition_key(def_key.clone())
                 .business_key(biz_key.clone())
+                .system_id(system_id.clone())
                 .task(Some(t.id.clone()), Some(t.node_bpmn_id.clone()))
                 .assignee(t.assignee.clone())
         })
         .collect();
-    publish_events(rt, events, subscriber).await;
+    publish_events(rt, events).await;
 }
 
 /// emit 一条 task.reassigned（转办/委派/加签后新办理人 = to_user）。
@@ -162,7 +145,7 @@ async fn emit_task_events(
 async fn emit_reassigned(rt: &FlowRuntime, instance_id: &str, task_id: &str, to_user: &str) {
     // 补 node_bpmn_id + definition_key（借快照找该任务；找不到就不带）。
     let loaded = rt.engine.store().load_snapshot(instance_id).await.ok();
-    let (node, def_key) = loaded
+    let (node, def_key, system_id) = loaded
         .as_ref()
         .map(|snap| {
             let node = snap
@@ -170,16 +153,16 @@ async fn emit_reassigned(rt: &FlowRuntime, instance_id: &str, task_id: &str, to_
                 .iter()
                 .find(|t| t.id == task_id)
                 .map(|t| t.node_bpmn_id.clone());
-            (node, Some(snap.instance.definition_key.clone()))
+            (node, Some(snap.instance.definition_key.clone()), snap.instance.system_id.clone())
         })
-        .unwrap_or((None, None));
+        .unwrap_or((None, None, None));
     publish_event(
         rt,
         FlowEvent::new(FlowEventKind::TaskReassigned, instance_id, now_rfc3339())
             .definition_key(def_key)
+            .system_id(system_id)
             .task(Some(task_id.to_string()), node)
             .assignee(Some(to_user.to_string())),
-        route_of(loaded),
     )
     .await;
 }
@@ -208,7 +191,7 @@ fn msg_err(msg: String) -> FlowError {
 
 // ═══════════ 授权 helpers（技术债 004 越权面收口，治理方案批次 3） ═══════════
 
-/// 流程运维占位角色（对齐 webhook_admin 的 `flow-webhook-admin` 先例）：
+/// 流程运维占位角色（对齐事件订阅域的 `flow-event-admin` 先例）：
 /// 持有者可代他人查询/操作（运维台场景）；用户身份越权判定统一豁免。
 pub const FLOW_ADMIN_ROLE: &str = "flow-admin";
 
@@ -485,6 +468,10 @@ pub struct SaveDraftReq {
     category: Option<String>,
     /// 设计器导出的 BPMN 2.0 XML。
     bpmn_xml: String,
+    /// 所属流程分组 id（20260902 重构：定义页「在分组下新建」入口透传；可空 = 未分组。
+    /// 仅新建时生效——已存在定义保存草稿不改分组，改挂走 /definitions/set-group）。
+    #[serde(default)]
+    group_id: Option<i64>,
     #[serde(default)]
     updated_by: Option<String>,
     /// 协同 M1 乐观锁：载入草稿时的 updatedAt（RFC3339）。当前草稿更新时间已推进则返回冲突不覆盖。
@@ -516,6 +503,7 @@ pub async fn save_definition_draft(
             req.module,
             req.category,
             &req.bpmn_xml,
+            req.group_id,
             actor.clone(),
             req.base_updated_at,
         )
@@ -614,6 +602,7 @@ pub async fn get_definition_detail(
         "application": rec.application,
         "module": rec.module,
         "category": rec.category,
+        "groupId": rec.group_id,
         "state": rec.state.as_str(),
         "activeVersion": rec.active_version,
         "shownVersion": shown_version,
@@ -906,12 +895,6 @@ pub struct StartReq {
     /// 发起即绑业务单据（可选）。
     #[serde(default)]
     biz_link: Option<BizLinkReq>,
-    /// L2 发起绑定（v2.4）：**订阅 name**（人类可读、跨环境迁移稳定）。传了即解析校验
-    /// fail-fast（400），该实例后续全部事件定向投给该订阅并屏蔽通配订阅；未传 → NULL，
-    /// 走规则 2 全量匹配，存量调用零改动。滚动发布：先全量升级后端再对调用方开放本参数
-    /// （旧副本 Deserialize 忽略未知字段 = 假成功绑定，方案 §3.4 行为矩阵）。
-    #[serde(default)]
-    subscriber: Option<String>,
     // —— 向后兼容垫片（旧 demo/工作台调用形态） ——
     #[serde(default)]
     applicant: Option<String>,
@@ -983,31 +966,6 @@ pub async fn start_instance(
         .clone()
         .or_else(|| req.applicant.as_ref().map(|a| format!("CR-{a}")));
 
-    // v2.4 L2 发起绑定：解析 + 校验 fail-fast（一律 BadRequest → HTTP 400——仓内
-    // business_error 默认 200+code=1，会让「以状态码判断」的接入方失去 fail-fast 契约，R28；
-    // 字符串码以 msg 前缀落既有 ApiResp 信封，错误码表见方案 §3.4）。
-    let subscriber_id = match req.subscriber.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        None => None,
-        Some(name) => {
-            let sub = crate::webhook_store::get_subscription_by_name(
-                &crate::engine::current_flow_db_id(),
-                &crate::tenant::current_tenant(),
-                name,
-            )
-            .await
-            .map_err(msg_err)?;
-            let sub = sub.ok_or_else(|| {
-                FlowError::bad_request(format!("SUBSCRIBER_NOT_FOUND: 订阅不存在: {name}"))
-            })?;
-            if !sub.active {
-                return Err(FlowError::bad_request(format!(
-                    "SUBSCRIBER_INACTIVE: 订阅已停用: {name}"
-                )));
-            }
-            Some(sub.id)
-        }
-    };
-
     // 变量历史：发起初值（vars 随即被 start 消费，先留一份 JSON）。
     let init_vars_json = vars.to_json();
     let result = rt
@@ -1018,9 +976,6 @@ pub async fn start_instance(
             business_key: biz_key.clone(),
             org_id: req.org_id.clone(),
             dimensions: req.dimensions.clone(),
-            // 绑定写入与实例落库同一事务；name→id 解析在 app 层事务外完成——极窄窗口内
-            // 订阅被删产出悬空绑定，由删除守卫 SQL 压缩（方案 §3.4）。
-            subscriber_id,
             // 005：结构化 key 声明的调用方系统落实例归属列；legacy key（None）不过滤。
             system_id: crate::tenant::current_system(),
             parent_instance_id: None,
@@ -1725,14 +1680,14 @@ pub async fn complete_task(
         let snap = rt.engine.store().load_snapshot(&req.instance_id).await.ok();
         let def_key = snap.as_ref().map(|s| s.instance.definition_key.clone());
         let biz_key = snap.as_ref().and_then(|s| s.instance.business_key.clone());
-        let subscriber = route_of(snap.as_ref().cloned());
+        let system_id = snap.as_ref().and_then(|s| s.instance.system_id.clone());
         publish_event(
             &rt,
             FlowEvent::new(FlowEventKind::TaskCompleted, &req.instance_id, now_rfc3339())
                 .definition_key(def_key.clone())
                 .business_key(biz_key.clone())
+                .system_id(system_id.clone())
                 .task(Some(task_id.clone()), Some(node_bpmn_id.clone())),
-            subscriber,
         )
         .await;
         if let Some(snap) = snap {
@@ -1751,11 +1706,12 @@ pub async fn complete_task(
                         FlowEvent::new(FlowEventKind::TaskCreated, &req.instance_id, ts.clone())
                             .definition_key(def_key.clone())
                             .business_key(biz_key.clone())
+                            .system_id(system_id.clone())
                             .task(Some(t.id.clone()), Some(t.node_bpmn_id.clone()))
                             .assignee(t.assignee.clone())
                     })
                     .collect();
-                publish_events(&rt, events, subscriber).await;
+                publish_events(&rt, events).await;
             }
         }
     }

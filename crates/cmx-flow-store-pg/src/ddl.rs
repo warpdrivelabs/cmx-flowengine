@@ -202,11 +202,6 @@ pub const DDL_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_subflow_binding_dim ON cmx_flow_subflow_binding (called_key, dim_key, dim_value)",
     // —— RD0/RD3 实例维度上下文：dim_key → dim_value 多维取值（org 维度仍可用 org_id 标量列兼容）——
     "ALTER TABLE cmx_flow_instance ADD COLUMN IF NOT EXISTS dimensions JSONB",
-    // v2.4 三级路由 L2：发起绑定订阅 id（NULL = 未绑定走规则 2）；部分索引服务删除守卫与绑定查询。
-    "ALTER TABLE cmx_flow_instance ADD COLUMN IF NOT EXISTS subscriber_id BIGINT",
-    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_instance_subscriber ON cmx_flow_instance (subscriber_id) WHERE subscriber_id IS NOT NULL",
-    // v2.4：历史实例同步登记发起绑定（终态清理后「曾绑给谁」审计不断链）。
-    "ALTER TABLE cmx_flow_hi_instance ADD COLUMN IF NOT EXISTS subscriber_id BIGINT",
     // —— 技术债 007：实例乐观锁版本列（JPA @Version / Flowable OPTLOCK 同款）——
     // save 以 WHERE id=$1 AND version=$2 CAS 提交并 +1；0 行 = 并发覆盖冲突。
     "ALTER TABLE cmx_flow_instance ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0",

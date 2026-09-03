@@ -3,8 +3,8 @@
 //!（与 http_start_validation.rs 同一前提：闸函数置于 `flow()` 之前）。
 //!
 //! 覆盖：
-//!   - webhook 管理写端点角色闸三态（X2-2）：无角色 → 403；service/flow-admin/admin → 过闸
-//!     （过闸后因 DB 不可达会得到别的错误，但**不得**是 403 WEBHOOK_ADMIN_REQUIRED）；
+//!   - 事件订阅管理写端点角色闸三态：无角色 → 403；service/flow-admin/admin → 过闸
+//!     （过闸后因 DB 不可达会得到别的错误，但**不得**是 403 EVENT_ADMIN_REQUIRED）；
 //!   - 干预端点闸（X2-7）：无角色 JWT 用户 suspend → 403 FLOW_ADMIN_REQUIRED；service 放行；
 //!   - reject 无身份拒绝（S-11）：auth 语境下 current_user 为 None + 缺 from_user → 400。
 
@@ -42,25 +42,25 @@ async fn call(method: &str, uri: &str, body: Option<serde_json::Value>) -> (Stat
     (status, text)
 }
 
-/// X2-2：无角色 JWT 用户调 webhook 管理写端点 → 403（WEBHOOK_ADMIN_REQUIRED）。
+/// 无角色 JWT 用户调事件订阅管理写端点 → 403（EVENT_ADMIN_REQUIRED）。
 #[tokio::test]
-async fn webhook_write_gate_rejects_roleless_user() {
+async fn event_write_gate_rejects_roleless_user() {
     let (status, body) = tenant::scope(ctx(Some("u1"), &[]), async {
-        call("POST", "/flow/webhook-subscriptions/set-active", Some(json!({"id": 1, "active": false}))).await
+        call("POST", "/flow/event-subscribers/set-active", Some(json!({"id": 1, "active": false}))).await
     }).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert!(body.contains("WEBHOOK_ADMIN_REQUIRED"), "{body}");
+    assert!(body.contains("EVENT_ADMIN_REQUIRED"), "{body}");
 }
 
-/// X2-2：service 身份（M2M key）过闸（不再 403；后续 DB 不可达属预期非闸拒绝）。
+/// service 身份（M2M key）过闸（不再 403；后续 DB 不可达属预期非闸拒绝）。
 #[tokio::test]
-async fn webhook_write_gate_allows_service_identity() {
-    for roles in [["service"], ["flow-admin"], ["flow-webhook-admin"], ["admin"]] {
+async fn event_write_gate_allows_service_identity() {
+    for roles in [["service"], ["flow-admin"], ["flow-event-admin"], ["admin"]] {
         let (status, body) = tenant::scope(ctx(None, &roles), async {
-            call("POST", "/flow/webhook-subscriptions/set-active", Some(json!({"id": 1, "active": false}))).await
+            call("POST", "/flow/event-subscribers/set-active", Some(json!({"id": 1, "active": false}))).await
         }).await;
         assert_ne!(status, StatusCode::FORBIDDEN, "roles={roles:?} 应过闸: {body}");
-        assert!(!body.contains("WEBHOOK_ADMIN_REQUIRED"), "roles={roles:?}: {body}");
+        assert!(!body.contains("EVENT_ADMIN_REQUIRED"), "roles={roles:?}: {body}");
     }
 }
 

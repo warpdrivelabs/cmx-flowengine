@@ -84,6 +84,7 @@ async fn pg_draft_publish_load_roundtrip() {
             Some("hr".into()),
             None,
             BPMN,
+            None,
             Some("tester".into()),
         )
         .await
@@ -98,7 +99,7 @@ async fn pg_draft_publish_load_roundtrip() {
     assert_eq!(v1, 1);
 
     // 再存草稿 + 再发布 v2。
-    svc.save_draft("请假申请v2", None, None, None, None, BPMN, None)
+    svc.save_draft("请假申请v2", None, None, None, None, BPMN, None, None)
         .await
         .unwrap();
     let v2 = svc.publish(KEY, None, None).await.unwrap();

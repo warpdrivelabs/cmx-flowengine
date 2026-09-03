@@ -284,8 +284,8 @@ pub async fn query_incidents(Json(req): Json<IncidentsQuery>) -> Result<Json<Api
 /// GET /metrics —— Prometheus text 格式（013）。
 ///
 /// 业务指标源：①投递流水表按状态聚合（成功率口径真源，不建重复计数器）；②incident OPEN 数；
-/// ③死信数；④运行实例数；⑤outbox 内存计数器（入队失败/幽灵绑定/查找失败/旁路失败）——
-/// 丢弃计数见 `/webhook-subscriptions/mon`（per-subscription 维度）。DB 聚合失败按 0 上报
+/// ③死信数；④运行实例数；⑤emit 侧内存计数器（入队失败/零命中/缺定义键/旁路失败——
+/// 随 /event-deliveries/stats 一并返回）。DB 聚合失败按 0 上报
 /// （Prometheus 抓取不能 500；连续 0 值本身即异常信号）。
 /// /metrics 端点包装（X3-13/O-12）：响应头带 Prometheus 文本格式版本参数
 ///（主流抓取器兼容裸 text/plain，此为规范对齐）。
@@ -302,10 +302,10 @@ pub async fn metrics_endpoint() -> axum::response::Response {
 
 pub async fn prometheus_metrics() -> String {
     use std::sync::atomic::Ordering;
-    let delivery_done = count_one("SELECT COUNT(*) AS n FROM cmx_flow_webhook_delivery WHERE state='DONE'", "m_done").await;
-    let delivery_pending = count_one("SELECT COUNT(*) AS n FROM cmx_flow_webhook_delivery WHERE state IN ('PENDING','IN_FLIGHT')", "m_pend").await;
-    let delivery_dead = count_one("SELECT COUNT(*) AS n FROM cmx_flow_webhook_delivery WHERE state='DEAD'", "m_dead").await;
-    let delivery_skipped = count_one("SELECT COUNT(*) AS n FROM cmx_flow_webhook_delivery WHERE state='SKIPPED'", "m_skip").await;
+    let delivery_done = count_one("SELECT COUNT(*) AS n FROM cmx_flow_event_delivery WHERE state='DONE'", "m_done").await;
+    let delivery_pending = count_one("SELECT COUNT(*) AS n FROM cmx_flow_event_delivery WHERE state IN ('PENDING','IN_FLIGHT')", "m_pend").await;
+    let delivery_dead = count_one("SELECT COUNT(*) AS n FROM cmx_flow_event_delivery WHERE state='DEAD'", "m_dead").await;
+    let delivery_skipped = count_one("SELECT COUNT(*) AS n FROM cmx_flow_event_delivery WHERE state='SKIPPED'", "m_skip").await;
     let incidents_open = count_one("SELECT COUNT(*) AS n FROM cmx_flow_incident WHERE state='OPEN'", "m_inc").await;
     let deadletters = count_one("SELECT COUNT(*) AS n FROM cmx_flow_deadletter_job", "m_dl").await;
     let running = count_one("SELECT COUNT(*) AS n FROM cmx_flow_instance WHERE state='ACTIVE'", "m_run").await;
@@ -314,10 +314,10 @@ pub async fn prometheus_metrics() -> String {
     let mut m = |name: &str, help: &str, val: i64| {
         out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} gauge\n{name} {val}\n"));
     };
-    m("cmx_flow_delivery_done", "webhook 投递成功行数（当前存量，随 retention 清理下降）", delivery_done);
-    m("cmx_flow_delivery_pending", "webhook 待投/投递中行数", delivery_pending);
-    m("cmx_flow_delivery_dead", "webhook 死信行数（重试耗尽）", delivery_dead);
-    m("cmx_flow_delivery_skipped", "webhook 人工跳过行数", delivery_skipped);
+    m("cmx_flow_delivery_done", "事件投递成功行数（当前存量，随 retention 清理下降）", delivery_done);
+    m("cmx_flow_delivery_pending", "事件待投/投递中行数", delivery_pending);
+    m("cmx_flow_delivery_dead", "事件死信行数（重试耗尽）", delivery_dead);
+    m("cmx_flow_delivery_skipped", "事件人工跳过行数", delivery_skipped);
     m("cmx_flow_incidents_open", "OPEN incident 数", incidents_open);
     m("cmx_flow_deadletter_jobs", "异步作业死信数", deadletters);
     m("cmx_flow_instances_running", "运行中实例数", running);
@@ -327,9 +327,9 @@ pub async fn prometheus_metrics() -> String {
     // O-07：口径如实缩小——本计数仅覆盖 ops 查询端点（3 端点 6 类查询错误）；
     // 全服务信封级计数下沉随 013 另行（勿当全站业务失败率告警）。
     g("cmx_flow_business_errors_total", "ops 查询端点业务失败数（HTTP 200 + code=1 信封，非全站口径）", BUSINESS_ERRORS.load(Ordering::Relaxed));
-    g("cmx_flow_outbox_insert_errors_total", "webhook 投递行入队失败次数", crate::webhook_outbox::OUTBOX_INSERT_ERRORS.load(Ordering::Relaxed));
-    g("cmx_flow_webhook_ghost_bindings_total", "幽灵绑定丢弃事件数（订阅已删）", crate::webhook_outbox::GHOST_BINDINGS.load(Ordering::Relaxed));
-    g("cmx_flow_webhook_emit_lookup_errors_total", "emit 查询订阅失败次数", crate::webhook_outbox::EMIT_LOOKUP_ERRORS.load(Ordering::Relaxed));
+    g("cmx_flow_outbox_insert_errors_total", "事件投递行入队失败次数", crate::event_outbox::OUTBOX_INSERT_ERRORS.load(Ordering::Relaxed));
+    g("cmx_flow_emit_no_match_total", "事件零订阅命中次数（活跃订阅者存在但无规则命中）", crate::event_outbox::EMIT_NO_MATCH.load(Ordering::Relaxed));
+    g("cmx_flow_emit_null_defkey_total", "事件缺 definitionKey 次数", crate::event_outbox::EMIT_NULL_DEFKEY.load(Ordering::Relaxed));
     g("cmx_flow_side_effect_errors_total", "旁路写失败次数（留痕/补偿）", crate::handlers::SIDE_EFFECT_ERRORS.load(Ordering::Relaxed));
     out
 }

@@ -147,7 +147,7 @@ async fn save_draft_rejects_invalid_bpmn() {
     let svc = DefinitionService::new(MemStore::default());
     // 非良构 XML → 试编译挡回。
     let r = svc
-        .save_draft("坏流程", None, None, None, None, "<not-bpmn/>", None)
+        .save_draft("坏流程", None, None, None, None, "<not-bpmn/>", None, None)
         .await;
     assert!(r.is_err(), "非法 BPMN 应被 save_draft 挡回");
 }
@@ -163,6 +163,7 @@ async fn save_draft_stores_and_derives_key_from_process_id() {
             Some("hr".into()),
             None,
             VALID_BPMN,
+            None,
             Some("alice".into()),
         )
         .await
@@ -179,7 +180,7 @@ async fn save_draft_stores_and_derives_key_from_process_id() {
 #[tokio::test]
 async fn publish_bumps_version_and_marks_published() {
     let svc = DefinitionService::new(MemStore::default());
-    svc.save_draft("请假申请", None, None, None, None, VALID_BPMN, None)
+    svc.save_draft("请假申请", None, None, None, None, VALID_BPMN, None, None)
         .await
         .unwrap();
 
@@ -194,7 +195,7 @@ async fn publish_bumps_version_and_marks_published() {
     assert_eq!(rec.active_version, Some(1));
 
     // 再存草稿 + 再发布 → v2（版本递增，旧版保留）。
-    svc.save_draft("请假申请v2", None, None, None, None, VALID_BPMN, None)
+    svc.save_draft("请假申请v2", None, None, None, None, VALID_BPMN, None, None)
         .await
         .unwrap();
     let v2 = svc.publish("leave_request", None, None).await.unwrap();
@@ -216,7 +217,7 @@ async fn publish_without_draft_errors() {
 #[tokio::test]
 async fn load_published_returns_compilable_definitions() {
     let svc = DefinitionService::new(MemStore::default());
-    svc.save_draft("请假申请", None, None, None, None, VALID_BPMN, None)
+    svc.save_draft("请假申请", None, None, None, None, VALID_BPMN, None, None)
         .await
         .unwrap();
     svc.publish("leave_request", None, None).await.unwrap();
@@ -231,13 +232,13 @@ async fn load_published_returns_compilable_definitions() {
 #[tokio::test]
 async fn version_list_activate_and_delete() {
     let svc = DefinitionService::new(MemStore::default());
-    svc.save_draft("请假申请", None, None, None, None, VALID_BPMN, None)
+    svc.save_draft("请假申请", None, None, None, None, VALID_BPMN, None, None)
         .await
         .unwrap();
     svc.publish("leave_request", Some("初版".into()), None)
         .await
         .unwrap(); // v1
-    svc.save_draft("请假申请", None, None, None, None, VALID_BPMN, None)
+    svc.save_draft("请假申请", None, None, None, None, VALID_BPMN, None, None)
         .await
         .unwrap();
     svc.publish("leave_request", Some("改办理人".into()), None)

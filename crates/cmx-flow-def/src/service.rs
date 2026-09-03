@@ -56,8 +56,9 @@ impl<S: DefinitionStore> DefinitionService<S> {
     ///
     /// 返回编译出的定义 key（= BPMN process id）。key 由 XML 决定，不由调用方乱传——
     /// 若 process id 与传入 key 不一致，以 XML 里的为准并在此提示（避免存串）。
-    // 8 个参数均为语义独立的定义坐标（name/domain/application/module/category）+ 载荷(bpmn_xml)
-    // + 审计(updated_by)；聚成 struct 只是把同样的字段搬个位置，收益为负，故就地放行。
+    /// `group_id` 仅新建时生效（已存在定义的分组不随草稿保存变化，改挂走 set-group）。
+    // 参数均为语义独立的定义坐标（name/domain/application/module/category/group_id）+
+    // 载荷(bpmn_xml) + 审计(updated_by)；聚成 struct 只是把同样的字段搬个位置，收益为负。
     #[allow(clippy::too_many_arguments)]
     pub async fn save_draft(
         &self,
@@ -67,16 +68,17 @@ impl<S: DefinitionStore> DefinitionService<S> {
         module: Option<String>,
         category: Option<String>,
         bpmn_xml: &str,
+        group_id: Option<i64>,
         updated_by: Option<String>,
     ) -> DefResult<DefinitionRecord> {
         // 试编译：非法 XML 直接挡回，带可读诊断。key 取自编译结果（BPMN process id）。
         let key = validate_bpmn(bpmn_xml)?;
 
-        // 保留已有的 active_version（存草稿不影响已发布指针）。
+        // 保留已有的 active_version（存草稿不影响已发布指针）与分组（不随草稿保存变化）。
         let existing = self.store.get(&key).await?;
-        let (state, active_version) = match &existing {
-            Some(r) => (r.state, r.active_version),
-            None => (DefinitionState::Draft, None),
+        let (state, active_version, group_id) = match &existing {
+            Some(r) => (r.state, r.active_version, r.group_id),
+            None => (DefinitionState::Draft, None, group_id),
         };
 
         let rec = DefinitionRecord {
@@ -86,6 +88,7 @@ impl<S: DefinitionStore> DefinitionService<S> {
             application,
             module,
             category,
+            group_id,
             state,
             active_version,
             draft_xml: Some(bpmn_xml.to_string()),
@@ -113,6 +116,7 @@ impl<S: DefinitionStore> DefinitionService<S> {
         module: Option<String>,
         category: Option<String>,
         bpmn_xml: &str,
+        group_id: Option<i64>,
         updated_by: Option<String>,
         base_updated_at: Option<String>,
     ) -> DefResult<SaveDraftOutcome> {
@@ -128,7 +132,7 @@ impl<S: DefinitionStore> DefinitionService<S> {
             });
         }
         let rec = self
-            .save_draft(name, domain, application, module, category, bpmn_xml, updated_by)
+            .save_draft(name, domain, application, module, category, bpmn_xml, group_id, updated_by)
             .await?;
         Ok(SaveDraftOutcome::Saved(rec))
     }
@@ -246,6 +250,7 @@ impl<S: DefinitionStore> DefinitionService<S> {
             module,
             None,
             bpmn_xml,
+            None,
             Some("seed".into()),
         )
         .await?;

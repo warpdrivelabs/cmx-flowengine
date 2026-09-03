@@ -1,7 +1,7 @@
 //! 出站生命周期 webhook 的**对外契约层**（三契约头 + 事件载荷 + HMAC 签名 + HTTP 2xx 判定）。
 //!
 //! 001-M3：legacy 内存链路（mpsc 队列 + 后台串行 worker + 指数退避重试）已删除，
-//! 投递统一走 outbox 持久化管线（`cmx-flow-app/src/webhook_outbox.rs`，租约抢占 +
+//! 投递统一走 outbox 持久化管线（`cmx-flow-app/src/event_outbox.rs`，租约抢占 +
 //! 同订阅保序 + 死信处置）；本文件只保留**契约自包含部分**，供 `channel_webhook`
 //! 组装请求复用。契约文档真源：`docs/usage/08-external-integration.md` §8.5/§8.6：
 //!   - 目标 = 服务目录键 + 回调路径（订阅 `channel_config` 的 service_key/callback_path，
@@ -77,6 +77,9 @@ pub struct FlowEvent {
     /// 租户（S3 SSE 按此过滤，只推本租户事件；单租户为 "default"）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tenant: Option<String>,
+    /// 发起方业务系统标识（20260902 重构 additive：来自实例 system_id 快照；legacy 调用不上线）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_id: Option<String>,
     /// 事件时间（RFC3339）。
     pub occurred_at: String,
 }
@@ -94,6 +97,7 @@ impl FlowEvent {
             node_bpmn_id: None,
             assignee: None,
             tenant: None,
+            system_id: None,
             occurred_at,
         }
     }
@@ -120,6 +124,10 @@ impl FlowEvent {
     }
     pub fn tenant(mut self, v: Option<String>) -> Self {
         self.tenant = v;
+        self
+    }
+    pub fn system_id(mut self, v: Option<String>) -> Self {
+        self.system_id = v;
         self
     }
 

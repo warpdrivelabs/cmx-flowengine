@@ -34,15 +34,32 @@ pub const DDL_STATEMENTS: &[&str] = &[
         state          VARCHAR(16)  NOT NULL DEFAULT 'DRAFT',
         active_version INTEGER,
         draft_xml      TEXT,
+        group_id       BIGINT,
         updated_at     TIMESTAMPTZ  NOT NULL,
         updated_by     VARCHAR(64)
     )"#,
     // 已有表补 DAM 列（幂等；CREATE TABLE IF NOT EXISTS 不改旧表结构）。
     "ALTER TABLE cmx_flow_definition ADD COLUMN IF NOT EXISTS domain VARCHAR(64)",
     "ALTER TABLE cmx_flow_definition ADD COLUMN IF NOT EXISTS application VARCHAR(64)",
+    // 20260902 重构：分组列（订阅规则 groupIds 匹配维度；幂等补列与迁移/init_ddl 同源）。
+    "ALTER TABLE cmx_flow_definition ADD COLUMN IF NOT EXISTS group_id BIGINT",
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_definition_module ON cmx_flow_definition (module)",
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_definition_dam ON cmx_flow_definition (domain, application, module)",
     "CREATE INDEX IF NOT EXISTS idx_cmx_flow_definition_state ON cmx_flow_definition (state)",
+    "CREATE INDEX IF NOT EXISTS idx_cmx_flow_definition_group ON cmx_flow_definition (group_id)",
+    // —— 流程分组表（20260902 重构：一级扁平；归属维度由 cmx-flow-app event_store 维护，
+    //     此处建表仅为 def 自举库独立跑通——两处 DDL 与迁移/init_ddl 四处同源） —— //
+    r#"CREATE TABLE IF NOT EXISTS cmx_flow_def_group (
+        id         BIGINT       NOT NULL,
+        name       VARCHAR(64)  NOT NULL,
+        sort_no    INT          NOT NULL DEFAULT 0,
+        enabled    BOOLEAN      NOT NULL DEFAULT TRUE,
+        remark     VARCHAR(512),
+        created_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        PRIMARY KEY (id)
+    )"#,
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_cmx_flow_def_group_name ON cmx_flow_def_group (name)",
     // —— 版本表（不可变历史） —— //
     r#"CREATE TABLE IF NOT EXISTS cmx_flow_definition_version (
         id            VARCHAR(64)  PRIMARY KEY,
@@ -87,9 +104,10 @@ impl DefinitionStore for PgDefinitionStore {
 
     async fn upsert_draft(&self, rec: &DefinitionRecord) -> DefResult<()> {
         // upsert：存在则更新草稿列，不存在则插入 DRAFT 行。参数化（draft_xml 含任意字符）。
+        // group_id 仅 INSERT 生效（冲突更新不触碰——分组改挂走 set-group，不随草稿保存变化）。
         let sql = "INSERT INTO cmx_flow_definition \
-            (key, name, domain, application, module, category, state, active_version, draft_xml, updated_at, updated_by) \
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+            (key, name, domain, application, module, category, state, active_version, draft_xml, group_id, updated_at, updated_by) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
             ON CONFLICT (key) DO UPDATE SET \
               name = EXCLUDED.name, domain = EXCLUDED.domain, application = EXCLUDED.application, \
               module = EXCLUDED.module, category = EXCLUDED.category, \
@@ -105,6 +123,7 @@ impl DefinitionStore for PgDefinitionStore {
             DataValue::String(rec.state.as_str().to_string()),
             opt_int(rec.active_version),
             opt_text(&rec.draft_xml),
+            opt_bigint(rec.group_id),
             DataValue::DateTime(rec.updated_at),
             opt_text(&rec.updated_by),
         ]);
@@ -116,7 +135,7 @@ impl DefinitionStore for PgDefinitionStore {
 
     async fn get(&self, key: &str) -> DefResult<Option<DefinitionRecord>> {
         let sql = format!(
-            "SELECT key, name, domain, application, module, category, state, active_version, draft_xml, updated_at, updated_by \
+            "SELECT key, name, domain, application, module, category, state, active_version, draft_xml, group_id, updated_at, updated_by \
              FROM cmx_flow_definition WHERE key = '{}'",
             esc(key)
         );
@@ -132,7 +151,7 @@ impl DefinitionStore for PgDefinitionStore {
 
     async fn list(&self) -> DefResult<Vec<DefinitionRecord>> {
         // 列表不带 draft_xml，省流量。
-        let sql = "SELECT key, name, domain, application, module, category, state, active_version, updated_at, updated_by \
+        let sql = "SELECT key, name, domain, application, module, category, state, active_version, group_id, updated_at, updated_by \
              FROM cmx_flow_definition ORDER BY updated_at DESC";
         let ds = query_sql(&self.db_id, None, sql, "flow_def_list")
             .await
@@ -284,6 +303,7 @@ fn row_to_record(row: &Row, schema: &Schema, with_xml: bool) -> DefResult<Defini
         application: get_opt_string(row, schema, "application"),
         module: get_opt_string(row, schema, "module"),
         category: get_opt_string(row, schema, "category"),
+        group_id: get_opt_i64(row, schema, "group_id"),
         state: DefinitionState::parse_str(&get_string(row, schema, "state")?),
         active_version: get_opt_i32(row, schema, "active_version"),
         draft_xml: if with_xml {
@@ -334,6 +354,14 @@ fn opt_int(v: Option<i32>) -> DataValue {
     }
 }
 
+/// Option<i64> → DataValue（可空 BIGINT 列；group_id）。
+fn opt_bigint(v: Option<i64>) -> DataValue {
+    match v {
+        Some(n) => DataValue::Int(n),
+        None => DataValue::NullTyped(SqlTypeMarker::Int),
+    }
+}
+
 fn get_string(row: &Row, schema: &Schema, col: &str) -> DefResult<String> {
     match row.get_by_name(schema, col) {
         Some(DataValue::String(s)) => Ok(s.clone()),
@@ -371,6 +399,14 @@ fn get_i64(row: &Row, schema: &Schema, col: &str) -> i64 {
 fn get_opt_i32(row: &Row, schema: &Schema, col: &str) -> Option<i32> {
     match row.get_by_name(schema, col) {
         Some(DataValue::Int(v)) => Some(*v as i32),
+        _ => None,
+    }
+}
+
+/// 可空 BIGINT 列读回（group_id；投影未带该列时 None）。
+fn get_opt_i64(row: &Row, schema: &Schema, col: &str) -> Option<i64> {
+    match row.get_by_name(schema, col) {
+        Some(DataValue::Int(v)) => Some(*v),
         _ => None,
     }
 }

@@ -358,6 +358,7 @@ async fn save_definition_draft(
             req.module,
             req.category,
             &req.bpmn_xml,
+            None,
             req.updated_by,
         )
         .await

@@ -123,14 +123,6 @@ fn opt_ts(v: &Option<DateTime<Utc>>) -> DataValue {
     }
 }
 
-/// Option<i64> → DataValue（可空 BIGINT 列，None 带 Int 类型标记；如 subscriber_id）。
-fn opt_int(v: &Option<i64>) -> DataValue {
-    match v {
-        Some(i) => DataValue::Int(*i),
-        None => DataValue::NullTyped(SqlTypeMarker::Int),
-    }
-}
-
 /// Option<serde_json::Value> → DataValue（可空 jsonb 列，None 带 Json 类型标记）。
 fn opt_json(v: &Option<JsonValue>) -> DataValue {
     match v {
@@ -146,8 +138,8 @@ fn opt_json(v: &Option<JsonValue>) -> DataValue {
 pub fn insert_instance(inst: &ProcessInstance) -> (String, SqlParams) {
     let sql = "INSERT INTO cmx_flow_instance \
         (id, definition_key, business_key, state, variables, created_at, updated_at, ended_at, \
-         org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id, subscriber_id, version, system_id) \
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 0, $15)"
+         org_id, dimensions, parent_instance_id, parent_token_id, parent_node_bpmn_id, version, system_id) \
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, $14)"
         .to_string();
     let params = vec![
         DataValue::String(inst.id.clone()),
@@ -163,7 +155,6 @@ pub fn insert_instance(inst: &ProcessInstance) -> (String, SqlParams) {
         opt_text(&inst.parent_instance_id),
         opt_text(&inst.parent_token_id),
         opt_text(&inst.parent_node_bpmn_id),
-        opt_int(&inst.subscriber_id),
         opt_text(&inst.system_id),
     ];
     (sql, SqlParams::DataValues(params))
@@ -185,7 +176,7 @@ fn dimensions_param(dims: &std::collections::BTreeMap<String, String>) -> DataVa
 /// `WHERE id = $1 AND version = $8`，命中即 `version = version + 1`。影响 0 行 = 该实例
 /// 已被并发推进段覆盖保存（last-write-wins 的后写者），调用方（store.save_snapshot）须
 /// 回滚整个事务并返回 [`StoreError::Conflict`]，不得继续执行子表重写。
-/// 父子/组织/发起绑定/归属列在创建后不变，此处不重复更新，仅更新易变列。
+/// 父子/组织/归属列在创建后不变，此处不重复更新，仅更新易变列。
 pub fn update_instance_cas(inst: &ProcessInstance, expected_version: i64) -> (String, SqlParams) {
     let sql = "UPDATE cmx_flow_instance SET \
         definition_key = $2, business_key = $3, state = $4, variables = $5, \
@@ -396,12 +387,12 @@ pub fn upsert_hi_instance(
         None => DataValue::NullTyped(SqlTypeMarker::Int),
     };
     let sql = "INSERT INTO cmx_flow_hi_instance \
-        (id, definition_key, business_key, state, variables, created_at, ended_at, duration_ms, archived_at, subscriber_id, version, system_id) \
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+        (id, definition_key, business_key, state, variables, created_at, ended_at, duration_ms, archived_at, version, system_id) \
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
         ON CONFLICT (id) DO UPDATE SET \
           state = EXCLUDED.state, variables = EXCLUDED.variables, \
           ended_at = EXCLUDED.ended_at, duration_ms = EXCLUDED.duration_ms, \
-          archived_at = EXCLUDED.archived_at, subscriber_id = EXCLUDED.subscriber_id, \
+          archived_at = EXCLUDED.archived_at, \
           version = EXCLUDED.version, system_id = EXCLUDED.system_id"
         .to_string();
     let params = vec![
@@ -414,7 +405,6 @@ pub fn upsert_hi_instance(
         opt_ts(&inst.ended_at),
         duration_ms,
         DataValue::DateTime(archived_at),
-        opt_int(&inst.subscriber_id),
         DataValue::Int(version),
         opt_text(&inst.system_id),
     ];
@@ -481,7 +471,6 @@ pub fn row_to_instance(ds: &DataSet) -> StoreResult<Option<ProcessInstance>> {
         parent_instance_id: get_opt_string(row, schema, "parent_instance_id"),
         parent_token_id: get_opt_string(row, schema, "parent_token_id"),
         parent_node_bpmn_id: get_opt_string(row, schema, "parent_node_bpmn_id"),
-        subscriber_id: get_opt_i64(row, schema, "subscriber_id"),
         system_id: get_opt_string(row, schema, "system_id"),
     }))
 }
@@ -505,7 +494,6 @@ pub fn rows_to_instances(ds: &DataSet) -> StoreResult<Vec<ProcessInstance>> {
             parent_instance_id: get_opt_string(row, schema, "parent_instance_id"),
             parent_token_id: get_opt_string(row, schema, "parent_token_id"),
             parent_node_bpmn_id: get_opt_string(row, schema, "parent_node_bpmn_id"),
-            subscriber_id: get_opt_i64(row, schema, "subscriber_id"),
             system_id: get_opt_string(row, schema, "system_id"),
         });
     }

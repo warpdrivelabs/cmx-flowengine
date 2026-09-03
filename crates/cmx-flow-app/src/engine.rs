@@ -430,12 +430,13 @@ async fn build_for(
         if let Err(e) = crate::biz_link::seed_form_bindings().await {
             tracing::warn!(error = %e, "F4 表单绑定种子失败（待办打开表单将退回硬编码兜底）");
         }
-        // 2e) 出站 webhook 两表（001 方案）：订阅 + 持久化投递队列，幂等自举。
-        if let Err(e) = crate::webhook_store::ensure_schema(&flow_db).await {
-            tracing::warn!(error = %e, "webhook 订阅/投递表建表失败（出站事件投递将不可用）");
+        // 2e) 事件订阅域三表（20260902 重构方案）：流程分组 + 定义分组列 + 事件订阅者/
+        //     投递队列，幂等自举。
+        if let Err(e) = crate::event_store::ensure_schema(&flow_db).await {
+            tracing::warn!(error = %e, "事件订阅域建表失败（出站事件投递将不可用）");
         }
-        // 注：订阅以库中订阅表为唯一真源（管理页/REST 维护）；首启 env 种子导入已按
-        // 2026-09-02 用户拍板移除，新环境须在管理端显式创建订阅。
+        // 注：订阅者以库中订阅表为唯一真源（管理页/REST 维护）；env 种子导入已移除，
+        // 新环境须在管理端显式创建订阅者。
     })
     .await;
 
@@ -583,23 +584,20 @@ pub async fn spawn_async_job_poller() -> crate::resp::Result<()> {
     Ok(())
 }
 
-/// 启动后台投递 poller（001 方案 §4.2，仅 outbox 模式）：每 2 秒对**所有已建租户运行态**
-/// 抢占并投递一批到期的出站事件行。
+/// 启动后台投递 poller（每 2 秒）：对所有已建租户运行态抢占并投递一批到期的事件行。
 ///
 /// 与异步 Job 执行器同构的多副本安全：租约列（claim 打锁 + 逐行续租 + 持有者守卫落结果，
-/// `webhook_outbox::LEASE_SECS`）+ SKIP LOCKED——N 副本各自跑本 poller，租约有效期内抢到
+/// `event_outbox::LEASE_SECS`）+ SKIP LOCKED——N 副本各自跑本 poller，租约有效期内抢到
 /// 互不相交的行集；投递语义 at-least-once（接收方按 delivery_id 或业务键幂等）。
-/// legacy 模式不启动（内存链路自带 worker）。
-pub async fn spawn_webhook_delivery_poller() -> crate::resp::Result<()> {
-    use crate::webhook_outbox::poll_once;
-    // 001-M3：legacy 已删，poller 恒启动（outbox 唯一）。
+pub async fn spawn_event_delivery_poller() -> crate::resp::Result<()> {
+    use crate::event_outbox::poll_once;
     let _ = flow_for_tenant(DEFAULT_TENANT).await?;
     let worker_id = format!(
-        "webhook-worker-{}-{}",
+        "event-worker-{}-{}",
         std::process::id(),
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
     );
-    tracing::info!("✅ 出站 webhook 投递 poller 已启动（租约 + SKIP LOCKED 集群安全，worker={worker_id}）");
+    tracing::info!("✅ 事件投递 poller 已启动（租约 + SKIP LOCKED 集群安全，worker={worker_id}）");
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
         loop {
@@ -754,20 +752,13 @@ pub async fn spawn_delivery_retention() -> crate::resp::Result<()> {
                         Err(e) => tracing::warn!(tenant = %rt.tenant, error = %e, "终态实例清理失败"),
                     }
                 }
-                // ② 投递流水清理（outbox 唯一模式，001-M3 后无 legacy 分支）。
+                // ② 投递流水清理。
                 if delivery_days > 0 {
-                    match crate::webhook_store::purge_deliveries(
-                        &db_id,
-                        &rt.tenant,
-                        delivery_days,
-                        None,
-                    )
-                    .await
-                    {
+                    match crate::event_store::purge_deliveries(&db_id, delivery_days, None).await {
                         Ok(0) => {}
                         Ok(n) => tracing::info!(
                             tenant = %rt.tenant, purged = n, days = delivery_days,
-                            "🧹 webhook 投递流水 retention 清理完成"
+                            "🧹 事件投递流水 retention 清理完成"
                         ),
                         Err(e) => tracing::warn!(tenant = %rt.tenant, error = %e, "投递流水清理失败"),
                     }
