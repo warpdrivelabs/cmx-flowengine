@@ -24,6 +24,8 @@ cmx-flow-engine = { workspace = true }
 
 # 服务间调用基座：http 形态适配器的传输层（目录定位/鉴权注入/超时/重试/熔断）+ webhook 投递
 cmx-service-rpc = { workspace = true }
+# webhook 通道 target_url 直连模式的出站 HTTP（外部系统直发；目录模式仍走 cmx-service-rpc）
+reqwest = { workspace = true }
 
 # 异步 trait 实现
 async-trait = { workspace = true }

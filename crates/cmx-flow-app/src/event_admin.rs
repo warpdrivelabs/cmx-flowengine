@@ -134,7 +134,7 @@ pub struct SaveSubReq {
     description: Option<String>,
     #[serde(default = "default_channel")]
     channel: String,
-    /// 通道配置开放对象（webhook：service_key / callback_path / secret）。
+    /// 通道配置开放对象（webhook：service_key / target_url / callback_path / secret）。
     #[serde(default)]
     channel_config: Value,
     #[serde(default)]

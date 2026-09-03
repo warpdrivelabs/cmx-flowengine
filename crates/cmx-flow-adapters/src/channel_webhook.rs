@@ -2,6 +2,13 @@
 //! 三契约头 + `sign_body` HMAC-SHA256 + HTTP 2xx 成功判定，原样组装，**wire 契约零变化**；
 //! 差异仅在 secret 来源（订阅 `channel_config.secret`，替代 env 全局密钥）与
 //! 结果分类（408/429/5xx/超时/传输错误可重试，其余 4xx 直达 DEAD）。
+//!
+//! 目标双模式（20260902 拍板：生产新增订阅不允许改 toml）——`service_key` 与
+//! `target_url` 二选一：
+//! - `service_key` 有值 → 服务目录路由（`RpcRequest` 经 `[service_rpc.services]` 定位，
+//!   内部微服务形态，配 `callback_path`）；
+//! - `service_key` 为空且有 `target_url` → **URL 直连**（reqwest 直发完整 URL，
+//!   全程不经 service_rpc；外部系统在订阅页自助接入，无需登记目录）。
 
 use std::time::Duration;
 
@@ -35,11 +42,15 @@ fn truncate(s: &str, max: usize) -> String {
 impl WebhookChannel {
     /// channel_config 键名常量（schema 与校验共用）。
     pub const SERVICE_KEY: &'static str = "service_key";
+    pub const TARGET_URL: &'static str = "target_url";
     pub const CALLBACK_PATH: &'static str = "callback_path";
     pub const SECRET: &'static str = "secret";
 
     /// 缺省回调路径（兼容现状：mdm 的 flow 回调端点）。
     pub const DEFAULT_CALLBACK_PATH: &'static str = "/api/mdm/flow/callback";
+
+    /// 直连缺省总超时（对齐服务目录全局缺省 `timeout_ms = 30000`）。
+    const DEFAULT_DIRECT_TIMEOUT: Duration = Duration::from_millis(30_000);
 
     /// 结果分类：408/429/5xx / 超时 / 传输错误 → 可重试；其余 4xx（含 401/403）→ 直达 DEAD。
     fn classify(err: ServiceRpcError) -> DeliveryOutcome {
@@ -91,12 +102,16 @@ impl DeliveryChannel for WebhookChannel {
     fn config_schema(&self) -> Value {
         serde_json::json!({
             "service_key": {
-                "type": "string", "required": true,
-                "desc": "目标服务目录键（[service_rpc.services] 登记；内部走注册发现，外部登记静态 url）"
+                "type": "string", "required": false,
+                "desc": "目标服务目录键（[service_rpc.services] 登记，内部微服务可走注册发现；与 target_url 二选一）"
+            },
+            "target_url": {
+                "type": "string", "required": false,
+                "desc": "外部系统完整推送 URL（http/https 含路径；与 service_key 二选一，直连不经服务目录，生产自助接入免改 toml）"
             },
             "callback_path": {
                 "type": "string", "required": false,
-                "desc": "接收方回调路径（以 / 开头）", "default": Self::DEFAULT_CALLBACK_PATH
+                "desc": "接收方回调路径（以 / 开头；仅 service_key 目录模式生效，target_url 直连时忽略）", "default": Self::DEFAULT_CALLBACK_PATH
             },
             "secret": {
                 "type": "string", "required": true, "writeOnly": true,
@@ -106,9 +121,21 @@ impl DeliveryChannel for WebhookChannel {
     }
 
     async fn validate_config(&self, config: &Value) -> Result<(), String> {
-        let service_key = cfg_str(config, Self::SERVICE_KEY).unwrap_or("");
-        if service_key.is_empty() {
-            return Err("webhook 通道缺 service_key（目标服务目录键）".into());
+        let service_key = cfg_str(config, Self::SERVICE_KEY);
+        let target_url = cfg_str(config, Self::TARGET_URL);
+        match (service_key, target_url) {
+            (None, None) => {
+                return Err("webhook 通道须配置 service_key（目录路由）或 target_url（外部直连）二者之一".into());
+            }
+            (Some(_), Some(_)) => {
+                return Err("service_key 与 target_url 互斥（目录路由与 URL 直连二选一）".into());
+            }
+            (None, Some(url)) => {
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err("target_url 须为 http:// 或 https:// 开头的完整 URL（含路径）".into());
+                }
+            }
+            (Some(_), None) => {}
         }
         if let Some(path) = cfg_str(config, Self::CALLBACK_PATH)
             && !path.starts_with('/')
@@ -127,11 +154,28 @@ impl DeliveryChannel for WebhookChannel {
         task: &DeliveryTask,
         timeout: Option<Duration>,
     ) -> DeliveryOutcome {
+        if let Some(service_key) = cfg_str(config, Self::SERVICE_KEY) {
+            self.deliver_via_directory(service_key, config, task, timeout).await
+        } else if let Some(url) = cfg_str(config, Self::TARGET_URL) {
+            Self::deliver_direct(url, config, task, timeout).await
+        } else {
+            DeliveryOutcome::fatal("channel_config 缺 service_key/target_url")
+        }
+    }
+}
+
+impl WebhookChannel {
+    /// 目录路由模式（内部微服务）：`service_key` 经 `[service_rpc.services]` 定位基址
+    /// + `callback_path` 拼路径，走 service_rpc 基座（鉴权/超时/重试/熔断）。
+    async fn deliver_via_directory(
+        &self,
+        service_key: &str,
+        config: &Value,
+        task: &DeliveryTask,
+        timeout: Option<Duration>,
+    ) -> DeliveryOutcome {
         let Some(rpc) = cmx_service_rpc::global_arc() else {
             return DeliveryOutcome::retry("service_rpc 基座未初始化");
-        };
-        let Some(service_key) = cfg_str(config, Self::SERVICE_KEY) else {
-            return DeliveryOutcome::fatal("channel_config 缺 service_key");
         };
         let path = cfg_str(config, Self::CALLBACK_PATH).unwrap_or(Self::DEFAULT_CALLBACK_PATH);
         let secret = cfg_str(config, Self::SECRET).unwrap_or("");
@@ -155,6 +199,74 @@ impl DeliveryChannel for WebhookChannel {
             Err(e) => Self::classify(e),
         }
     }
+
+    /// 直连模式的共享 HTTP 客户端（连接池复用的基础设施单例；构造对齐基座
+    /// `HttpTransport`：连接超时 5s 快速失败，总超时按请求传）。
+    fn shared_client() -> &'static reqwest::Client {
+        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        CLIENT.get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .build()
+                .unwrap_or_default()
+        })
+    }
+
+    /// URL 直连模式（外部系统）：完整 URL 直发，**全程不经 service_rpc**——
+    /// 无目录依赖；wire 契约（三头 + 签名 + 原始 body 字节）与目录模式逐字节一致。
+    async fn deliver_direct(
+        url: &str,
+        config: &Value,
+        task: &DeliveryTask,
+        timeout: Option<Duration>,
+    ) -> DeliveryOutcome {
+        let secret = cfg_str(config, Self::SECRET).unwrap_or("");
+        let body = match serde_json::to_vec(&task.payload) {
+            Ok(b) => b,
+            Err(e) => return DeliveryOutcome::fatal(format!("事件序列化失败: {e}")),
+        };
+        let eff = timeout.unwrap_or(Self::DEFAULT_DIRECT_TIMEOUT);
+        let resp = Self::shared_client()
+            .post(url)
+            .timeout(eff)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(EVENT_HEADER, task.event_type.clone())
+            .header(DELIVERY_HEADER, task.delivery_id.clone())
+            .header(SIGNATURE_HEADER, sign_body(secret, &body))
+            .body(body)
+            .send()
+            .await;
+        match resp {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                // 读走响应体（接收方响应体不解析，仅失败摘要留痕；顺带归还连接复用）。
+                let msg = resp.text().await.unwrap_or_default();
+                if (200..300).contains(&status) {
+                    return DeliveryOutcome::Success;
+                }
+                let snippet = Some(truncate(msg.trim(), 512));
+                let retryable = status == 408 || status == 429 || (500..600).contains(&status);
+                if retryable {
+                    DeliveryOutcome::Retryable {
+                        http_status: Some(status),
+                        error: format!("HTTP {status}: {}", msg.trim()),
+                        snippet,
+                    }
+                } else {
+                    DeliveryOutcome::Fatal {
+                        http_status: Some(status),
+                        error: format!("HTTP {status}（非重试类 4xx）: {}", msg.trim()),
+                        snippet,
+                    }
+                }
+            }
+            Err(e) if e.is_timeout() => {
+                DeliveryOutcome::retry(format!("调用超时（{}ms）", eff.as_millis()))
+            }
+            // 网络不可达 / 连接拒绝：传输级，可重试。
+            Err(e) => DeliveryOutcome::retry(format!("传输失败: {e}")),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -162,15 +274,31 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn validate_config_requires_keys() {
+    async fn validate_config_requires_target() {
         let ch = WebhookChannel;
-        // 缺 service_key / secret 均拒。
+        // 全空拒：目录路由与 URL 直连须二选一。
         assert!(ch.validate_config(&serde_json::json!({})).await.is_err());
+        // 双填拒：互斥。
         assert!(ch
-            .validate_config(&serde_json::json!({ "service_key": "mdm" }))
+            .validate_config(&serde_json::json!({
+                "service_key": "mdm", "target_url": "http://x/hook", "secret": "s"
+            }))
             .await
             .is_err());
-        // 齐备即过；callback_path 缺省合法。
+        // 直连模式：target_url 须 http/https 完整 URL；secret 始终必填。
+        assert!(ch
+            .validate_config(&serde_json::json!({ "target_url": "ftp://x/hook", "secret": "s" }))
+            .await
+            .is_err());
+        assert!(ch
+            .validate_config(&serde_json::json!({ "target_url": "https://x/hook" }))
+            .await
+            .is_err());
+        assert!(ch
+            .validate_config(&serde_json::json!({ "target_url": "https://oapi.example.com/hook", "secret": "s" }))
+            .await
+            .is_ok());
+        // 目录模式齐备即过；callback_path 缺省合法。
         assert!(ch
             .validate_config(&serde_json::json!({
                 "service_key": "mdm", "secret": "s3cret"

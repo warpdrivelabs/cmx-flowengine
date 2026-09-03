@@ -5,7 +5,8 @@
 //! 同订阅保序 + 死信处置）；本文件只保留**契约自包含部分**，供 `channel_webhook`
 //! 组装请求复用。契约文档真源：`docs/usage/08-external-integration.md` §8.5/§8.6：
 //!   - 目标 = 服务目录键 + 回调路径（订阅 `channel_config` 的 service_key/callback_path，
-//!     键经 `[service_rpc.services]` 目录定位）；
+//!     键经 `[service_rpc.services]` 目录定位），或 `target_url` 完整 URL 直连
+//!     （外部系统形态，不经目录；`channel_webhook` 双模式）；
 //!   - 安全 = 每条请求带 [`SIGNATURE_HEADER`]：`sha256=<hex(HMAC-SHA256(body, secret))>`
 //!     （对实际发送字节签名，接收端按订阅独立 secret 验签防伪造）+ 事件名 / 幂等投递头；
 //!   - 成功判定 = **HTTP 2xx**（接收方协议不受 CMX 信封约束，响应体不解析）。

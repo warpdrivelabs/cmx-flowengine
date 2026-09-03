@@ -218,8 +218,16 @@ curl -X POST http://<flow-host>:8091/api/flow/v1/webhook-subscriptions/save \
   }'
 ```
 
-`service_key` 经 `[service_rpc.services]` 目录定位地址；`secret` 为该订阅的 HMAC-SHA256
-签名密钥（逐订阅独立，改配后须同步接收端）；重试上限 `retryMax`（默认 10 含首发）。
+目标 **二选一**（20260902 拍板：生产新增订阅不允许改 toml）：
+
+- `service_key`（内部微服务形态）：经 `[service_rpc.services]` 目录定位基址 +
+  `callback_path` 拼回调路径，走 service_rpc 基座（鉴权/超时/重试/熔断）；
+- `target_url`（外部系统形态）：完整推送 URL（http/https 含路径）**直连**——不经
+  service_rpc / 服务目录，订阅页面自助接入，生产免改 toml；`callback_path` 不生效。
+
+`secret` 为该订阅的 HMAC-SHA256 签名密钥（逐订阅独立，改配后须同步接收端）；
+重试上限 `retryMax`（默认 10 含首发）。两键同时填写/全空在保存时被
+`validate_config` 拒绝。
 
 ### 事件类型
 

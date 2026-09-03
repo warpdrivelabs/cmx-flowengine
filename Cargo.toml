@@ -106,6 +106,8 @@ axum = { version = "0.8.9", features = ["macros", "multipart"] }
 tower-http = { version = "0.6", features = ["fs", "cors", "trace", "compression-full", "timeout", "limit"] }
 # 自动读取 .env（与门户 cmx-platform-app 一致：统一启动契约，bin 自读 .env 无需手动 source）
 dotenvy = "0.15"
+# 出站 HTTP 客户端（webhook 通道 target_url 直连模式；与 cmx-container 根同 spec 以便 Cargo 合一）
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 [profile.release]
 opt-level = 3

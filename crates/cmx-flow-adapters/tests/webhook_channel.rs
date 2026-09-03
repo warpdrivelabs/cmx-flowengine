@@ -17,8 +17,6 @@ use sha2::Sha256;
 
 use cmx_flow_adapters::{DeliveryChannel, DeliveryOutcome, DeliveryTask, WebhookChannel, global_registry};
 
-type HmacSha256 = Hmac<Sha256>;
-
 const SECRET: &str = "channel-test-secret";
 
 #[derive(Clone)]
@@ -157,6 +155,53 @@ async fn webhook_channel_full_chain() {
     assert!(
         matches!(outcome, DeliveryOutcome::Retryable { .. }),
         "超时/不可达应 Retryable，实际 {outcome:?}"
+    );
+}
+
+/// URL 直连模式（target_url）：**故意不 install_base**——证明直连路径零 service_rpc /
+/// 服务目录依赖（20260902 拍板：外部系统订阅页自助接入，生产免改 toml）；
+/// wire 契约（三头 + 签名对拍）与目录模式逐字节一致，结果分类同带。
+#[tokio::test]
+async fn webhook_direct_url_without_directory() {
+    let (base, fail_status, mut rx) = spawn_stub().await;
+    let ch = WebhookChannel;
+    // 完整 URL 含路径，原样直发（无 callback_path 拼接环节）。
+    let config = json!({ "target_url": format!("{base}/api/mdm/flow/callback"), "secret": SECRET });
+
+    // —— 1) 成功：三头 + HMAC 签名对实际 body 字节可对拍。
+    let outcome = ch.deliver(&config, &task(), None).await;
+    assert!(matches!(outcome, DeliveryOutcome::Success), "直连 2xx 应 Success，实际 {outcome:?}");
+    let rec = rx.recv().await.expect("桩未收到直连请求");
+    assert_eq!(
+        rec.headers.get("x-cmx-flow-event").and_then(|v| v.to_str().ok()),
+        Some("instance.started")
+    );
+    assert_eq!(
+        rec.headers.get("x-cmx-flow-delivery").and_then(|v| v.to_str().ok()),
+        Some("i-1-t-9-2026-09-01T00:00:00Z")
+    );
+    assert_eq!(
+        rec.headers.get("x-cmx-flow-signature").and_then(|v| v.to_str().ok()),
+        Some(sign(SECRET, &rec.body).as_str()),
+        "直连签名应对实际 body 字节可对拍"
+    );
+
+    // —— 2) 500 → Retryable；404 → Fatal（与目录模式同带）。
+    fail_status.store(500, Ordering::SeqCst);
+    let outcome = ch.deliver(&config, &task(), None).await;
+    assert!(matches!(outcome, DeliveryOutcome::Retryable { http_status: Some(500), .. }));
+    let _ = rx.recv().await;
+    fail_status.store(404, Ordering::SeqCst);
+    let outcome = ch.deliver(&config, &task(), None).await;
+    assert!(matches!(outcome, DeliveryOutcome::Fatal { http_status: Some(404), .. }));
+    fail_status.store(0, Ordering::SeqCst);
+
+    // —— 3) 不可达地址 → Retryable（传输级，进退避重试）。
+    let config_down = json!({ "target_url": "http://127.0.0.1:1/hook", "secret": "s" });
+    let outcome = ch.deliver(&config_down, &task(), Some(Duration::from_millis(200))).await;
+    assert!(
+        matches!(outcome, DeliveryOutcome::Retryable { .. }),
+        "直连不可达应 Retryable，实际 {outcome:?}"
     );
 }
 
