@@ -10,14 +10,14 @@ graceful_timeout_secs = 10
 db_id = "fico-db"
 db_name = "流程引擎库(E2E)"
 db_type = "postgres"
-db_url = "postgres://postgres:postgres@127.0.0.1:5432/fico"
+db_url = "postgres://dbuser_dba:9lWsRQY4i4VToPpkHcCRFzki@192.168.157.46:5432/cmx_fico"
 default = true
 
 [[databases]]
 db_id = "primary"
 db_name = "候选人/组织库(E2E)"
 db_type = "postgres"
-db_url = "postgres://postgres:postgres@127.0.0.1:5432/cmx"
+db_url = "postgres://dbuser_dba:9lWsRQY4i4VToPpkHcCRFzki@192.168.157.46:5432/cmxlocal"
 default = false
 
 # P1 租户契约：off 模式，租户取 X-Tenant 头（flow 出站附给 rules）
